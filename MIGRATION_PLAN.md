@@ -1,16 +1,21 @@
 # Telegram 仿真 AI 群友迁移计划
 
-> 状态：设计草案，尚未实施。本文依据两个本地仓库的源码编写。
+> 状态：功能迁移设计基线，M0–M5 尚未开始；本机测试、构建、部署与回滚基础设施已完成，生产已切换到本地源码构建的 Docker 镜像。
 > 目标：把 qq-bridge 的群友仿真、人格、多媒体及群内记忆能力移植到 nanobot，使用 Telegram 收发消息，保持 nanobot 的轻量与可扩展性。
+> 最近核对：2026-10-28，已按上游冗余文件清理后的目录与当前生产部署方式复核。日常发布操作以 [本机管线说明](docs/LOCAL_PIPELINE.md) 为准。
 
 ## 1. 源码基线与范围
 
 | 项目 | 本地位置 | 分析基线 | 用途 |
 | --- | --- | --- | --- |
-| nanobot | `/home/ubuntu/nanobot-bridge-tg` | `v0.3.5`，提交 `1bb712d3`，开发分支 `main` | 实现目标；`origin` 为 `FayeValentina/nanobot-bridge-tg` |
+| nanobot | `/home/ubuntu/nanobot-bridge-tg` | 上游功能分析基线为 `v0.3.5`、提交 `1bb712d3`；本地开发分支为 `main` | 实现目标；`origin` 为 `FayeValentina/nanobot-bridge-tg`；在此基础上已加入本机发布管线并清理上游冗余资料 |
 | qq-bridge | `/home/ubuntu/qq-bridge` | `0.2.1-r1`，提交 `a49877f` | 行为、提示词、数据结构与测试案例的参考 |
 
-当前运行服务使用 uv 安装的发布包。修改上述源码不会自动改变运行服务；开发、测试和生产切换需单独进行。
+当前生产运行本地源码构建的 Docker 镜像，原 uv 发布包与旧 systemd 服务单元已移除。源码修改提交后，通过 `./scripts/pipeline.sh release` 完成测试、构建、备份、部署与健康检查；保存源码不会自动热更新。GitHub 仅用于代码版本管理。
+
+本次复核时，工作分支已完成清理至 `efad953e`；生产镜像仍对应已验证的提交 `fbfe7a3c`，后续提交仅涉及清理与文档。该记录用于区分源码分析、工作分支和运行产物，不作为后续发布的固定版本要求。功能开发从当前 `main` 开始。
+
+项目保留的构建部署入口为 `scripts/` 和 `deploy/`。上游 GitHub Actions、Render、根目录旧 Docker 方案及公开发布文档已移除，后续开发复用现有本机管线。
 
 本计划包含以下八项能力：
 
@@ -72,7 +77,7 @@
 | `src/sticker-lib.js`、`src/media-normalize.js` | 贴纸语义知识库、损坏时避免覆盖、原始媒体与模型用副本分离 |
 | `src/slang-learner.js`、`src/qq-model-view.js` | 黑话候选与确认状态、证据、紧凑消息表示及相对时间 |
 
-采用“行为与测试案例移植，平台实现用 Python 重写”的方式。原项目的一代和二代模式不同时搬入；以二代自主工具模式为主，先支持较小的工具集合。
+采用“行为与测试案例移植，平台实现用 Python 重写”的方式。迁移边界明确为 qq-bridge 的二代仿真 `reserved2`（也接受别名 `simulation`）及其 `socialV2` 状态、工具和 `qq-chat-v2` preset；不同时搬入一代 `reserved`、普通聊天或 `closed-agent` 模式。分阶段实现二代的行为契约，先支持较小的工具集合，不承诺第一阶段覆盖其全部工具。
 
 ## 3. 目标架构与代码布局
 
@@ -126,6 +131,8 @@ nanobot/agent/tools/telegram_social.py  # 工具加载入口；避免在导入�
 按阶段新增必要文件，不预先建立空框架。工具与通道应共享同一个有类型的运行时对象，在 gateway 组装处注入；如现有构造参数不足，只增加明确的可选服务句柄，禁止通过全局可变单例定位实例。
 
 数据目录拟为 `<config-dir>/telegram-social/`，包含角色文件与一个标准库 SQLite 数据库。SQLite 只管理新增的群观察、状态、水位、记忆和出站记录，不替换 nanobot 原有 JSONL Agent 会话。使用一个进程内的存储所有者、小事务和有界保留策略，不引入数据库服务或 ORM。
+
+当前生产的 `<config-dir>` 在容器内为 `/data`，对应宿主 `~/.local/share/nanobot-bridge-tg-deploy/shared/data/`。因此上述拟新增目录在容器内为 `/data/telegram-social/`，应纳入现有整实例备份；不要继续向原 `~/.nanobot` 写入生产数据。独立验证实例使用自己的数据根目录。
 
 ## 4. 八项功能的实施方案
 
@@ -304,7 +311,7 @@ nanobot/agent/tools/telegram_social.py  # 工具加载入口；避免在导入�
 | M2：完整文字仿真 MVP | 状态转换、工具显式发送、短窗口合并、等待/潜水、忙时触发合并、静默、冷却与回执 | M1 | 可旁观/插话/接话/潜水；不重复、不空转、不把内部文字发到群里 |
 | M3：图片与贴纸 | 图片/引用完善、静态贴纸收藏与发送；随后按需补 GIF/WebM 和 TGS 降级 | M2 | 支持声明范围内的多媒体；失败不阻塞文字链路；贴纸笔记按群隔离 |
 | M4：主动参与与群记忆学习 | 有效定时唤醒、主动机会、安静时段、成员偏好、共同经历、话题与黑话学习 | M2，媒体记忆依赖 M3 | 记忆可纠正/删除；预算可控；重启不刷屏；无跨群或全局 Dream 污染 |
-| M5：WebUI 与运维完善 | 角色/群权限/活跃度/预算管理、行为记录、存储清理和升级回滚 | 后端契约稳定 | 管理员可在网页完成配置与排障，运行状态与网页一致 |
+| M5：WebUI 与运维完善 | 角色/群权限/活跃度/预算管理、行为记录、存储清理；复用既有管线补齐仿真数据升级与回滚兼容 | 后端契约稳定 | 管理员可在网页完成配置与排障，运行状态与网页一致；仿真存储升级和恢复经过验证 |
 
 第一批以 M0→M1→M2 为目标，得到可体验的文字群友；图片与静态贴纸是下一批。群内长期记忆的自动学习可后做，但隔离策略必须在 M1 进入真实群前完成。
 
@@ -331,12 +338,12 @@ nanobot/agent/tools/telegram_social.py  # 工具加载入口；避免在导入�
 
 ## 8. 开发与部署策略
 
-1. 保留当前生产 uv 环境；源码开发使用独立虚拟环境和独立配置目录，如 `~/.nanobot-bridge-tg-dev/`，端口另选并先检查冲突。
-2. 开发默认不启用 Telegram。需要端到端验证时使用专用测试 Bot 和测试群，不能让生产与开发同时轮询同一 Token。
+1. 生产使用现有本机 Docker 实例；源码开发使用项目 `.venv`。独立验证实例已位于 `~/.local/share/nanobot-bridge-tg-staging/`，网页端口为 `8766`、健康端口为 `18791`；生产分别为 `8765`、`18790`。其他实例需另选数据根和端口并检查冲突。
+2. 独立验证实例默认不配置真实 Telegram 或模型凭据。需要端到端验证时使用专用测试 Bot 和测试群，不能让生产与开发同时轮询同一 Token。
 3. 配置仅含新功能的显式字段和默认值；群级动态状态放专用存储。新增字段需同步运行时模型、manifest、校验、WebUI 和文档，拒绝未知枚举。
-4. 每批完成后运行受影响的 Python 测试与 `ruff check`；修改类型契约时运行项目类型检查；修改网页时运行对应 Bun 测试与构建。遵守项目约定，不运行 `ruff format`。
-5. 生产切换前构建可安装包，备份原配置、会话、群仿真存储和服务文件；测试备份可恢复。首次仅开启一个测试群的仿真。
-6. 升级切换到明确版本的构建产物，而非直接编辑 uv 环境的 `site-packages`。模型配置沿用实际 API 名称 `deepseek-flash`，不把展示版本名写成接口模型名。
+4. 每批完成后运行受影响的 Python 测试与 `ruff check`，通过 `./scripts/pipeline.sh test` 执行现有检查；修改类型契约时运行项目类型检查。前端检查使用 npm，按需运行 `npm --prefix webui run test -- <测试文件>` 和 `npm --prefix webui run build`。新增测试应纳入管线覆盖范围；现有 `test` 只覆盖选定的后端回归与完整 WebUI 检查，不等于全量后端测试。遵守项目约定，不运行 `ruff format`。
+5. 每批修改提交后，先以同一提交在独立实例验证，再运行 `./scripts/pipeline.sh release` 更新生产。管线使用 Git 提交快照构建 WebUI、wheel 和按完整 SHA 标识的 Docker 镜像，先冒烟检查，再停止本实例、备份数据、部署并检查健康；失败恢复旧实例和数据。新增群仿真存储必须位于挂载数据目录，验证备份与恢复；首次仅开启一个测试群的仿真。
+6. 使用 `./scripts/deploy-local.sh status`、`logs`、`rollback` 管理当前生产版本，不直接编辑容器或开发环境的 `site-packages`。媒体转换所需的 ffmpeg 等依赖加入 `deploy/Dockerfile` 后重建；当前镜像尚未预装这些转换器。模型配置沿用实际 API 名称 `deepseek-flash`，不把展示版本名写成接口模型名。
 7. 全局关闭仿真后不再观察、唤醒或发送仿真消息，普通聊天按配置恢复。存储升级带 schema 版本；必要时从备份回滚，避免旧版本读取不兼容的新库。
 8. 参考或改写 qq-bridge 的代码、提示词与素材时保留相应许可和来源；不将 SnowLuma、原用户角色资料或运行凭据一并打包。
 
@@ -361,5 +368,6 @@ nanobot/agent/tools/telegram_social.py  # 工具加载入口；避免在导入�
 - qq-bridge：`src/bridge.js`、`src/mcp-snowluma-safe.js`、`src/role-card.js`、`src/qq-model-view.js`、`src/v2-wait.js`、`src/sticker-lib.js`、`src/media-normalize.js`、`src/slang-learner.js`、`dsh/agent-presets/qq-chat-v2/agent.cordis.yml`、`roles/`、`config.example.json`、`scripts/test-*.mjs`。
 - [nanobot 基线](https://github.com/HKUDS/nanobot/tree/v0.3.5)
 - [qq-bridge 基线](https://github.com/Derpyu520/qq-bridge/tree/a49877f)
+- [本机测试、构建、部署与回滚](docs/LOCAL_PIPELINE.md)：开发及发布操作的当前依据。
 - [Telegram 群消息接收条件](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get)：测试群需按实际权限检查普通消息是否能送达；BotFather 隐私模式和应用内过滤是两层不同条件。
 - [Telegram Bot API](https://core.telegram.org/bots/api)：媒体、引用、话题及发送限制以实现时的官方协议为准；本计划不承诺 QQ 专有操作的一对一等价能力。
