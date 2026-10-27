@@ -169,14 +169,19 @@ class ReleaseManager:
 
     def _compose(self, revision: str, *args: str) -> str:
         _, metadata = self.release(revision)
-        env = dict(os.environ, BRIDGE_IMAGE=metadata["image"], BRIDGE_DATA_DIR=str(self.data),
-                   BRIDGE_UID=str(os.getuid()), BRIDGE_GID=str(os.getgid()),
-                   BRIDGE_WEB_PORT=str(self.settings["web_port"]),
-                   BRIDGE_HEALTH_PORT=str(self.settings["health_port"]))
+        values = dict(BRIDGE_IMAGE=metadata["image"], BRIDGE_DATA_DIR=str(self.data),
+                      BRIDGE_UID=str(os.getuid()), BRIDGE_GID=str(os.getgid()),
+                      BRIDGE_WEB_PORT=str(self.settings["web_port"]),
+                      BRIDGE_HEALTH_PORT=str(self.settings["health_port"]))
+        # sudo intentionally strips environment variables. Give Compose an explicit
+        # private file containing only non-secret deployment parameters instead.
+        env_path = self.root / "compose.env"
+        env_path.write_text("".join(f"{key}={json.dumps(value)}\n" for key, value in values.items()))
+        env_path.chmod(0o600)
         return output([
-            *self.docker, "compose", "--env-file", "/dev/null", "--project-name", self.settings["project"],
+            *self.docker, "compose", "--env-file", str(env_path), "--project-name", self.settings["project"],
             "-f", str(REPO / "deploy/compose.local.yml"), *args,
-        ], env=env)
+        ], env=dict(os.environ, **values))
 
     def _wait(self, revision: str) -> None:
         cid = self._compose(revision, "ps", "-q", "gateway")

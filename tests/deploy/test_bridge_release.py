@@ -187,3 +187,24 @@ def test_separate_roots_have_separate_projects_and_persist_ports(tmp_path, monke
     assert first.settings["project"] != second.settings["project"]
     assert ReleaseManager(tmp_path / "first").settings["web_port"] == 8766
     assert second.settings["web_port"] == 8767
+
+
+def test_sudo_compose_receives_an_explicit_non_secret_env_file(tmp_path, monkeypatch):
+    from scripts import bridge_release
+
+    instance = ReleaseManager(tmp_path / "sudo-deploy")
+    instance._docker_prefix = ["sudo", "-n", "docker"]
+    release(instance.root, OLD)
+    calls = []
+
+    def capture(args, **kwargs):
+        calls.append(args)
+        env_path = Path(args[args.index("--env-file") + 1])
+        assert 'BRIDGE_IMAGE="nanobot-bridge-tg:sha-' in env_path.read_text()
+        assert "BRIDGE_DATA_DIR=" in env_path.read_text()
+        assert env_path.stat().st_mode & 0o077 == 0
+        return "validated"
+
+    monkeypatch.setattr(bridge_release, "output", capture)
+    assert instance._compose(OLD, "config", "--quiet") == "validated"
+    assert calls[0][:3] == ["sudo", "-n", "docker"]
