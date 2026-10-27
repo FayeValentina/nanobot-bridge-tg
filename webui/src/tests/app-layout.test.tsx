@@ -1014,7 +1014,7 @@ describe("App layout", () => {
     const projectPath = await screen.findByLabelText("Paste path");
     expect(projectPath).toHaveValue("C:\\missing-project");
     expect(projectPath).toHaveAttribute("aria-invalid", "true");
-    expect(projectPath).toHaveFocus();
+    await waitFor(() => expect(projectPath).toHaveFocus());
     expect(screen.getByRole("alert")).toHaveTextContent(
       "The gateway rejected this project or access mode. Choose an existing project or a different access mode, then try again.",
     );

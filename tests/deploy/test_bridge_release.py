@@ -42,6 +42,7 @@ def test_release_detects_changed_image_before_loading(tmp_path):
     with pytest.raises(ValueError, match="integrity"):
         verify_release(directory)
 
+
 def test_container_config_preserves_credentials_and_source_values():
     config = {"providers": {"deepseek": {"apiKey": "private"}},
               "channels": {"telegram": {"token": "bot-secret"},
