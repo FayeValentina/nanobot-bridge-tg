@@ -3,6 +3,15 @@
 这台服务器同时承担开发构建和运行。GitHub 只保存代码版本；不需要 GitHub Actions、Secrets、部署密钥或镜像仓库。
 新增的云端发布/部署工作流已移除，上游测试入口仅保留为手动可选，不再因 push/PR 自动运行。
 
+## 当前生产状态
+
+2026-10-28 已完成正式迁移，生产运行本地编译的 Docker 镜像，首次版本为 `fbfe7a3cbb014c3a7222d6e1959d65ca64384c30`。
+Telegram、模型和网页登录凭据沿用原配置；网页仍使用宿主 `127.0.0.1:8765`，健康接口为 `127.0.0.1:18790`。
+旧的 uv `nanobot-ai` 安装和 `nanobot-gateway.service` 单元已移除。原始 `~/.nanobot` 和迁移备份保留。
+备份中的 `legacy-runtime` 可独立运行，首次回滚的服务单元已改为使用这个归档环境，不依赖被卸载的路径。
+
+修改源码后需要提交并运行下面的 `release`，通过检查后才更新生产；保存文件不会自动热更新。
+
 ## 日常使用
 
 在 `/home/ubuntu/nanobot-bridge-tg` 下执行：
@@ -84,8 +93,8 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 
 ### 正式实例首次切换
 
-现有生产 nanobot 仍由 systemd 启动已安装的 Python 包。源码修改或本地构建不会自动替换它。
-正式切换会造成短暂停机，必须在明确决定切换后执行：
+下面仅适用于仍由 systemd 启动旧 Python 包的实例；当前服务器已完成迁移，无需重复执行。
+首次正式切换会造成短暂停机，必须在明确决定切换后执行：
 
 ```bash
 ./scripts/deploy-local.sh migrate-systemd <已构建的完整 Git SHA>
@@ -93,6 +102,7 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 
 该操作先验证镜像，随后停止并禁用 `nanobot-gateway.service`，备份并复制 `~/.nanobot` 到独立数据目录，修正容器工作区路径后启动 Docker 实例。
 原始 `~/.nanobot` 不修改、不 chown；迁移失败恢复原服务；第一次迁移后的回滚可回到原 systemd 实例。
+当前服务器另外归档了旧运行环境，并将备份服务的解释器路径指向归档，然后卸载旧包、移除旧服务单元；首次回滚仍可恢复服务。
 默认要求原工作区位于 `~/.nanobot/workspace`，其他布局需先明确映射。正式实例默认使用 `8765` 和 `18790`，原有 SSH 隧道可以继续使用。
 同一 Telegram Token 只能由一个网关接收更新，不能让开发进程与生产实例同时轮询。
 
@@ -117,6 +127,6 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 - 单元测试验证产物损坏、备份失败、升级失败、回滚失败、实例隔离、源码快照和 sudo 参数传递。
 - 隔离冒烟使用新配置和 `--network none`，验证 wheel 导入、Telegram 依赖、网页、登录认证与健康状态，不调用模型。
 - 独立测试实例已验证真实升级、手动回滚，以及通过预检后故意失败的升级能自动恢复旧容器和数据。
-- 正式切换前继续使用现有生产实例。模型与 Telegram 的最终业务体验由管理员发送测试消息确认，管线不会向真实群自动发送测试消息。
+- 模型与 Telegram 的最终业务体验由管理员发送测试消息确认，管线不会向真实群自动发送测试消息。
 
 本次仅搭建本机开发发布基础设施，`MIGRATION_PLAN.md` 中的仿真功能尚未开始实现。
