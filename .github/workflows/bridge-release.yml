@@ -1,0 +1,53 @@
+name: Bridge Release
+
+on:
+  workflow_run:
+    workflows: [Test Suite]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bridge-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # A PR's workflow completion must never enter the release path.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Build wheel and ARM64 image; test packaged runtime
+        env:
+          BRIDGE_DEPLOY_ROOT: ${{ runner.temp }}/bridge-release
+        run: ./scripts/deploy-local.sh build
+      - name: Upload immutable release payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-release-linux-arm64
+          path: ${{ runner.temp }}/bridge-release/releases/${{ github.event.workflow_run.head_sha }}/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Write release summary
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+        run: |
+          {
+            echo '### Verified ARM64 release'
+            echo "Source commit: $SOURCE_SHA"
+            echo "Deployment input release_run_id: $RELEASE_RUN_ID"
+            echo 'Open Bridge Deploy → Run workflow to deploy this artifact.'
+          } >> "$GITHUB_STEP_SUMMARY"

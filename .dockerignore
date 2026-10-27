@@ -12,3 +12,11 @@ nanobot/web/dist/
 node_modules/
 bridge/dist/
 workspace/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage*
+webui/node_modules/
+tui/node_modules/
+webui/coverage/
+tui/dist/

@@ -1,0 +1,22 @@
+name: nanobot-bridge-tg
+services:
+  gateway:
+    image: ${BRIDGE_IMAGE:?Set BRIDGE_IMAGE to a verified release image}
+    user: "${BRIDGE_UID:-1001}:${BRIDGE_GID:-1001}"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 40s
+    ports:
+      - "127.0.0.1:${BRIDGE_WEB_PORT:-8765}:8765"
+      - "127.0.0.1:${BRIDGE_HEALTH_PORT:-18790}:18790"
+    volumes:
+      - "${BRIDGE_DATA_DIR:?Set BRIDGE_DATA_DIR}:/data"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

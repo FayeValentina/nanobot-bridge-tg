@@ -14,6 +14,7 @@ docs/plans/
 # webui (monorepo frontend)
 webui/node_modules/
 webui/dist/
+nanobot/web/dist/
 webui/coverage/
 webui/.vite/
 tui/node_modules/
