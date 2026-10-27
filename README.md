@@ -1,6 +1,6 @@
 > **nanobot-bridge-tg 开发分支**：Telegram 仿真群友迁移目标见 [迁移计划](MIGRATION_PLAN.md)。
-> 本地测试、Docker 构建、GitHub Actions 与手动部署流程见 [CI/CD 使用说明](docs/BRIDGE_CICD.md)。
-> 常用命令：`./scripts/pipeline.sh test`、`./scripts/deploy-local.sh build`、`./scripts/deploy-local.sh status`。
+> 本服务器的测试、Docker 构建和发布流程见 [本机管线说明](docs/LOCAL_PIPELINE.md)。GitHub 仅用于代码版本管理。
+> 一键测试、构建并发布：`./scripts/pipeline.sh release`。查看状态：`./scripts/deploy-local.sh status`。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./images/readme-cover-dark.svg">

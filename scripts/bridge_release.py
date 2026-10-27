@@ -101,6 +101,21 @@ def container_config(config: dict) -> dict:
     return config
 
 
+@contextlib.contextmanager
+def source_snapshot(repo: Path, revision: str):
+    """Build committed bytes even if an editor changes the live checkout."""
+    if not REVISION.fullmatch(revision):
+        raise ValueError("source revision must be a full Git commit")
+    with tempfile.TemporaryDirectory(prefix="nanobot-source-") as scratch:
+        archive_path = Path(scratch) / "source.tar"
+        snapshot = Path(scratch) / "tree"
+        snapshot.mkdir()
+        run(["git", "archive", "--format=tar", "--output", str(archive_path), revision], cwd=repo)
+        with tarfile.open(archive_path) as archive:
+            archive.extractall(snapshot, filter="data")
+        yield snapshot
+
+
 class ReleaseManager:
     def __init__(self, root: Path = DEFAULT_ROOT):
         self.root = root.expanduser().resolve()
@@ -220,8 +235,9 @@ class ReleaseManager:
             return revision
         target.parent.mkdir(parents=True, exist_ok=True)
         image = f"nanobot-bridge-tg:sha-{revision}"
-        run([*self.docker, "build", "-f", str(REPO / "deploy/Dockerfile"),
-             "--build-arg", f"SOURCE_REVISION={revision}", "-t", image, str(REPO)])
+        with source_snapshot(REPO, revision) as snapshot:
+            run([*self.docker, "build", "-f", str(snapshot / "deploy/Dockerfile"),
+                 "--build-arg", f"SOURCE_REVISION={revision}", "-t", image, str(snapshot)])
         with tempfile.TemporaryDirectory(prefix=".build-", dir=target.parent) as scratch:
             staging = Path(scratch)
             cid = output([*self.docker, "create", image])

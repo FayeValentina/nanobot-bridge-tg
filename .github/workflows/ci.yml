@@ -1,33 +1,8 @@
 name: Test Suite
 
+# Local pipeline is authoritative; retained only for optional manual use.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths-ignore:
-      - docs/**
-      - .agent/**
-      - .github/ISSUE_TEMPLATE/**
-      - AGENTS.md
-      - CLAUDE.md
-      - COMMUNICATION.md
-      - CONTRIBUTING.md
-      - README.md
-      - SECURITY.md
-      - webui/README.md
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - docs/**
-      - .agent/**
-      - .github/ISSUE_TEMPLATE/**
-      - AGENTS.md
-      - CLAUDE.md
-      - COMMUNICATION.md
-      - CONTRIBUTING.md
-      - README.md
-      - SECURITY.md
-      - webui/README.md
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -193,14 +168,13 @@ jobs:
       # later uv run sync pruning the packages installed by the previous step.
       - name: Lint with ruff
         if: matrix.coverage
-        run: uv run --no-sync ruff check nanobot tests conftest.py scripts/bridge_release.py scripts/bridge_receive.py deploy/smoke_probe.py
+        run: uv run --no-sync ruff check nanobot tests conftest.py scripts/bridge_release.py deploy/smoke_probe.py
 
       - name: Check deployment shell scripts
         if: matrix.coverage
         run: |
           bash -n scripts/deploy-local.sh
           bash -n scripts/pipeline.sh
-          bash -n scripts/setup-deploy-access.sh
 
       - name: Type check with BasedPyright (strict)
         if: matrix.coverage

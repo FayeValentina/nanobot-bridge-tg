@@ -1,0 +1,122 @@
+# 本机修改、测试、构建、发布与运行
+
+这台服务器同时承担开发构建和运行。GitHub 只保存代码版本；不需要 GitHub Actions、Secrets、部署密钥或镜像仓库。
+新增的云端发布/部署工作流已移除，上游测试入口仅保留为手动可选，不再因 push/PR 自动运行。
+
+## 日常使用
+
+在 `/home/ubuntu/nanobot-bridge-tg` 下执行：
+
+```bash
+./scripts/pipeline.sh setup       # 首次创建 .venv 并安装测试/前端依赖；开发环境独立于当前运行环境
+# 修改代码
+git add <本次修改的文件>
+git commit -m "描述本次修改"
+./scripts/pipeline.sh release     # 检查 → 测试 → 编译 WebUI/wheel → 构建镜像 → 备份 → 部署 → 健康检查
+git push origin main             # 可自行决定何时同步到 GitHub；不是发布前置条件
+```
+
+`release` 要求工作区干净，记录开始时的 Git SHA；测试失败或测试期间 HEAD 改变即中止，不切换运行实例。
+Docker 构建使用该提交的 `git archive` 快照，避免把未提交文件、私有配置或构建期间编辑器的新改动混进产物。
+Python 部分打包为 wheel，WebUI 由前端构建阶段编译并打入 wheel，再安装到运行镜像。
+本流程面向网关/WebUI，不生成原生 TUI 发布安装包。
+
+可以拆开执行：
+
+```bash
+./scripts/pipeline.sh test
+./scripts/deploy-local.sh build
+./scripts/deploy-local.sh smoke <完整 Git SHA>
+./scripts/deploy-local.sh deploy <完整 Git SHA>
+./scripts/deploy-local.sh status
+./scripts/deploy-local.sh logs
+./scripts/deploy-local.sh rollback
+./scripts/deploy-local.sh stop
+```
+
+本地 `test` 覆盖发布脚本、Telegram、上下文、会话策略和触发器回归，以及完整 WebUI lint/test/build。
+修改其他模块时，增加相应模块的测试；需要全量检查时可在开发环境安装相应通道依赖后运行 `pytest` 和 `basedpyright`。
+遵守项目约定，不运行 `ruff format`。
+
+## 本机实例与数据
+
+默认正式实例目录为 `~/.local/share/nanobot-bridge-tg-deploy/`：
+
+```text
+releases/<完整 Git SHA>/
+  release.json           # 源码 SHA、镜像内容 ID、架构、wheel 文件名
+  SHA256SUMS             # 校验发布内容
+  image.tar.gz           # 已构建的镜像；回滚不依赖外部仓库
+  nanobot_ai-*.whl
+shared/data/             # 配置、会话、记忆、媒体
+backups/                 # 切换前的数据快照和历史状态
+state.json               # 当前版本、上一版本
+settings.json            # 此实例的 Compose 项目名与宿主端口
+compose.env              # 非机密的本地 Compose 参数；兼容 sudo 的环境清理
+deploy.lock              # 防止同时执行两个发布/回滚
+```
+
+数据目录、备份、真实 Token 和模型凭据均在 Git 外部，不进入镜像。容器运行用户为非 root，只挂载本实例的 `/data`，不挂载 Docker socket。
+镜像名称由完整 Git SHA 标识，校验镜像内容 ID、架构和 SHA256。相同提交的现有产物会复用并重新冒烟，不用 `latest` 覆盖历史版本。
+新实例的端口只发布到宿主 `127.0.0.1`。容器内服务绑定 `0.0.0.0`，方便 Docker 转发，但不会因此在宿主公开端口。
+
+### 独立验证实例
+
+本次验证使用 `~/.local/share/nanobot-bridge-tg-staging/`，网页 `8766`、健康接口 `18791`。
+它没有真实 Telegram 或模型凭据，不与生产实例竞争 Token。
+
+首次初始化独立实例：
+
+```bash
+export BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging
+export BRIDGE_WEB_PORT=8766
+export BRIDGE_HEALTH_PORT=18791
+./scripts/deploy-local.sh init
+```
+
+端口和项目名首次创建后保存在 `settings.json`。后续可在不设置端口变量时操作同一实例：
+
+```bash
+BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts/pipeline.sh release
+./scripts/deploy-local.sh --root /home/ubuntu/.local/share/nanobot-bridge-tg-staging status
+./scripts/deploy-local.sh --root /home/ubuntu/.local/share/nanobot-bridge-tg-staging rollback
+```
+
+### 正式实例首次切换
+
+现有生产 nanobot 仍由 systemd 启动已安装的 Python 包。源码修改或本地构建不会自动替换它。
+正式切换会造成短暂停机，必须在明确决定切换后执行：
+
+```bash
+./scripts/deploy-local.sh migrate-systemd <已构建的完整 Git SHA>
+```
+
+该操作先验证镜像，随后停止并禁用 `nanobot-gateway.service`，备份并复制 `~/.nanobot` 到独立数据目录，修正容器工作区路径后启动 Docker 实例。
+原始 `~/.nanobot` 不修改、不 chown；迁移失败恢复原服务；第一次迁移后的回滚可回到原 systemd 实例。
+默认要求原工作区位于 `~/.nanobot/workspace`，其他布局需先明确映射。正式实例默认使用 `8765` 和 `18790`，原有 SSH 隧道可以继续使用。
+同一 Telegram Token 只能由一个网关接收更新，不能让开发进程与生产实例同时轮询。
+
+如需全新正式实例而非迁移现有配置，可运行 `init` 后再 `deploy`，进入网页自行配置模型；不要与原服务占用相同端口。
+
+## 失败处理与回滚
+
+- 测试、构建或隔离冒烟失败：不停止正在运行的实例。
+- 发布时先停止本实例，再备份数据，启动新容器；健康验证失败会恢复旧数据并重新启动旧容器。
+- 手动 `rollback` 同时恢复旧版本和它对应的数据快照。升级后的新数据会被回退，因此仍保留 `failed-data-*` 目录供人工检查。
+- 如果创建备份失败，恢复当前容器，不继续升级/回滚。
+- 锁防止重复发布；失败版本数据与历史镜像不会自动删除。确认不需回滚后再清理旧产物与备份。
+- `logs` 会遮蔽配置中的已知凭据与 Telegram Token；不要把原始配置或备份上传到 GitHub。
+
+## 环境与验证范围
+
+需要 Python、uv、Git、Node/npm、Docker Engine、Compose v2、Buildx。用户需能运行 Docker，或已有 `sudo -n docker` 权限。
+脚本优先尝试普通 Docker，必要时使用现有 sudo 权限；不会自动把用户加入 Docker 组。
+
+构建镜像已预装 Telegram 通道依赖。未来增加 ffmpeg 等系统依赖时修改 `deploy/Dockerfile`，重新构建即可，不在运行容器中手动修改。
+
+- 单元测试验证产物损坏、备份失败、升级失败、回滚失败、实例隔离、源码快照和 sudo 参数传递。
+- 隔离冒烟使用新配置和 `--network none`，验证 wheel 导入、Telegram 依赖、网页、登录认证与健康状态，不调用模型。
+- 独立测试实例已验证真实升级、手动回滚，以及通过预检后故意失败的升级能自动恢复旧容器和数据。
+- 正式切换前继续使用现有生产实例。模型与 Telegram 的最终业务体验由管理员发送测试消息确认，管线不会向真实群自动发送测试消息。
+
+本次仅搭建本机开发发布基础设施，`MIGRATION_PLAN.md` 中的仿真功能尚未开始实现。

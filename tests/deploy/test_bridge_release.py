@@ -1,6 +1,5 @@
 """Deployment integrity and failed-upgrade recovery, without Docker or credentials."""
 
-import io
 import json
 import tarfile
 from pathlib import Path
@@ -9,7 +8,6 @@ import pytest
 
 pytest.importorskip("fcntl", reason="local deployment scripts target Linux")
 
-from scripts.bridge_receive import unpack
 from scripts.bridge_release import (
     ReleaseManager,
     container_config,
@@ -43,34 +41,6 @@ def test_release_detects_changed_image_before_loading(tmp_path):
     (directory / "image.tar.gz").write_bytes(b"tampered")
     with pytest.raises(ValueError, match="integrity"):
         verify_release(directory)
-
-
-@pytest.mark.parametrize("name,kind", [("../config.json", "file"), ("release.json", "symlink"), ("evil.sh", "file")])
-def test_receiver_rejects_unsafe_archive_members(tmp_path, name, kind):
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w") as archive:
-        member = tarfile.TarInfo(name)
-        if kind == "symlink":
-            member.type = tarfile.SYMTYPE
-            member.linkname = "/etc/passwd"
-        archive.addfile(member)
-    stream.seek(0)
-    with pytest.raises(ValueError):
-        unpack(stream, tmp_path)
-
-
-def test_receiver_accepts_only_a_complete_verified_bundle(tmp_path):
-    source = release(tmp_path, OLD)
-    target = tmp_path / "incoming"
-    target.mkdir()
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w") as archive:
-        for path in source.iterdir():
-            archive.add(path, arcname=path.name)
-    stream.seek(0)
-    unpack(stream, target)
-    assert verify_release(target)["revision"] == OLD
-
 
 def test_container_config_preserves_credentials_and_source_values():
     config = {"providers": {"deepseek": {"apiKey": "private"}},
@@ -143,11 +113,11 @@ def test_release_export_roundtrip(tmp_path):
     instance = manager(tmp_path)
     bundle = tmp_path / "release.tar"
     instance.export(OLD, bundle)
-    target = tmp_path / "received"
-    target.mkdir()
-    with bundle.open("rb") as stream:
-        unpack(stream, target)
-    assert json.loads((target / "release.json").read_text())["revision"] == OLD
+    with tarfile.open(bundle) as archive:
+        assert set(archive.getnames()) == {
+            "release.json", "SHA256SUMS", "image.tar.gz", "nanobot_ai-0.3.5-py3-none-any.whl",
+        }
+        assert json.load(archive.extractfile("release.json"))["revision"] == OLD
 
 
 def test_snapshot_failure_restarts_previous_release(tmp_path, monkeypatch):
@@ -222,3 +192,32 @@ def test_snapshot_failure_during_rollback_restarts_current_release(tmp_path, mon
         instance.rollback()
     assert instance.state()["current"] == NEW
     assert (NEW, ("up", "-d", "--no-deps", "gateway")) in instance.calls
+
+
+def test_build_snapshot_uses_only_the_selected_commit(tmp_path):
+    import subprocess
+
+    from scripts.bridge_release import source_snapshot
+
+    repo = tmp_path / "source"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=repo, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    git("init", "--quiet")
+    (repo / "app.py").write_text("committed code")
+    git("add", "app.py")
+    git("-c", "user.name=Release Test", "-c", "user.email=test@example.invalid",
+        "commit", "--quiet", "-m", "fixture")
+    revision = git("rev-parse", "HEAD")
+    (repo / "app.py").write_text("uncommitted edit")
+    (repo / "private.env").write_text("untracked secret")
+    with source_snapshot(repo, revision) as snapshot:
+        assert (snapshot / "app.py").read_text() == "committed code"
+        assert not (snapshot / "private.env").exists()
+        (repo / "app.py").write_text("another concurrent edit")
+        assert (snapshot / "app.py").read_text() == "committed code"
+    assert not snapshot.exists()
