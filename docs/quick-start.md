@@ -32,7 +32,7 @@ irm https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.ps1 | i
 
 The installer chooses an active virtual environment, `uv`, `pipx`, or a managed environment under `~/.nanobot/venv`. It installs the stable PyPI release. At the end it prints the exact command it used to run nanobot; if `nanobot` is not on `PATH`, reuse that full command in the examples below.
 
-If you prefer to inspect the scripts first, open [`install.sh`](../scripts/install.sh) or [`install.ps1`](../scripts/install.ps1).
+These commands install the upstream PyPI release. This fork uses the [local release pipeline](./LOCAL_PIPELINE.md). To inspect the upstream installers, open [install.sh](https://github.com/HKUDS/nanobot/blob/main/scripts/install.sh) or [install.ps1](https://github.com/HKUDS/nanobot/blob/main/scripts/install.ps1).
 
 ## 2. Configure Your Model
 

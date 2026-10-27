@@ -1,5 +1,8 @@
 # Release checklist
 
+This checklist describes upstream public releases. This fork deploys locally using
+[LOCAL_PIPELINE.md](./LOCAL_PIPELINE.md) and does not include the upstream platform wheel packager.
+
 Use this checklist with the [Release Packaging Contract](../CONTRIBUTING.md#release-packaging-contract).
 Preparing a release does not publish it. Pushing a Git tag, publishing a GitHub Release,
 uploading to PyPI, and deploying the documentation are separate operations.
@@ -69,16 +72,11 @@ Do not include local configuration, instance backups, or test environments in up
 
 ### Build the PyPI platform wheels
 
-From the exact release checkout, after `uv build` and the native archive checks:
+For upstream public releases, use the [upstream platform wheel packager](https://github.com/HKUDS/nanobot/blob/v0.3.5/scripts/build_tui_wheels.py)
+from its matching upstream checkout after `uv build` and the native archive checks.
+The script is not included in this fork; local Docker releases do not build platform TUI wheels.
 
-```bash
-uv run python -m scripts.build_tui_wheels \
-  --wheel <intermediates>/nanobot_ai-X.Y.Z-py3-none-any.whl \
-  --tui-dir <verified-tui-archives> \
-  --out-dir <final-wheels>
-```
-
-The script verifies the Python version and RECORD, native checksums, architecture, notices and
+The upstream script verifies the Python version and RECORD, native checksums, architecture, notices and
 embedded source against the checkout, then writes five wheels with complete TUI bundles and
 regenerated RECORDs. It refuses to overwrite an existing candidate. `--target <target>` builds
 one platform for a targeted check. Minimum tags are macOS 13, manylinux glibc 2.17 and Windows

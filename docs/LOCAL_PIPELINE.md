@@ -30,6 +30,10 @@ Docker 构建使用该提交的 `git archive` 快照，避免把未提交文件�
 Python 部分打包为 wheel，WebUI 由前端构建阶段编译并打入 wheel，再安装到运行镜像。
 本流程面向网关/WebUI，不生成原生 TUI 发布安装包。
 
+`scripts/` 仅保留本机管线入口 `pipeline.sh`、部署入口 `deploy-local.sh`、发布实现 `bridge_release.py`，
+以及开发环境和 Docker 构建必需的 `install_channel_dependencies.py`。
+上游的通用安装脚本、TUI 平台 wheel 打包器和贡献者列表更新脚本已移除。
+
 可以拆开执行：
 
 ```bash

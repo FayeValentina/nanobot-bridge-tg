@@ -116,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.ps1))) --dry-run
 ```
 
-If you prefer to inspect the script first, open [`scripts/install.sh`](./scripts/install.sh) or [`scripts/install.ps1`](./scripts/install.ps1).
+These installers install the upstream PyPI release. This fork uses the [local release pipeline](./docs/LOCAL_PIPELINE.md). To inspect the upstream installers, open [install.sh](https://github.com/HKUDS/nanobot/blob/main/scripts/install.sh) or [install.ps1](https://github.com/HKUDS/nanobot/blob/main/scripts/install.ps1).
 
 **Install with `uv`**
 

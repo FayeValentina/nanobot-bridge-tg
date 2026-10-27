@@ -157,8 +157,10 @@ this order:
 
 Each platform wheel contains the built WebUI and the matching native TUI. Pip chooses the wheel
 for the user's machine; launching the installed TUI must work without a GitHub download or Bun.
-The universal wheel produced by `uv build` is only an intermediate: use
-`scripts/build_tui_wheels.py` as described in the checklist, and do not upload that intermediate.
+For upstream public releases, the universal wheel produced by `uv build` is only an intermediate:
+use the [upstream platform wheel packager](https://github.com/HKUDS/nanobot/blob/v0.3.5/scripts/build_tui_wheels.py)
+as described in the checklist, and do not upload that intermediate. This fork omits that packager
+and uses the [local Docker release pipeline](./docs/LOCAL_PIPELINE.md), which installs its wheel inside the image.
 The source distribution remains platform-neutral and does not bundle native binaries.
 Keep the platform-specific release archives for fallback/source-built installations. Both the
 wheel's `nanobot/tui/bin/` bundle and its matching archive must contain the executable,
