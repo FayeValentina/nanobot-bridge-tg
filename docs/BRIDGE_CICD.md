@@ -57,6 +57,17 @@ PR 的测试结果不能触发发布；部署只接受同仓库、主分支、�
 ./scripts/deploy-local.sh deploy <完整 Git SHA>
 ```
 
+独立验证实例使用独立数据目录、Compose 项目和端口；首次创建时指定，随后会记录到该实例的 `settings.json`：
+
+```bash
+export BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging
+export BRIDGE_WEB_PORT=8766
+export BRIDGE_HEALTH_PORT=18791
+./scripts/deploy-local.sh init
+```
+
+测试实例应保持 Telegram 关闭并使用独立模型配置。运行结束可用同一 `BRIDGE_DEPLOY_ROOT` 执行 `stop`。
+
 从本机已有的 systemd nanobot 迁移：
 
 ```bash

@@ -177,3 +177,13 @@ def test_failed_explicit_rollback_recovers_current_release(tmp_path, monkeypatch
     assert instance.state()["current"] == NEW
     assert (instance.data / "application-state").read_text() == "candidate changed data"
     assert (NEW, ("up", "-d", "--no-deps", "gateway")) in instance.calls
+
+
+def test_separate_roots_have_separate_projects_and_persist_ports(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRIDGE_WEB_PORT", "8766")
+    first = ReleaseManager(tmp_path / "first")
+    monkeypatch.setenv("BRIDGE_WEB_PORT", "8767")
+    second = ReleaseManager(tmp_path / "second")
+    assert first.settings["project"] != second.settings["project"]
+    assert ReleaseManager(tmp_path / "first").settings["web_port"] == 8766
+    assert second.settings["web_port"] == 8767

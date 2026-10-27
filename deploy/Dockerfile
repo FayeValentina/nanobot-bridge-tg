@@ -23,10 +23,6 @@ RUN uv pip install --python /opt/venv/bin/python pip && \
     uv pip check --python /opt/venv/bin/python
 
 FROM python:3.11-slim-bookworm AS runtime
-ARG SOURCE_REVISION=unknown
-LABEL org.opencontainers.image.title="nanobot-bridge-tg" \
-      org.opencontainers.image.source="https://github.com/FayeValentina/nanobot-bridge-tg" \
-      org.opencontainers.image.revision=$SOURCE_REVISION
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --gid 1001 nanobot && \
@@ -38,6 +34,10 @@ COPY deploy/smoke_probe.py /opt/smoke_probe.py
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /home/nanobot
 USER 1001:1001
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.title="nanobot-bridge-tg" \
+      org.opencontainers.image.source="https://github.com/FayeValentina/nanobot-bridge-tg" \
+      org.opencontainers.image.revision=$SOURCE_REVISION
 EXPOSE 8765 18790
 HEALTHCHECK --interval=5s --timeout=5s --start-period=20s --retries=6 \
   CMD ["python", "/opt/smoke_probe.py", "--health-only"]

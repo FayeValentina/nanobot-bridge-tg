@@ -111,6 +111,18 @@ class ReleaseManager:
         self.data = self.root / "shared/data"
         self.state_path = self.root / "state.json"
         self._docker_prefix: list[str] | None = None
+        settings_path = self.root / "settings.json"
+        if not settings_path.exists():
+            suffix = hashlib.sha256(str(self.root).encode()).hexdigest()[:8]
+            settings = {
+                "project": "nanobot-bridge-tg" if self.root == DEFAULT_ROOT.resolve() else f"nanobot-bridge-tg-{suffix}",
+                "web_port": int(os.environ.get("BRIDGE_WEB_PORT", "8765")),
+                "health_port": int(os.environ.get("BRIDGE_HEALTH_PORT", "18790")),
+            }
+            if not all(1 <= settings[key] <= 65535 for key in ("web_port", "health_port")):
+                raise ValueError("invalid host port")
+            write_json(settings_path, settings)
+        self.settings = json.loads(settings_path.read_text())
 
     @contextlib.contextmanager
     def lock(self):
@@ -158,9 +170,11 @@ class ReleaseManager:
     def _compose(self, revision: str, *args: str) -> str:
         _, metadata = self.release(revision)
         env = dict(os.environ, BRIDGE_IMAGE=metadata["image"], BRIDGE_DATA_DIR=str(self.data),
-                   BRIDGE_UID=str(os.getuid()), BRIDGE_GID=str(os.getgid()))
+                   BRIDGE_UID=str(os.getuid()), BRIDGE_GID=str(os.getgid()),
+                   BRIDGE_WEB_PORT=str(self.settings["web_port"]),
+                   BRIDGE_HEALTH_PORT=str(self.settings["health_port"]))
         return output([
-            *self.docker, "compose", "--env-file", "/dev/null", "--project-name", "nanobot-bridge-tg",
+            *self.docker, "compose", "--env-file", "/dev/null", "--project-name", self.settings["project"],
             "-f", str(REPO / "deploy/compose.local.yml"), *args,
         ], env=env)
 
