@@ -208,3 +208,17 @@ def test_sudo_compose_receives_an_explicit_non_secret_env_file(tmp_path, monkeyp
     monkeypatch.setattr(bridge_release, "output", capture)
     assert instance._compose(OLD, "config", "--quiet") == "validated"
     assert calls[0][:3] == ["sudo", "-n", "docker"]
+
+
+def test_snapshot_failure_during_rollback_restarts_current_release(tmp_path, monkeypatch):
+    instance = manager(tmp_path)
+    instance.deploy(NEW)
+
+    def fail_backup(_state):
+        raise OSError("backup disk full")
+
+    monkeypatch.setattr(instance, "_backup", fail_backup)
+    with pytest.raises(OSError, match="disk full"):
+        instance.rollback()
+    assert instance.state()["current"] == NEW
+    assert (NEW, ("up", "-d", "--no-deps", "gateway")) in instance.calls

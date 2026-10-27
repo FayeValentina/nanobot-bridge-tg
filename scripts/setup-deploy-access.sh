@@ -14,7 +14,7 @@ touch "$HOME/.ssh/authorized_keys"
 chmod 700 "$HOME/.ssh"
 chmod 600 "$HOME/.ssh/authorized_keys"
 if ! grep -Fqx -- "$authorized_line" "$HOME/.ssh/authorized_keys"; then
-  printf '%s\n' "$authorized_line" >> "$HOME/.ssh/authorized_keys"
+  printf '\n%s\n' "$authorized_line" >> "$HOME/.ssh/authorized_keys"
 fi
 printf 'Deployment-only private key saved to: %s\n' "$key_dir/github-actions"
 printf 'Add its contents to the GitHub production environment secret DEPLOY_SSH_KEY.\n'

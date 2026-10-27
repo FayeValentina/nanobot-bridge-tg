@@ -357,8 +357,9 @@ class ReleaseManager:
         if self.root / "backups" not in backup.parents:
             raise ValueError("invalid backup path")
         self._compose(state["current"], "down")
-        safety = self._backup(state)
+        safety = None
         try:
+            safety = self._backup(state)
             if previous["kind"] == "systemd":
                 unit = Path.home() / ".config/systemd/user/nanobot-gateway.service"
                 shutil.copy2(backup / "nanobot-gateway.service", unit)
@@ -378,7 +379,8 @@ class ReleaseManager:
             if previous["kind"] == "systemd":
                 run(["systemctl", "--user", "stop", "nanobot-gateway.service"])
                 run(["systemctl", "--user", "disable", "nanobot-gateway.service"])
-            self._restore(safety)
+            if safety:
+                self._restore(safety)
             self._compose(state["current"], "up", "-d", "--no-deps", "gateway")
             self._wait(state["current"])
             raise
