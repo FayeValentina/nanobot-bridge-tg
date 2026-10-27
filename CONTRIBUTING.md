@@ -122,24 +122,17 @@ In practice:
   separate formatting-only PR.
 - If a new abstraction is introduced, it should clearly reduce complexity rather than move it around
 
-## Modifying CI Workflows
+## Local Validation and Deployment
 
-If your PR touches `.github/workflows/`, please keep the CI within
-GitHub Actions' free tier:
-
-- Use only standard GitHub-hosted runners (`ubuntu-latest`, `windows-latest`)
-- Avoid macOS runners, larger runners (`*-cores`, `*-xlarge`, `*-gpu`),
-  and self-hosted runners
-- Avoid uploading large artifacts or using long retention
-- Avoid paid Marketplace actions
-
-If your change genuinely needs to step outside this, please call it out
-explicitly in the PR description so it can be discussed before merge.
+This fork uses GitHub for version control. Run `./scripts/pipeline.sh test` locally,
+then commit changes and run `./scripts/pipeline.sh release` to build and deploy.
+See the [local pipeline guide](./docs/LOCAL_PIPELINE.md) for checks, backups, and rollback.
 
 ## Release Packaging Contract
 
-Use the [release checklist](./docs/releasing.md) for candidate preparation, package checks,
-documentation coordination, and the final publication handoff.
+The following describes upstream public releases. The local server uses the pipeline above.
+For upstream candidate preparation and publication, refer to the
+[upstream release checklist](https://github.com/HKUDS/nanobot/blob/v0.3.5/docs/releasing.md).
 
 A stable install must never combine Python from one version with a TUI from another. Publish in
 this order:
@@ -183,7 +176,6 @@ If you have questions, ideas, or half-formed insights, you are warmly welcome he
 Please feel free to open an [issue](https://github.com/HKUDS/nanobot/issues), join the community, or simply reach out:
 
 - [Discord](https://discord.gg/MnCvHqpUGB)
-- [Feishu/WeChat](./COMMUNICATION.md)
 - Email: Xubin Ren (@Re-bin) — <xubinrencs@gmail.com>
 
 Thank you for spending your time and care on nanobot. We would love for more people to participate in this community, and we genuinely welcome contributions of all sizes.

@@ -24,15 +24,13 @@
     <a href="https://github.com/HKUDS/nanobot"><img src="https://img.shields.io/github/stars/HKUDS/nanobot?style=flat&logo=github" alt="GitHub stars"></a>
     <a href="https://pypi.org/project/nanobot-ai/"><img src="https://img.shields.io/pypi/v/nanobot-ai" alt="PyPI version"></a>
     <a href="https://pepy.tech/project/nanobot-ai"><img src="https://static.pepy.tech/badge/nanobot-ai" alt="PyPI downloads"></a>
-    <a href="https://github.com/HKUDS/nanobot/actions/workflows/ci.yml"><img src="https://github.com/HKUDS/nanobot/actions/workflows/ci.yml/badge.svg?branch=main" alt="Test Suite"></a>
     <a href="https://pypi.org/project/nanobot-ai/"><img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11 or newer"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/github/license/HKUDS/nanobot" alt="MIT License"></a>
     <a href="https://nanobot.wiki/docs/latest/getting-started/nanobot-overview"><img src="https://img.shields.io/badge/docs-nanobot.wiki-blue" alt="nanobot documentation"></a>
   </p>
   <p>
     <a href="https://discord.gg/MnCvHqpUGB">Discord</a> ·
-    <a href="https://x.com/nanobot_project">X</a> ·
-    <a href="./COMMUNICATION.md">WeChat / Feishu</a>
+    <a href="https://x.com/nanobot_project">X</a>
   </p>
 </div>
 
@@ -249,21 +247,12 @@ If nanobot worked for you, a star on GitHub is the simplest way to support the p
 - Want to run nanobot in chat apps like Telegram, Discord, WeChat or Feishu? See [Chat Apps](./docs/chat-apps.md)
 - Want Docker or Linux service deployment? See [Deployment](./docs/deployment.md)
 
-<a id="deploy-to-render"></a>
-
 ## ☁️ Deploy
 
-**Render — one click**
-
-Deploy nanobot's gateway and bundled WebUI from the repository's ready-to-use Blueprint:
-
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/HKUDS/nanobot)
-
-Render will ask for `ANTHROPIC_API_KEY` and a private `NANOBOT_WEB_TOKEN`, then provision persistent storage for sessions, memory, and WebUI history. Persistent disks require a paid Render service.
-
-**Self-host**
-
-Prefer your own infrastructure? Follow the [deployment guide](./docs/deployment.md) for Docker, Docker Compose, Linux services, and macOS LaunchAgent setup.
+This fork builds and runs on the local server. After committing changes, run
+`./scripts/pipeline.sh release` to test, build, back up data, deploy, and check health.
+Use `./scripts/deploy-local.sh status`, `logs`, or `rollback` to manage the instance.
+See the [local pipeline guide](./docs/LOCAL_PIPELINE.md) for configuration and recovery.
 
 ## 🌐 WebUI
 
@@ -377,7 +366,7 @@ The Agency Release turns nanobot from a durable workbench into an agent runtime 
 - **2026-08-19** 🔗 Session mentions let agents read and message other saved conversations.
 - **2026-08-12** 🖥️ A WebUI workbench with grouped conversation panes and adjustable layouts.
 
-For older updates, see the [release archive](./docs/release-archive.md) or [GitHub releases](https://github.com/HKUDS/nanobot/releases).
+For older upstream updates, see [GitHub releases](https://github.com/HKUDS/nanobot/releases).
 
 ## Open Source Partners
 
