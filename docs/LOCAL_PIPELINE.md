@@ -20,6 +20,16 @@ GitHub Actions 工作流和社区 Issue 模板已移除，所有测试、构建�
 
 ## 当前生产状态
 
+2026-10-28 当前实际实例已更新为 `ec17165b7a8593220eb7ccfd9df7bc2f4cdb0474`，
+包含 M0–M3 首批和群流式延迟修复。正式 release 通过后端 630 项、provider 适配 116 项、
+前端 1553 项及 lint/build，容器 healthy、Telegram 已连接。
+social 已按本人要求启用，既有配置、群/话题授权和角色与发布前备份完全一致。
+实际 social 库已从 schema 2 升级至 3，完整性、水位及运行人格/工具配置检查通过。
+上一版本 `3e2f50ba` 和数据备份 `backups/1793176258314665672/` 保留，可由原管线回滚。
+范围、限额、媒体降级和验收结果见 [M3 实现说明](M3_IMPLEMENTATION.md)。
+
+以下为此前发布记录：
+
 2026-10-28 当前本人实际使用实例已更新为 `3e2f50ba71d748d63a6e19ce0366e7a4dff9832d`，
 包含 M0–M2 源码与 Telegram 群流式发送延迟修复。容器 healthy，Telegram 已连接，
 现有模型、Bot 和群配置保持不变，social 仍按原配置关闭。
@@ -160,4 +170,4 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 - 独立测试实例已验证真实升级、手动回滚，以及通过预检后故意失败的升级能自动恢复旧容器和数据。
 - 模型与 Telegram 的最终业务体验由管理员发送测试消息确认，管线不会向真实群自动发送测试消息。
 
-本机开发发布基础设施及 `MIGRATION_PLAN.md` 的 M0/M1/M2 源码工作已完成，实验与文字群友验收随 `test` 执行；详见 [M0 验证记录](M0_CONTRACTS.md)、[M1 实现说明](M1_IMPLEMENTATION.md) 和 [M2 实现说明](M2_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色与标准库 SQLite，随既有整实例备份保存，不替换 JSONL 会话。M2 将 social schema 从 1 事务升级到 2；旧版 M1 不接受 schema 2，降级需同时恢复升级前数据备份。本次仅验证临时库迁移，未升级生产数据。实际部署版本以实例 `state.json` 和发布记录为准；仿真默认关闭，尚未连接真实群，M3–M5 尚未开始。
+本机开发发布基础设施及 M0–M3 首批已完成，验收随 `test` 执行；详见 [M0 验证记录](M0_CONTRACTS.md)、[M1 实现说明](M1_IMPLEMENTATION.md)、[M2 实现说明](M2_IMPLEMENTATION.md) 和 [M3 实现说明](M3_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色、SQLite 与有界媒体缓存，随整实例备份保存，不替换 JSONL 会话。M2 引入 schema 2，M3 实际发布已升级到 schema 3；旧程序不接受新版本，降级需同时恢复对应数据备份。软件默认关闭仿真，本人实际实例已显式启用；M4、M5 尚未开始。实际部署版本以实例 `state.json` 和上方发布记录为准。

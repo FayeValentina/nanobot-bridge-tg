@@ -2,7 +2,8 @@
 
 2026-10-28，在 M2 的隔离、调度、预算和平台回执基础上增加按需媒体读取、结构化引用、
 相册关联和当前群/话题的静态贴纸收藏与发送。本批不引入独立服务或媒体转换器。
-部署和最终验收结果在本批发布完成后记录于迁移计划及本机管线说明。
+已发布到本人实际使用实例，版本 `ec17165b7a8593220eb7ccfd9df7bc2f4cdb0474`，
+容器 healthy、Telegram 已连接。social 已启用，配置和角色与发布前备份完全一致。
 
 ## 支持范围
 
@@ -73,6 +74,18 @@ AgentLoop 和本地 Telegram/provider 替身；已纳入本机管线。覆盖旁
 媒体和仿真修改模块严格类型检查为 0 errors / 0 warnings。
 整个 OpenAI 兼容 provider 的类型检查仍有 3 项可选 langfuse 缺依赖错误；
 已对比未修改基线，错误完全相同，本批未安装该无关可选依赖。
+
+| 最终检查 | 结果 |
+| --- | --- |
+| 新增 M3 媒体验收 | 44 项通过，已纳入管线 |
+| 正式 release 后端 / provider 适配 | 630 / 116 项通过 |
+| WebUI | 96 个文件、1553 项通过，lint/build 通过 |
+| Ruff / 补丁空白检查 | 通过 |
+| 实际实例 | 健康、Telegram 已连接，运行人格/工具配置指纹匹配 |
+| 数据与配置 | schema 2→3、quick_check、水位保留通过，配置及角色与备份一致 |
+
+发布前完整备份位于实例目录 `backups/1793176258314665672/`，上一运行版本为 `3e2f50ba`。
+回滚继续使用现有 `./scripts/deploy-local.sh rollback`，同时恢复版本及对应数据。
 
 参考 qq-bridge `src/sticker-lib.js`、`src/media-normalize.js` 的二代行为契约，Python 实现独立重写，
 未打包其角色、媒体素材或凭据；来源为 [qq-bridge a49877f](https://github.com/Derpyu520/qq-bridge/tree/a49877f)，
