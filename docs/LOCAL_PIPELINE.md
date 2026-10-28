@@ -20,6 +20,12 @@ GitHub Actions 工作流和社区 Issue 模板已移除，所有测试、构建�
 
 ## 当前生产状态
 
+2026-10-28 当前本人实际使用实例已更新为 `3e2f50ba71d748d63a6e19ce0366e7a4dff9832d`，
+包含 M0–M2 源码与 Telegram 群流式发送延迟修复。容器 healthy，Telegram 已连接，
+现有模型、Bot 和群配置保持不变，social 仍按原配置关闭。
+原 `fbfe7a3c` 镜像和切换前数据已备份，可由现有管线回滚。
+原因、验证与备份位置见 [Telegram 流式延迟记录](TELEGRAM_STREAM_LATENCY.md)。
+
 2026-10-28 已完成正式迁移，生产运行本地编译的 Docker 镜像，首次版本为 `fbfe7a3cbb014c3a7222d6e1959d65ca64384c30`。
 Telegram、模型和网页登录凭据沿用原配置；网页仍使用宿主 `127.0.0.1:8765`，健康接口为 `127.0.0.1:18790`。
 旧的 uv `nanobot-ai` 安装和 `nanobot-gateway.service` 单元已移除。原始 `~/.nanobot` 和迁移备份保留。
@@ -94,7 +100,7 @@ deploy.lock              # 防止同时执行两个发布/回滚
 
 2026-10-28 已将 M0–M2 的提交 `798d172d54f6ca0ca6386f965d8462605e861e57` 部署到该实例，
 容器 healthy，网页、鉴权和健康检查通过；Telegram、模型和真实测试群按用户选择稍后配置。
-完整镜像、备份与验收记录见 [M2 本机部署记录](M2_DEPLOYMENT.md)。正式实例继续运行原镜像。
+完整镜像、备份与验收记录见 [M2 本机部署记录](M2_DEPLOYMENT.md)。该次部署未切换实际实例；当前实际版本以本页上方记录为准。
 
 本次验证使用 `~/.local/share/nanobot-bridge-tg-staging/`，网页 `8766`、健康接口 `18791`。
 它没有真实 Telegram 或模型凭据，不与生产实例竞争 Token。
