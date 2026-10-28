@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 
 class TelegramSocialTool(Tool):
     _plugin_discoverable = False
-    requires_explicit_allowlist: bool = True
 
     def __init__(self, runtime: TelegramSocialRuntime, name: str) -> None:
         self.runtime = runtime
@@ -27,7 +26,7 @@ class TelegramSocialTool(Tool):
     @property
     def description(self) -> str:
         return {
-            "social_get_state": "Read the current role_id, role_file path inside this runtime, role editing capability, group/topic watermarks and behavior limits.",
+            "social_get_state": "Read the current role_id, role_file path inside this runtime, group/topic watermarks and behavior limits.",
             "social_read_messages": "Read bounded unread/recent messages in the current group/topic.",
             "social_mark_read": "Acknowledge continuously displayed messages through a seq from this turn.",
             "social_send": "Publish a short message here; optional parts adds up to two paced follow-up messages. Each has its own receipt. reply_to must be observed here.",

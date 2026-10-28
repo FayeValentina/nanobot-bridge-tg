@@ -11,6 +11,7 @@ from typing import Any, cast
 from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
+from nanobot.agent.tools.base import ToolResult
 from nanobot.agent.tools.file_state import file_read_context
 from nanobot.agent.tools.registry import ToolRegistry, is_tool_error_result
 from nanobot.providers.base import ToolCallRequest
@@ -120,6 +121,10 @@ async def _execute_tool_call(
     context: AgentHookContext,
     read_results: Callable[[], dict[str, str]],
 ) -> tuple[Any, dict[str, str]]:
+    if context.end_turn is True:
+        return ToolResult.error("Turn ended before this tool call; it was not executed."), {
+            "name": tool_call.name, "status": "error", "detail": "turn already ended",
+        }
     lookup_error = repeated_external_lookup_error(
         tool_call.name,
         tool_call.arguments,

@@ -1,4 +1,4 @@
-"""Offline M1 acceptance: real channel/agent paths with fake providers and API."""
+"""Social observation/delivery acceptance with shared ordinary assistant permissions."""
 
 import asyncio
 import json
@@ -6,7 +6,7 @@ import sqlite3
 import time
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -69,7 +69,7 @@ def message(scope=A, *, seq=1, text="member text", **kwargs):
     )
 
 
-def agent(tmp_path, social, responses):
+def agent(tmp_path, social, responses, *, tools_config=None):
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
     (workspace / "SOUL.md").write_text("PRIVATE SOUL", encoding="utf-8")
@@ -87,6 +87,7 @@ def agent(tmp_path, social, responses):
         session_manager=SessionManager(workspace, sessions_root=tmp_path / "sessions"),
         session_policy_resolver=social.policy_for_session, request_admission=social.admit_request,
         hook_factories=[social.hook_factory], tool_registry=tools,
+        tools_config=tools_config,
     )
     loop.context.memory.write_memory("PRIVATE LONG TERM MEMORY")
     return loop
@@ -149,19 +150,25 @@ async def test_plain_messages_are_observed_without_llm_or_media_download(tmp_pat
 
 
 @pytest.mark.parametrize("command", ["/start", "/help", "/dream@bot", "/new@bot"])
-async def test_social_commands_are_conversation_data_not_management(tmp_path, social, command):
+async def test_social_commands_use_ordinary_handlers_and_sender_authorization(tmp_path, social, command):
     loop = agent(tmp_path, social, [LLMResponse(content="internal")])
-    loop.commands.dispatch = AsyncMock(side_effect=AssertionError("must not run commands"))
+    loop.commands.dispatch = AsyncMock(return_value=None)
     tg = channel(social)
+    tg.config.allow_from = ["123"]
     update = telegram_update(text=command)
+    assert not await tg._observe_social(update)
     if command == "/start":
-        await tg._on_start(update, None)
+        with patch("telegram.Message.reply_text", new_callable=AsyncMock) as reply:
+            await tg._on_start(update, None)
+            reply.assert_awaited_once()
     elif command == "/help":
-        await tg._on_help(update, None)
+        with patch("telegram.Message.reply_text", new_callable=AsyncMock) as reply:
+            await tg._on_help(update, None)
+            reply.assert_awaited_once()
     else:
         await tg._process_forward_command(update, None)
         await loop._dispatch(social.bus.inbound.get_nowait())
-    loop.commands.dispatch.assert_not_awaited()
+        loop.commands.dispatch.assert_awaited_once()
     assert social.bus.outbound.empty()
 
 
@@ -209,7 +216,7 @@ async def test_mentions_and_replies_wake_even_when_group_policy_is_open(tmp_path
     assert social.bus.outbound.empty()
 
 
-async def test_two_groups_have_separate_roles_history_and_private_memory(tmp_path, social):
+async def test_groups_keep_roles_and_history_with_ordinary_profile_and_tools(tmp_path, social):
     loop = agent(tmp_path, social, [LLMResponse(content="internal A"), LLMResponse(content="internal B")])
     await social.observe(message(A, text="ALPHA GROUP SECRET"), directed=False)
     await loop._dispatch(await wake(social, A, seq=2))
@@ -218,9 +225,9 @@ async def test_two_groups_have_separate_roles_history_and_private_memory(tmp_pat
     for call, own, other in ((calls[0], "ALPHA", "BETA"), (calls[1], "BETA", "ALPHA")):
         text = str(call.kwargs["messages"])
         assert f"PERSONA {own}" in text and other not in text
-        assert "PRIVATE SOUL" not in text and "PRIVATE USER" not in text
-        assert "PRIVATE LONG TERM MEMORY" not in text
-        assert {tool["function"]["name"] for tool in call.kwargs["tools"]} == SOCIAL_TOOLS
+        assert "PRIVATE SOUL" in text and "PRIVATE USER" in text
+        assert "PRIVATE LONG TERM MEMORY" in text
+        assert {tool["function"]["name"] for tool in call.kwargs["tools"]} == set(loop.tools.tool_names)
     assert loop.sessions.read_session_file(A.session_key) is not None
     assert loop.sessions.read_session_file(B.session_key) is not None
     assert social.bus.outbound.empty()
@@ -246,19 +253,19 @@ async def test_tool_send_is_scope_checked_confirmed_and_final_is_silent(tmp_path
     assert social.bus.outbound.empty()
 
 
-async def test_forced_exec_and_cross_group_tool_arguments_are_rejected(tmp_path, social):
+async def test_exec_is_available_and_social_send_keeps_its_current_topic_interface(tmp_path, social):
     loop = agent(tmp_path, social, [
         LLMResponse(content=None, tool_calls=[
             ToolCallRequest(id="exec", name="exec", arguments={"command": "forbidden"}),
             ToolCallRequest(id="cross", name="social_send", arguments={"text": "bad", "chat_id": "-1002"}),
         ]), LLMResponse(content="internal"),
     ])
-    forbidden = loop.tools.get("exec")
-    forbidden.execute = AsyncMock(side_effect=AssertionError("must never execute"))
+    command = loop.tools.get("exec")
+    command.execute = AsyncMock(return_value="ordinary command result")
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
     await loop._dispatch(await wake(social))
-    forbidden.execute.assert_not_awaited()
+    command.execute.assert_awaited_once_with(command="forbidden")
     sender.assert_not_awaited()
     assert social.bus.outbound.empty()
 
@@ -287,7 +294,7 @@ async def test_private_chat_keeps_personal_profile_and_normal_reply(tmp_path, so
     request = loop.provider.chat_stream_with_retry.await_args.kwargs
     assert "PRIVATE USER" in str(request["messages"])
     assert "PRIVATE LONG TERM MEMORY" in str(request["messages"])
-    assert {tool["function"]["name"] for tool in request["tools"]}.isdisjoint(SOCIAL_TOOLS)
+    assert {tool["function"]["name"] for tool in request["tools"]} == set(loop.tools.tool_names)
     assert social.bus.outbound.get_nowait().content == "private answer"
 
 
@@ -303,16 +310,16 @@ async def test_persona_source_is_available_in_scoped_state_tool(tmp_path, social
     state = json.loads(result["content"])
     assert state["role_id"] == role_id
     assert state["role_file"] == str((social.roles / f"{role_id}.md").resolve())
-    assert state["can_edit_role"] is False
+    assert state["tool_permissions"] == "shared_with_normal_chat"
     assert "social_get_state for the actual role_id and role_file" in request["messages"][0]["content"]
     names = {tool["function"]["name"] for tool in request["tools"]}
-    assert names == SOCIAL_TOOLS
-    assert "PRIVATE" not in str(request["messages"])
+    assert names == set(loop.tools.tool_names)
+    assert "PRIVATE USER" in str(request["messages"])
     assert social.bus.outbound.empty()
 
 
 @pytest.mark.parametrize("source", ["summary", "failure", "raw", "idle"])
-async def test_group_compaction_never_enters_global_dream_journal(tmp_path, social, source):
+async def test_group_compaction_uses_ordinary_memory_archiving(tmp_path, social, source):
     loop = agent(tmp_path, social, [
         LLMResponse(content=None, finish_reason="error") if source == "failure"
         else LLMResponse(content="GROUP CHECKPOINT"),
@@ -333,21 +340,21 @@ async def test_group_compaction_never_enters_global_dream_journal(tmp_path, soci
             session, archive_end=len(session.messages), runtime=loop.llm_runtime(),
         )
     assert summary
-    assert not loop.context.memory.history_file.exists()
+    assert loop.context.memory.history_file.exists()
     if source != "raw":
         prompts = str(loop.provider.chat_stream_with_retry.await_args.kwargs["messages"])
         assert "PERSONA ALPHA" in prompts
-        assert "PRIVATE" not in prompts
+        assert "PRIVATE USER" in prompts
 
 
-def test_persona_survives_context_rebuild_without_bootstrap_files(tmp_path, social):
+def test_persona_survives_rebuild_with_the_common_profile_and_memory(tmp_path, social):
     loop = agent(tmp_path, social, [])
     policy = loop.sessions.get_or_create(A.session_key).policy
     builder = ContextBuilder(loop.workspace)
     def build(transcript):
         return builder.build_transcript(
-            transcript, include_profile=False, include_memory=False,
-            include_skills=False, trusted_persona=policy.persona,
+            transcript, include_profile=policy.include_profile, include_memory=policy.include_memory,
+            include_skills=policy.include_skills, trusted_persona=policy.persona,
         )
     _, state = ContextCompactionState.from_transcript(
         TranscriptInput(history=[], current_message="group snapshot"), build, AsyncMock(), None,
@@ -355,35 +362,35 @@ def test_persona_survives_context_rebuild_without_bootstrap_files(tmp_path, soci
     rebuilt = ContextGovernor._summary_transcript(state, "GROUP CHECKPOINT")
     assert "PERSONA ALPHA" in rebuilt[0]["content"]
     assert "GROUP CHECKPOINT" in rebuilt[0]["content"]
-    assert "PRIVATE" not in str(rebuilt)
+    assert "PRIVATE USER" in str(rebuilt)
 
 
-def test_token_estimation_uses_the_same_tool_allowlist(tmp_path, social, monkeypatch):
+def test_token_estimation_uses_the_common_tool_registry(tmp_path, social, monkeypatch):
     loop = agent(tmp_path, social, [])
     session = loop.sessions.get_or_create(A.session_key)
     estimate = MagicMock(return_value=(100, "offline"))
     monkeypatch.setattr("nanobot.agent.memory.estimate_prompt_tokens_chain", estimate)
     loop.consolidator.estimate_session_prompt_tokens(session, runtime=loop.llm_runtime())
     tools = estimate.call_args.args[3]
-    assert {tool["function"]["name"] for tool in tools} == SOCIAL_TOOLS
+    assert {tool["function"]["name"] for tool in tools} == set(loop.tools.tool_names)
 
 
-async def test_restart_restores_isolation_and_missing_runtime_fails_closed(tmp_path, social):
+async def test_restart_restores_common_permissions_and_current_role(tmp_path, social):
     loop = agent(tmp_path, social, [])
     session = loop.sessions.get_or_create(A.session_key)
     session.add_message("user", "GROUP HISTORY")
     loop.sessions.save(session)
     restored = SessionManager(loop.workspace, sessions_root=tmp_path / "sessions")
     closed = restored.get_or_create(A.session_key)
-    assert closed.metadata[ISOLATED_CONTEXT_KEY] is True
-    assert not closed.policy.enabled and not closed.policy.archive_memory
+    assert ISOLATED_CONTEXT_KEY not in closed.metadata
+    assert closed.policy.enabled and closed.policy.archive_memory
     restored.set_policy_resolver(social.policy_for_session)
     opened = restored.get_or_create(A.session_key)
     assert opened.policy.enabled and opened.policy.persona == session.policy.persona
     assert opened.get_history()[0]["content"] == "GROUP HISTORY"
 
 
-async def test_role_switch_invalidates_old_turn_and_preserves_raw_history(tmp_path, social):
+async def test_role_edit_can_be_confirmed_in_the_same_turn_and_reloads_next_turn(tmp_path, social):
     loop = agent(tmp_path, social, [])
     session = loop.sessions.get_or_create(A.session_key)
     session.add_message("user", "older role conversation")
@@ -392,25 +399,25 @@ async def test_role_switch_invalidates_old_turn_and_preserves_raw_history(tmp_pa
     (social.roles / "a.md").write_text("NEW PERSONA", encoding="utf-8")
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
-    with pytest.raises(PermissionError):
-        await social.send(ctx, "must not send", None)
+    assert (await social.send(ctx, "role updated", None))["status"] == "sent"
     changed = loop.sessions.get_or_create(A.session_key)
     assert changed.get_history() == []
     assert changed.messages[0]["content"] == "older role conversation"
     assert "NEW PERSONA" in changed.policy.persona
-    sender.assert_not_awaited()
+    sender.assert_awaited_once_with(A, "role updated", None)
 
 
-async def test_revocation_and_missing_role_prevent_model_calls(tmp_path, social):
-    loop = agent(tmp_path, social, [])
+async def test_missing_role_keeps_common_tools_available_to_repair_it(tmp_path, social):
+    loop = agent(tmp_path, social, [LLMResponse(content="internal")])
     inbound = await wake(social)
     (social.roles / "a.md").unlink()
     await loop._dispatch(inbound)
-    loop.provider.chat_stream_with_retry.assert_not_awaited()
+    loop.provider.chat_stream_with_retry.assert_awaited_once()
+    assert "write_file" in {t["function"]["name"] for t in loop.provider.chat_stream_with_retry.call_args.kwargs["tools"]}
     assert social.bus.outbound.empty()
 
 
-async def test_disable_restores_ordinary_routing_without_archiving_group_history(tmp_path, social):
+async def test_disable_restores_ordinary_routing_and_common_context(tmp_path, social):
     loop = agent(tmp_path, social, [LLMResponse(content="ordinary answer")])
     loop.sessions.get_or_create(A.session_key)
     social.configure(social.config.model_copy(update={"enabled": False}))
@@ -419,7 +426,7 @@ async def test_disable_restores_ordinary_routing_without_archiving_group_history
         session_key_override=A.session_key, metadata={"message_thread_id": 42},
     ))
     assert social.bus.outbound.get_nowait().content == "ordinary answer"
-    assert "PRIVATE" not in str(loop.provider.chat_stream_with_retry.await_args.kwargs["messages"])
+    assert "PRIVATE USER" in str(loop.provider.chat_stream_with_retry.await_args.kwargs["messages"])
 
 
 async def test_untrusted_wake_cannot_bypass_authorized_job(tmp_path, social):
@@ -566,12 +573,12 @@ async def test_budget_configuration_change_invalidates_an_admitted_turn(social):
     social.config.max_sends_per_hour = 1
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
-    with pytest.raises(PermissionError, match="configuration changed"):
+    with pytest.raises(PermissionError):
         await social.send(ctx, "old turn", None)
     sender.assert_not_awaited()
 
 
-async def test_private_skills_and_runtime_providers_are_not_loaded(tmp_path, social):
+async def test_skills_and_runtime_providers_are_loaded_as_in_normal_chat(tmp_path, social):
     loop = agent(tmp_path, social, [LLMResponse(content="internal")])
     skill = loop.workspace / "skills" / "private"
     skill.mkdir(parents=True)
@@ -581,8 +588,9 @@ async def test_private_skills_and_runtime_providers_are_not_loaded(tmp_path, soc
     provider = AsyncMock(return_value=RuntimeContextBlock(source="private", content="PRIVATE RUNTIME DATA"))
     loop.register_runtime_context_provider(provider)
     await loop._dispatch(await wake(social, text="@bot use $private"))
-    assert "PRIVATE" not in str(loop.provider.chat_stream_with_retry.await_args.kwargs["messages"])
-    provider.assert_not_awaited()
+    assert "PRIVATE RUNTIME DATA" in str(loop.provider.chat_stream_with_retry.await_args.kwargs["messages"])
+    assert "PRIVATE SKILL" in str(loop.provider.chat_stream_with_retry.await_args.kwargs["messages"])
+    provider.assert_awaited()
 
 
 def test_new_runtime_drops_opaque_inflight_state_without_losing_committed_history(tmp_path, social):
@@ -740,7 +748,7 @@ def test_webui_saves_typed_social_config_and_rejects_invalid_authorization():
 
 
 @pytest.mark.parametrize("unified", [False, True])
-def test_personal_heartbeat_cannot_choose_a_social_group(social, unified):
+def test_personal_heartbeat_can_choose_a_social_group(social, unified):
     from nanobot.cli.gateway_runtime import _pick_heartbeat_target_from_sessions
     from nanobot.session.keys import UNIFIED_SESSION_KEY, remember_last_channel
 
@@ -752,18 +760,18 @@ def test_personal_heartbeat_cannot_choose_a_social_group(social, unified):
         unified_session_metadata=metadata,
         target_allowed=social.allows_personal_delivery,
     )
-    assert target == ("telegram", "123")
+    assert target == ("telegram", str(A.chat_id) if unified else f"{A.chat_id}:topic:{A.thread_id}")
 
 
-async def test_alternate_session_cannot_execute_personal_context_in_social_group(tmp_path, social):
-    loop = agent(tmp_path, social, [])
-    with pytest.raises(PermissionError):
-        await loop._process_message(InboundMessage(
+async def test_background_sessions_keep_ordinary_permissions_for_social_targets(tmp_path, social):
+    loop = agent(tmp_path, social, [LLMResponse(content="background response")])
+    await loop._process_message(InboundMessage(
             channel="telegram", sender_id="background", chat_id=str(A.chat_id),
             content="personal background task", session_key_override="heartbeat",
             metadata={"message_thread_id": 42},
-        ))
-    loop.provider.chat_stream_with_retry.assert_not_awaited()
+    ))
+    loop.provider.chat_stream_with_retry.assert_awaited_once()
+    assert "PRIVATE USER" in str(loop.provider.chat_stream_with_retry.call_args.kwargs["messages"])
 
 
 def test_tools_require_current_request_and_do_not_import_telegram_sdk():

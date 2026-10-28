@@ -10,6 +10,14 @@ This file provides guidance to AI coding agents working with this repository.
 - Documentation-only changes, including recording this preference, do not need a runtime rebuild or deployment. Do not remove application permissions or data isolation merely to simplify the release workflow.
 - Current deployment instructions: [`docs/LOCAL_PIPELINE.md`](docs/LOCAL_PIPELINE.md). This owner-confirmed workflow supersedes older requirements in migration or deployment records to validate in a separate instance/group first.
 
+## Owner's shared-tool behavior (confirmed 2026-10-28)
+
+- The owner explicitly requests identical tool permissions in social and ordinary assistant modes. Do not add a social-only tool allowlist, role editing prohibition, MCP/skill restriction, or ban on ordinary cross-chat/background delivery.
+- Both modes use the ordinary session defaults for enabled tools, profile, skills, memory, archiving and commands. Global tool switches, workspace/sandbox rules and container permissions apply equally.
+- Keep the social role binding and per-conversation history. Social mode differs through message observation, coalescing, explicit public delivery, waking, waiting and sleeping.
+- Ordinary message tools must actually deliver text and attachments to social topics. Social-specific tools remain available in the shared registry; their message/scope/timer operations still require the relevant runtime data.
+- This owner request supersedes the earlier M0–M3 social permission/isolation design. See `docs/SHARED_TOOL_PERMISSIONS.md`; do not reinstate the retired limits while implementing M4/M5.
+
 ## Project Overview
 
 nanobot is a lightweight, open-source AI agent framework written in Python with a React/TypeScript WebUI. It centers around a small agent loop that receives messages from chat channels, invokes an LLM provider, executes tools, and manages session memory.

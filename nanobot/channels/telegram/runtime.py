@@ -7,7 +7,7 @@ import re
 import time
 import unicodedata
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, TypeAlias, TypeVar, cast
@@ -1097,9 +1097,13 @@ class TelegramChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""
+        chat_id, metadata = self._resolve_topic_target(msg.chat_id, msg.metadata)
+        msg = replace(msg, chat_id=chat_id, metadata=metadata)
         if self._social_target(msg.chat_id, msg.metadata):
-            # Only the scope-checked social tool calls the dedicated sender.
-            return
+            # Ordinary message tools retain the same delivery capabilities.
+            # Social mode only suppresses internal progress/stream traffic.
+            if msg.event is not None:
+                return
         app = await self._wait_for_app()
         if app is None:
             self.logger.warning("bot not running")
@@ -1367,6 +1371,7 @@ class TelegramChannel(BaseChannel):
         merge_next: bool = False,
     ) -> None:
         """Stream a rich draft in private chats, then persist the final message."""
+        chat_id, metadata = self._resolve_topic_target(chat_id, metadata or {})
         if self._social_target(chat_id, metadata or {}):
             self._stream_bufs.pop(chat_id, None)
             return
@@ -1826,10 +1831,20 @@ class TelegramChannel(BaseChannel):
                 return [], [f"[{media_type}: download failed]"]
             return [], []
 
+    def _resolve_topic_target(self, chat_id: str, metadata: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Resolve the canonical topic chat IDs used by ordinary background tools."""
+        if ":topic:" not in chat_id:
+            return chat_id, metadata
+        scope = ConversationScope.from_session_key(f"{self.name}:{chat_id}")
+        if scope is None:
+            raise ValueError("invalid Telegram topic target")
+        return str(scope.chat_id), {**metadata, "message_thread_id": scope.thread_id}
+
     def _social_target(self, chat_id: str, metadata: dict[str, Any]) -> bool:
         if self.social is None:
             return False
         try:
+            chat_id, metadata = self._resolve_topic_target(chat_id, metadata)
             scope = ConversationScope(self.name, int(chat_id), int(metadata.get("message_thread_id") or 0))
         except (TypeError, ValueError):
             return False
@@ -1920,6 +1935,12 @@ class TelegramChannel(BaseChannel):
             return False
         scope = ConversationScope(self.name, message.chat_id, message.message_thread_id or 0)
         if social.binding(scope) is None:
+            return False
+        if message.text and (
+            re.match(self.TELEGRAM_BUS_SLASH_COMMAND_RE, message.text)
+            or re.fullmatch(r"/(?:start|help)(?:@\w+)?", message.text)
+        ):
+            # Reuse ordinary command handlers and their sender authorization.
             return False
         user = message.from_user
         if user is None or message.sender_chat is not None:

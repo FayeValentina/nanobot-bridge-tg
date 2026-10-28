@@ -553,15 +553,16 @@ async def test_send_retry_attempts_still_count_after_the_original_action_ages_ou
     assert sender.await_count == 3
 
 
-@pytest.mark.parametrize("change", ["paused", "role", "revoke"])
+@pytest.mark.parametrize("change", ["paused", "binding", "revoke"])
 async def test_configuration_change_cancels_a_platform_retry(social, change):
     sender = AsyncMock(side_effect=SocialRateLimitError(5))
     social.set_sender(sender)
     await social.send(context(social), "public", None)
     if change == "paused":
         social.config.scopes[0].paused = True
-    elif change == "role":
-        (social.roles / "guest.md").write_text("changed persona", encoding="utf-8")
+    elif change == "binding":
+        (social.roles / "other.md").write_text("other persona", encoding="utf-8")
+        social.config.scopes[0].role_id = "other"
     else:
         social.config.scopes = []
     social.configure(social.config)
