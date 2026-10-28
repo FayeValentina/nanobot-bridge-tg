@@ -294,7 +294,8 @@ async def test_queue_success_precedes_any_platform_confirmation(tmp_path: Path) 
     )), capture_message_deliveries() as deliveries:
         result = await tool.execute(content="public message")
     assert not is_tool_error_result(result)
-    assert "sent" in result
+    assert json.loads(result)["status"] == "queued"
+    assert json.loads(result)["message_ids"] == []
     assert deliveries == {("telegram", "-1001")}
     # No channel consumer exists: this is queue acceptance, not a Telegram receipt.
     assert bus.outbound_size == 1
