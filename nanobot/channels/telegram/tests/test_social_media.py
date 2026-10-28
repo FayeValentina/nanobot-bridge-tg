@@ -471,6 +471,8 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     action = store.reserve_send(A.session_key, "version", "old text", 6)
     store.delivery(action, "sent", message_id=501)
     # Recreate the actual schema-2 shape, retaining existing data.
+    for table in ("memory_evidence", "memories", "memory_suppressions", "memory_resets"):
+        store.db.execute(f"DROP TABLE {table}")
     store.db.execute("DROP TABLE stickers")
     for column in ("media_refs", "reply_context", "album_id"):
         store.db.execute(f"ALTER TABLE messages DROP COLUMN {column}")
@@ -482,7 +484,7 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     store.close()
     reopened = SocialStore(root)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert reopened.state(A.session_key)["read_through"] == 1
         row = reopened.db.execute("SELECT content,status,message_id,kind FROM actions").fetchone()
         assert tuple(row) == ("old text", "sent", 501, "text")

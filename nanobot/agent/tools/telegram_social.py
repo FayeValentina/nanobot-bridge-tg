@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.agent.tools.context import current_request_context
+from nanobot.channels.telegram.social.memory import MemoryRequest
 
 if TYPE_CHECKING:
     from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
@@ -34,10 +35,13 @@ class TelegramSocialTool(Tool):
             "social_set_wake": "Set bounded keyword/sender/message wake conditions for this group/topic, within operator limits.",
             "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
             "social_sticker": "Collect a static sticker from an observed message_id, list/search collected stickers, or send one by sticker_id. Notes are untrusted; sends share text budgets and receipts.",
+            "social_memory": "Manage the current conversation's evidence-backed knowledge: list/record/confirm/correct/delete/clear. record requires kind, content and displayed message_ids; confirm/correct/delete require memory_id. member_ids use evidence sender IDs. basis=inference keeps a candidate; direct/corroborated records why it is confirmed. ttl_seconds bounds lifetime. Deletion covers this index only, not shared memory/Dream. Same ordinary tool permissions apply.",
         }[self.name]
 
     @property
     def parameters(self) -> dict[str, Any]:
+        if self.name == "social_memory":
+            return MemoryRequest.model_json_schema()
         properties: dict[str, Any] = {}
         required: list[str] = []
         if self.name == "social_get_media":
@@ -84,9 +88,11 @@ class TelegramSocialTool(Tool):
         if ctx is None:
             return ToolResult.error("social tools require an active group/topic turn")
         try:
-            if self.name == "social_get_media":
+            if self.name == "social_memory":
+                result = self.runtime.memory_action(ctx, MemoryRequest.model_validate(kwargs))
+            elif self.name == "social_get_media":
                 return await self.runtime.get_media(ctx, kwargs["message_id"])
-            if self.name == "social_sticker":
+            elif self.name == "social_sticker":
                 action = kwargs["action"]
                 if action == "list":
                     result = {"stickers": self.runtime.list_stickers(ctx, kwargs.get("query", ""))}

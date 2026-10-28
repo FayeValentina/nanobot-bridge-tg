@@ -35,7 +35,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3):
+        if version not in (0, 1, 2, 3, 4):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -128,6 +128,31 @@ class SocialStore:
                     PRIMARY KEY(scope,id)
                 );
                 PRAGMA user_version=3;
+                COMMIT;
+            """)
+        if version < 4:
+            self.db.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE memories (
+                    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
+                    kind TEXT NOT NULL, content TEXT NOT NULL, members TEXT NOT NULL,
+                    status TEXT NOT NULL, basis TEXT NOT NULL, revision INTEGER NOT NULL,
+                    created REAL NOT NULL, updated REAL NOT NULL, expires REAL
+                );
+                CREATE INDEX memories_scope ON memories(scope,status,updated);
+                CREATE TABLE memory_evidence (
+                    memory_id TEXT NOT NULL REFERENCES memories(id), message_id INTEGER NOT NULL,
+                    seq INTEGER NOT NULL, sender_id TEXT NOT NULL, at REAL NOT NULL,
+                    excerpt TEXT NOT NULL, PRIMARY KEY(memory_id,message_id)
+                );
+                CREATE TABLE memory_suppressions (
+                    scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL, digest TEXT NOT NULL,
+                    PRIMARY KEY(scope,kind,digest)
+                );
+                CREATE TABLE memory_resets (
+                    scope TEXT PRIMARY KEY REFERENCES scopes(key), through_seq INTEGER NOT NULL
+                );
+                PRAGMA user_version=4;
                 COMMIT;
             """)
         path.chmod(0o600)
