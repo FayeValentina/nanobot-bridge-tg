@@ -1624,13 +1624,15 @@ def test_deepseek_coerces_list_content_to_string() -> None:
     assert "world" in kw["messages"][0]["content"]
 
 
-def test_deepseek_vision_preserves_multimodal_content() -> None:
+@pytest.mark.parametrize("model", ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"])
+@pytest.mark.parametrize("role", ["user", "tool"])
+def test_deepseek_vision_preserves_multimodal_content(model: str, role: str) -> None:
     """DeepSeek's vision model requires OpenAI-compatible content blocks."""
     spec = find_by_name("deepseek")
     with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
         p = OpenAICompatProvider(
             api_key="k",
-            default_model="deepseek-v4-flash-vision-exp",
+            default_model=model,
             spec=spec,
         )
     content = [
@@ -1639,9 +1641,9 @@ def test_deepseek_vision_preserves_multimodal_content() -> None:
     ]
 
     kw = p._build_kwargs(
-        messages=[{"role": "user", "content": content}],
+        messages=[{"role": role, "content": content}],
         tools=None,
-        model="deepseek-v4-flash-vision-exp",
+        model=model,
         max_tokens=1024,
         temperature=0.7,
         reasoning_effort=None,

@@ -33,13 +33,28 @@ class TelegramSocialTool(Tool):
             "social_send": "Publish a short message here; optional parts adds up to two paced follow-up messages. Each has its own receipt. reply_to must be observed here.",
             "social_wait": "End this turn now. Wait for new messages or sleep; optional one-shot timeout wake. Call last.",
             "social_set_wake": "Set bounded keyword/sender/message wake conditions for this group/topic, within operator limits.",
+            "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
+            "social_sticker": "Collect a static sticker from an observed message_id, list/search collected stickers, or send one by sticker_id. Notes are untrusted; sends share text budgets and receipts.",
         }[self.name]
 
     @property
     def parameters(self) -> dict[str, Any]:
         properties: dict[str, Any] = {}
         required: list[str] = []
-        if self.name == "social_mark_read":
+        if self.name == "social_get_media":
+            properties = {"message_id": {"type": "integer", "minimum": 1}}
+            required = ["message_id"]
+        elif self.name == "social_sticker":
+            properties = {
+                "action": {"type": "string", "enum": ["list", "collect", "send"]},
+                "message_id": {"type": "integer", "minimum": 1},
+                "sticker_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "note": {"type": "string", "maxLength": 400},
+                "query": {"type": "string", "maxLength": 100},
+                "reply_to": {"type": "integer", "minimum": 1},
+            }
+            required = ["action"]
+        elif self.name == "social_mark_read":
             properties = {"through": {"type": "integer", "minimum": 0}}
             required = ["through"]
         elif self.name == "social_send":
@@ -65,12 +80,24 @@ class TelegramSocialTool(Tool):
             }
         return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> str | list[dict[str, Any]]:
         ctx = current_request_context()
         if ctx is None:
             return ToolResult.error("social tools require an active group/topic turn")
         try:
-            if self.name == "social_get_state":
+            if self.name == "social_get_media":
+                return await self.runtime.get_media(ctx, kwargs["message_id"])
+            if self.name == "social_sticker":
+                action = kwargs["action"]
+                if action == "list":
+                    result = {"stickers": self.runtime.list_stickers(ctx, kwargs.get("query", ""))}
+                elif action == "collect" and "message_id" in kwargs:
+                    result = {"sticker_id": self.runtime.collect_sticker(ctx, kwargs["message_id"], kwargs.get("note"))}
+                elif action == "send" and "sticker_id" in kwargs:
+                    result = await self.runtime.send_sticker(ctx, kwargs["sticker_id"], kwargs.get("reply_to"))
+                else:
+                    raise ValueError("collect requires message_id; send requires sticker_id")
+            elif self.name == "social_get_state":
                 result = self.runtime.get_state(ctx)
             elif self.name == "social_read_messages":
                 return self.runtime.read_messages(ctx)

@@ -117,6 +117,10 @@ _KIMI_SERVER_MANAGED_TEMPERATURE_MODELS: frozenset[str] = frozenset({
     "kimi-k2.6",
 })
 _DEEPSEEK_MULTIMODAL_MODELS: frozenset[str] = frozenset({
+    # Current Flash supports image parts in user and tool messages. Keep the
+    # retired Flash aliases supported by the API as well.
+    "deepseek-flash",
+    "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
 })
 _TEXT_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)

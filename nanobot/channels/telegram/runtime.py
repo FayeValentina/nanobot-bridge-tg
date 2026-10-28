@@ -42,7 +42,9 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
+    MediaReference,
     ObservedMessage,
+    QuotedMessage,
     SocialDeliveryUnknownError,
     SocialRateLimitError,
 )
@@ -573,6 +575,7 @@ class TelegramChannel(BaseChannel):
         if social is not None:
             social.configure(self.config.social)
             social.set_sender(self._send_social_text)
+            social.set_media_services(self._download_social_media, self._send_social_sticker)
         self._app: TelegramApplication | None = None
         self._typing_tasks: dict[str, asyncio.Task[None]] = {}  # chat_id -> typing loop task
         self._media_group_buffers: dict[str, dict[str, Any]] = {}
@@ -1833,12 +1836,12 @@ class TelegramChannel(BaseChannel):
         return self.social.binding(scope) is not None
 
     async def _send_social_text(
-        self, scope: ConversationScope, text: str, reply_to: int | None,
+        self, scope: ConversationScope, text: str, reply_to: int | None, *, sticker: bool = False,
     ) -> int:
         if self.social is None or self.social.binding(scope) is None:
             raise PermissionError("social send is no longer authorized")
         app = self._require_app()
-        kwargs: dict[str, Any] = {"chat_id": scope.chat_id, "text": text}
+        kwargs: dict[str, Any] = {"chat_id": scope.chat_id, "sticker" if sticker else "text": text}
         if scope.thread_id:
             kwargs["message_thread_id"] = scope.thread_id
         if reply_to is not None:
@@ -1847,15 +1850,62 @@ class TelegramChannel(BaseChannel):
             )
         try:
             # A timeout may follow acceptance. Do not use _call_with_retry here.
-            result = await app.bot.send_message(**kwargs)
+            result = await (app.bot.send_sticker(**kwargs) if sticker else app.bot.send_message(**kwargs))
         except RetryAfter as exc:
             delay = exc.retry_after
             raise SocialRateLimitError(delay.total_seconds() if isinstance(delay, timedelta) else float(delay)) from exc
+        except BadRequest:
+            # PTB's BadRequest subclasses NetworkError, but is a definite
+            # platform rejection (e.g. an expired file_id or missing reply).
+            raise
         except (TimedOut, NetworkError) as exc:
             raise SocialDeliveryUnknownError("platform outcome unknown") from exc
         if not isinstance(result.message_id, int) or result.message_id <= 0:
             raise SocialDeliveryUnknownError("platform receipt is invalid")
         return result.message_id
+
+    async def _send_social_sticker(self, scope: ConversationScope, file_id: str, reply_to: int | None) -> int:
+        return await self._send_social_text(scope, file_id, reply_to, sticker=True)
+
+    async def _download_social_media(self, ref: MediaReference, limit: int) -> bytes:
+        app = self._require_app()
+        if ref.size is not None and ref.size > limit:
+            raise ValueError("media exceeds byte limit")
+        file = await app.bot.get_file(ref.file_id)
+        size = file.file_size if isinstance(file.file_size, int) else ref.size
+        if size is None or not 0 < size <= limit:
+            raise ValueError("media file size is unknown or exceeds byte limit")
+        raw = await file.download_as_bytearray()
+        if len(raw) > limit:
+            raise ValueError("download exceeds byte limit")
+        return bytes(raw)
+
+    @staticmethod
+    def _social_media_refs(message: Message) -> tuple[MediaReference, ...]:
+        refs: list[MediaReference] = []
+        for kind in ("photo", "sticker", "animation", "video", "document"):
+            item = getattr(message, kind, None)
+            if not item:
+                continue
+            if kind == "photo":
+                item = item[-1]
+            if kind == "document" and not (item.mime_type or "").startswith("image/"):
+                continue
+            thumbnail = getattr(item, "thumbnail", None)
+            # Normalize the SDK's untrusted data once at the channel boundary.
+            try:
+                refs.append(MediaReference.model_validate({
+                    "kind": kind, "file_id": item.file_id, "unique_id": item.file_unique_id,
+                    "size": item.file_size, "width": getattr(item, "width", 0), "height": getattr(item, "height", 0),
+                    "emoji": getattr(item, "emoji", None) or "", "sticker_set": getattr(item, "set_name", None) or "",
+                    "animated": bool(getattr(item, "is_animated", False) or kind == "animation"),
+                    "video": bool(getattr(item, "is_video", False) or kind == "video"),
+                    "thumbnail_id": thumbnail.file_id if thumbnail else None,
+                    "mime": getattr(item, "mime_type", None) or "",
+                }))
+            except ValueError:
+                continue
+        return tuple(refs)
 
     async def _on_social_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._observe_social(update):
@@ -1888,12 +1938,26 @@ class TelegramChannel(BaseChannel):
         for kind in ("photo", "video", "animation", "voice", "audio", "document", "sticker"):
             if getattr(message, kind, None):
                 media.append(kind)
+        reply = message.reply_to_message
+        quoted = None
+        if (reply is not None and reply.chat_id == scope.chat_id
+                and (reply.message_thread_id is None or reply.message_thread_id == scope.thread_id)):
+            quoted = QuotedMessage(
+                message_id=reply.message_id,
+                sender_id=str(reply_user.id) if reply_user else "unknown",
+                name=(reply_user.full_name if reply_user else "Unknown")[:120],
+                timestamp=reply.date.timestamp(), text=(reply.text or reply.caption or "")[:1000],
+                is_bot=bool(bot_id and reply_user and reply_user.id == bot_id),
+                media_refs=list(self._social_media_refs(reply)),
+            )
         observed = ObservedMessage(
             scope=scope, update_id=update.update_id, message_id=message.message_id,
             sender_id=str(user.id), display_name=user.full_name,
             timestamp=message.date.timestamp(), text=text or "[non-text message]",
             reply_to=message.reply_to_message.message_id if message.reply_to_message else None,
             media=tuple(media), is_self=bool(bot_id and user.id == bot_id), is_bot=bool(user.is_bot),
+            media_refs=self._social_media_refs(message), reply=quoted,
+            album_id=message.media_group_id,
         )
         await social.observe(observed, directed=bool(directed and not user.is_bot and update.edited_message is None))
         return True
