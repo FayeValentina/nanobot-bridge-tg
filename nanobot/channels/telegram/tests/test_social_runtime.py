@@ -783,3 +783,63 @@ def test_tools_require_current_request_and_do_not_import_telegram_sdk():
         "import sys; import nanobot.agent.tools.telegram_social; assert 'telegram' not in sys.modules",
     ], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("thread", [0, 43, 999])
+async def test_group_wide_binding_observes_and_replies_in_each_actual_topic(tmp_path, social, thread):
+    social.config.scopes[0].all_topics = True
+    social.configure(social.config)
+    target = ConversationScope("telegram", A.chat_id, thread)
+    tg = channel(social)
+    tg._handle_message = AsyncMock(side_effect=AssertionError("must use social routing"))
+    await tg._process_message_update(telegram_update(thread=thread, text="ordinary conversation"), None)
+    assert social.bus.inbound.empty()
+    loop = agent(tmp_path, social, [
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(
+            id="send", name="social_send", arguments={"text": "received"},
+        )]),
+        LLMResponse(content="internal"),
+    ])
+    await tg._process_message_update(telegram_update(thread=thread, seq=2, text="@bot hello", reply=True), None)
+    inbound = social.bus.inbound.get_nowait()
+    assert inbound.session_key == target.session_key
+    await loop._dispatch(inbound)
+    sent = tg._app.bot.send_message.call_args.kwargs
+    assert sent["chat_id"] == A.chat_id
+    assert sent.get("message_thread_id", 0) == thread
+    system = str(loop.provider.chat_stream_with_retry.call_args.kwargs["messages"][0]["content"])
+    assert "A directed wake means Telegram verified a mention of or reply to this bot account" in system
+    tg._handle_message.assert_not_awaited()
+    if target != A:
+        assert social.store.state(A.session_key)["next_seq"] == 1
+
+
+@pytest.mark.parametrize("override_first", [False, True])
+def test_topic_override_can_disable_group_wide_binding_without_affecting_other_groups(social, override_first):
+    group = social.config.scopes[0]
+    group.all_topics = True
+    override = group.model_copy(update={"all_topics": False, "thread_id": 43, "enabled": False})
+    social.config.scopes.insert(0 if override_first else len(social.config.scopes), override)
+    social.configure(social.config)
+    assert social.binding(ConversationScope("telegram", A.chat_id, 43)) is None
+    assert social.binding(ConversationScope("telegram", A.chat_id, 999)) == group
+    assert social.binding(B).role_id == "b"
+    assert social.binding(ConversationScope("telegram", B.chat_id, 999)) is None
+    assert social.binding(ConversationScope("telegram", -9999, 43)) is None
+
+
+def test_group_wide_role_and_existing_topic_history_survive_reconfiguration(social):
+    social.store.observe(message(A, text="keep this topic history"), 500)
+    group = social.config.scopes[0]
+    group.all_topics = True
+    social.configure(social.config)
+    other = ConversationScope("telegram", A.chat_id, 43)
+    social._persona(other)
+    assert social.store.state(A.session_key)["next_seq"] == 2
+    assert social.store.state(other.session_key)["next_seq"] == 1
+    assert "PERSONA ALPHA" in social._persona(other)[0]
+    group.all_topics = False
+    social.configure(social.config)
+    assert social.binding(other) is None
+    assert social.store.state(other.session_key)["version"] == "disabled"
+    assert social.store.state(A.session_key)["next_seq"] == 2

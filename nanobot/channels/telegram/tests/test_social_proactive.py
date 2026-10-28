@@ -12,6 +12,7 @@ from nanobot.agent.tools.context import RequestContext
 from nanobot.channels.telegram.manifest import SETUP_SPEC
 from nanobot.channels.telegram.runtime import TelegramConfig
 from nanobot.channels.telegram.social.memory import MemoryRequest
+from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.proactive import is_quiet
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
@@ -509,3 +510,30 @@ def test_schema_four_upgrade_preserves_memory_watermarks_and_history(tmp_path):
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
     finally:
         upgraded.close()
+
+
+async def test_group_wide_opportunities_use_discovered_topic_bindings_after_restart(social):
+    binding = enable(social)
+    binding.all_topics = True
+    social.configure(social.config)
+    target = ConversationScope("telegram", A.chat_id, 999)
+    await social.observe(replace(observed(social), scope=target), directed=False)
+    assert social.proactive.status(target.session_key)["next_check"] is not None
+    root, config, bus, now = social.root, social.config, social.bus, social.now
+    social.close()
+    restored = TelegramSocialRuntime(config, root, bus, now=now)
+    try:
+        clock(social).advance(60)
+        await restored.run_due()
+        inbound = bus.inbound.get_nowait()
+        assert inbound.session_key == target.session_key
+        assert view(inbound)["wake_reason"] == "proactive"
+        job = inbound.metadata["_social_job"]
+        await restored.run_due()
+        assert restored.store.db.execute("SELECT status FROM wakes WHERE id=?", (job,)).fetchone()[0] == "queued"
+        binding.all_topics = False
+        restored.configure(config)
+        await restored.run_due()
+        assert restored.store.db.execute("SELECT status FROM wakes WHERE id=?", (job,)).fetchone()[0] == "cancelled"
+    finally:
+        restored.close()

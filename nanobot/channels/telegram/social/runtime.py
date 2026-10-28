@@ -54,6 +54,8 @@ SOCIAL_TOOLS = frozenset({"social_get_state", "social_read_messages", "social_ma
                           "social_wait", "social_set_wake", "social_get_media", "social_sticker", "social_memory"})
 SOCIAL_PROTOCOL = """You are a guest in this authorized group/topic. Participate selectively.
 Read the observed group messages as the current conversation and respond to relevant requests.
+A directed wake means Telegram verified a mention of or reply to this bot account. Treat it as
+addressed to you, even if shared profile or old memory uses a different name for this account.
 Only explicit social publishing tools send messages. Your final text is internal and is never published.
 An uncertain_send may already have reached the group. Do not repeat that attempted text.
 You may end silently. Keep public messages short and relevant. Do not narrate tool activity.
@@ -227,18 +229,26 @@ class TelegramSocialRuntime:
             if self.binding(scope) is None:
                 self.store.bind(scope, "disabled")
                 self.proactive.sync(scope, None)
-        for binding in config.scopes:
-            scope = ConversationScope(self.channel, binding.chat_id, binding.thread_id)
-            if self.binding(scope) is not None:
+            else:
                 self._persona(scope)
+        for binding in config.scopes:
+            # Group-wide bindings discover actual topics from incoming messages.
+            if not binding.all_topics:
+                scope = ConversationScope(self.channel, binding.chat_id, binding.thread_id)
+                if self.binding(scope) is not None:
+                    self._persona(scope)
         self.scheduler.notify()
 
     def binding(self, scope: ConversationScope) -> TelegramSocialScopeConfig | None:
         if not self.config.enabled or scope.channel != self.channel:
             return None
-        return next((binding for binding in self.config.scopes
-                     if binding.enabled and (binding.chat_id, binding.thread_id)
-                     == (scope.chat_id, scope.thread_id)), None)
+        candidates = [binding for binding in self.config.scopes if binding.chat_id == scope.chat_id]
+        # Explicit topic overrides, including disabled ones, take precedence.
+        binding = next((item for item in candidates
+                        if not item.all_topics and item.thread_id == scope.thread_id), None)
+        if binding is None:
+            binding = next((item for item in candidates if item.all_topics), None)
+        return binding if binding is not None and binding.enabled else None
 
     def _persona(self, scope: ConversationScope) -> tuple[str, str]:
         binding = self.binding(scope)
@@ -388,8 +398,8 @@ class TelegramSocialRuntime:
                     self.store.bind(scope, "disabled")
                     self.proactive.sync(scope, None)
             self.store.consume_timers()
-            bindings = {ConversationScope(self.channel, item.chat_id, item.thread_id).session_key: item
-                        for item in self.config.scopes if self.binding(ConversationScope(self.channel, item.chat_id, item.thread_id)) is not None}
+            bindings = {scope.session_key: binding for scope in self.store.scopes()
+                        if (binding := self.binding(scope)) is not None}
             self.proactive.cancel_invalid(bindings)
             for scope in self.store.scopes():
                 binding = self.binding(scope)

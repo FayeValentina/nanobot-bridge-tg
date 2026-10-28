@@ -37,3 +37,15 @@ def test_social_configuration_is_opt_in_and_has_one_json_settings_contract() -> 
     assert SETUP_SPEC.fields["social"].kind == "json"
     assert SETUP_SPEC.route_field_types["social"] == "json"
     assert config.model_dump(by_alias=True)["social"]["enabled"] is False
+
+
+def test_group_wide_social_binding_round_trips_and_legacy_topics_stay_exact() -> None:
+    base = {"chatId": -1001, "roleId": "groupmate"}
+    config = TelegramConfig.model_validate({"social": {"enabled": True, "scopes": [
+        {**base, "allTopics": True}, {**base, "threadId": 53},
+    ]}})
+    group, topic = config.social.scopes
+    assert group.all_topics and group.thread_id == 0
+    assert not topic.all_topics and topic.thread_id == 53
+    restored = TelegramConfig.model_validate(config.model_dump(by_alias=True))
+    assert restored.social == config.social

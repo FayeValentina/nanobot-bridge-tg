@@ -62,6 +62,7 @@ class TelegramSocialScopeConfig(Base):
     model_config = ConfigDict(extra="forbid")
     chat_id: int = Field(lt=0)
     thread_id: int = Field(default=0, ge=0)
+    all_topics: bool = False  # Apply this group binding to every topic, including General.
     role_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     background: str = Field(default="", max_length=4096)
     enabled: bool = True
