@@ -2,6 +2,9 @@
 
 日期：2026-10-28。按用户选择先完成部署，测试 Bot、模型和真实测试群稍后配置。
 
+> 本文保留首次部署到独立实例的历史事实。用户随后明确：工程仅供本人使用，后续默认直接
+> 部署到实际本机实例，不再要求测试群或独立实例先行。现行流程以 [本机迭代约定](LOCAL_PIPELINE.md) 为准。
+
 ## 部署结果
 
 | 项目 | 当前值 |
@@ -40,7 +43,7 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
   健康正常，部署状态与配置文件的前后校验值一致。
 
 未进行真实模型请求、Bot 轮询或真实群发送。日志中的模型未配置提示与当前验证实例配置一致，
-不影响 WebUI 和配置入口就绪。群友自然程度和真实 Telegram 下的参与行为仍待专用测试群验收。
+不影响 WebUI 和配置入口就绪。群友自然程度和 Telegram 下的参与行为由后续本人实际使用验证。
 
 ## 备份、证据与回滚
 
@@ -76,9 +79,10 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 
 ## 后续配置
 
-在验证实例 WebUI 配置模型和专用测试 Bot，然后按 [M2 实现说明](M2_IMPLEMENTATION.md)
-配置精确群/话题授权、角色文件及预算。验证实例的角色宿主路径为
+后续默认直接在本人实际使用的本机实例（网页 8765 / 健康 18790）部署和验证，沿用已有
+模型与 Bot 配置，无需另配测试 Bot 或测试群。按 [M2 实现说明](M2_IMPLEMENTATION.md)
+配置实际需要的群/话题授权、角色文件及预算。若按需使用保留的验证实例，其角色宿主路径为
 `/home/ubuntu/.local/share/nanobot-bridge-tg-staging/shared/data/telegram-social/roles/`，
 容器内对应 `/data/telegram-social/roles/`。
 
-专用测试 Bot 不能与正式实例共用 Token。完成真实群文字闭环验收后，再决定正式实例更新。
+同一 Bot Token 只运行一个更新接收者；独立验证实例不再作为实际实例更新的前置条件。

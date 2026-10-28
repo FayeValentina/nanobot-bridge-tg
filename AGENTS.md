@@ -1,5 +1,15 @@
 This file provides guidance to AI coding agents working with this repository.
 
+## Owner's local workflow (confirmed 2026-10-28)
+
+- This migration is a personal project. The actual local Docker instance is used only by the owner, not a commercial production environment. Prioritize quick feedback from that instance.
+- After each runnable batch of behavior changes or fixes, perform the necessary checks, commit the changes, and promptly deploy to the actual local instance before finishing the task. Routine local releases and their necessary service restarts are already authorized; do not ask for approval again unless the owner requests a different scope.
+- The default target is `/home/ubuntu/.local/share/nanobot-bridge-tg-deploy/`, WebUI port `8765`, health port `18790`. The staging instance is optional, not a release prerequisite.
+- Do not require a dedicated test group, test Bot, a staging soak period, or commercial release approval steps. Use the owner's existing local configuration and actual usage for feedback. Keep only one update receiver per Telegram Bot Token.
+- Reuse the existing build, automatic backup, health check, and failure rollback pipeline. Scale checks to the change and avoid adding defensive process that delays local iteration without a concrete need.
+- Documentation-only changes, including recording this preference, do not need a runtime rebuild or deployment. Do not remove application permissions or data isolation merely to simplify the release workflow.
+- Current deployment instructions: [`docs/LOCAL_PIPELINE.md`](docs/LOCAL_PIPELINE.md). This owner-confirmed workflow supersedes older requirements in migration or deployment records to validate in a separate instance/group first.
+
 ## Project Overview
 
 nanobot is a lightweight, open-source AI agent framework written in Python with a React/TypeScript WebUI. It centers around a small agent loop that receives messages from chat channels, invokes an LLM provider, executes tools, and manages session memory.
