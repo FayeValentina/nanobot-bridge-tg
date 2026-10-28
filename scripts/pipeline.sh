@@ -24,6 +24,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_delivery_contract.py \
       nanobot/channels/telegram/tests/test_social_runtime.py \
       nanobot/channels/telegram/tests/test_social_scheduler.py \
+      nanobot/channels/telegram/tests/test_stream_pacing.py \
       nanobot/cli/gateway_runtime.py nanobot/webui/settings_system.py \
       tests/agent/test_telegram_social_contracts.py tests/agent/test_dream.py \
       tests/agent/test_task_cancel.py tests/channels/test_channel_setup.py

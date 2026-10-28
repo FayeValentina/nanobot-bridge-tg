@@ -402,6 +402,7 @@ def _split_telegram_markdown_html(content: str, max_html_len: int) -> list[str]:
 _SEND_MAX_RETRIES = 3
 _SEND_RETRY_BASE_DELAY = 0.5  # seconds, doubled each retry
 _STREAM_EDIT_INTERVAL_DEFAULT = 0.6  # min seconds between edit_message_text calls
+_GROUP_STREAM_EDIT_MIN_INTERVAL = 3.2  # Leave headroom below the group flood limit.
 
 
 @dataclass
@@ -411,6 +412,7 @@ class _StreamBuf:
     message_id: int | None = None
     draft_id: int | None = None
     last_edit: float = 0.0
+    retry_at: float = 0.0
     stream_id: str | None = None
 
 
@@ -1389,6 +1391,9 @@ class TelegramChannel(BaseChannel):
             if message_thread_id := meta.get("message_thread_id"):
                 thread_kwargs["message_thread_id"] = message_thread_id
             raw_text = buf.text
+            if (remaining := buf.retry_at - time.monotonic()) > 0:
+                # Only the complete, latest answer waits for the platform cooldown.
+                await asyncio.sleep(remaining)
 
             if buf.draft_id is not None:
                 rich_chunks = _split_telegram_markdown(raw_text, TELEGRAM_RICH_MAX_LEN)
@@ -1500,7 +1505,7 @@ class TelegramChannel(BaseChannel):
                     await self._start_legacy_stream(
                         int_chat_id, buf, stream_thread_kwargs,
                     )
-                buf.last_edit = now
+                buf.last_edit = time.monotonic()
             except Exception as e:
                 self.logger.warning("Stream initial send failed: {}", e)
                 raise
@@ -1510,7 +1515,9 @@ class TelegramChannel(BaseChannel):
                 if buf.draft_id is not None
                 else self.config.stream_edit_interval
             )
-            if (now - buf.last_edit) < edit_interval:
+            if int_chat_id < 0:
+                edit_interval = max(edit_interval, _GROUP_STREAM_EDIT_MIN_INTERVAL)
+            if now < buf.retry_at or (now - buf.last_edit) < edit_interval:
                 return
             overflow_limit = TELEGRAM_RICH_MAX_LEN if buf.draft_id is not None else TELEGRAM_MAX_MESSAGE_LEN
             if len(buf.text) > overflow_limit:
@@ -1526,7 +1533,7 @@ class TelegramChannel(BaseChannel):
                     # Let the next delta or stream_end resume that tail; manager
                     # retry would append this same delta a second time.
                     return
-                buf.last_edit = now
+                buf.last_edit = time.monotonic()
                 return
             try:
                 if buf.draft_id is not None:
@@ -1536,23 +1543,33 @@ class TelegramChannel(BaseChannel):
                         buf.text,
                         stream_thread_kwargs,
                     ):
-                        buf.last_edit = now
+                        buf.last_edit = time.monotonic()
                         return
                     await self._start_legacy_stream(
                         int_chat_id, buf, stream_thread_kwargs,
                     )
-                    buf.last_edit = now
+                    buf.last_edit = time.monotonic()
                     return
                 preview = _strip_md_block(buf.text)
-                await self._call_with_retry(
-                    app.bot.edit_message_text,
+                # A preview is replaceable. Do not hold the FIFO on a stale
+                # fragment while newer deltas and the final answer queue behind it.
+                await app.bot.edit_message_text(
                     chat_id=int_chat_id, message_id=buf.message_id,
                     text=preview,
                 )
-                buf.last_edit = now
+                buf.last_edit = time.monotonic()
+            except RetryAfter as exc:
+                retry_after = exc.retry_after
+                delay = retry_after.total_seconds() if isinstance(retry_after, timedelta) else float(retry_after)
+                buf.retry_at = time.monotonic() + delay
+                buf.last_edit = time.monotonic()
+                self.logger.warning("Stream preview rate limited; buffering latest text for {:.1f}s", delay)
+            except NetworkError as exc:
+                buf.last_edit = time.monotonic()
+                self.logger.warning("Stream preview deferred after {}", type(exc).__name__)
             except Exception as e:
                 if self._is_not_modified_error(e):
-                    buf.last_edit = now
+                    buf.last_edit = time.monotonic()
                     return
                 self.logger.warning("Stream edit failed: {}", e)
                 raise
