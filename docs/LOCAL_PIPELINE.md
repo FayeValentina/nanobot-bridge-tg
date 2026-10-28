@@ -22,7 +22,22 @@ GitHub Actions 工作流和社区 Issue 模板已移除，所有测试、构建�
 
 ## 当前生产状态
 
-2026-10-28 当前实际实例为整群仿真版本 `ea734a37be745b8f09a0a5172e84265e34df2789`。
+2026-10-29 当前实际实例为群回复可靠性版本 `e714727fc63657db5b7a9b291a401a083c2c3bdf`。
+修复漏掉显式发送、等待期间关键词过滤、临时条件消费/过期、已读收尾和普通 message 平台回执/中断恢复。
+本机 social 设置 maxRequestsPerHour=120、maxSendsPerHour=60、repairUnsentFinal=true；
+整群 allTopics、肥鱼昵称、主动机会开启及 quietHours 关闭保留，其他配置与角色/共享资料指纹不变。
+完整 release 通过后端 878 项、provider 116 项、前端 96 文件共 1553 项、Ruff 与 WebUI lint/build。
+修改模块严格类型 0 errors / 0 warnings。一次未改动的 xAI 登录前端断言失败后，单文件 8 项复测及
+最终单 worker 全量均通过；未修改该前端用例，最终 release 使用 VITEST_MAX_FORKS/VITEST_MIN_FORKS/
+VITEST_MAX_THREADS/VITEST_MIN_THREADS=1，避免本机并行争用。
+实际容器 healthy、Telegram 已连接、近期无 ERROR；schema 5→6 与 quick_check 正常，原消息/记忆/水位保留。
+旧临时唤醒条件已随运行协议/配置版本刷新清空，历史已读不强行追溯，后续成功回合仅确认实际展示的连续前缀。
+安装镜像内临时数据验证漏发确认、条件过滤/消费、自动已读和普通发送回执/超时不重试，无真实模型调用或群发送。
+上一版本为 `ea734a37`，整实例备份 `backups/1793201575323973806/`；本次额度配置另备份于
+`backups/reply-quotas-20261029T003322/`。旧代码不支持 schema 6，回滚需连同发布前数据恢复。
+详见 [群回复可靠性修复](REPLY_RELIABILITY.md)。M5 尚未开始。
+
+此前整群仿真发布版本为 `ea734a37be745b8f09a0a5172e84265e34df2789`。
 当前群配置 `allTopics: true`，覆盖 General、现有与未来话题；各话题的历史、水位、等待和发送路由保留。
 主动机会开启（1800 秒），quietHours 关闭；昵称为“肥鱼/肥魚”。已纠正本机角色、SOUL 和共享记忆的错误身份。
 原管线 release 通过后端 826 项、provider 116 项、前端 1553 项、lint/build 和镜像冒烟；修改模块严格类型 0 errors / 0 warnings。

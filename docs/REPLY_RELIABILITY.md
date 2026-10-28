@@ -41,10 +41,19 @@ MessageBus 为显式消息工具增加通道提供的 confirmed sender。Telegra
 
 ## 本机配置与验证
 
-本机 social 的 maxRequestsPerHour 将设为 120（唤醒回合），maxSendsPerHour 设为 60（social 发送尝试），
+本机 social 的 maxRequestsPerHour 已设为 120（唤醒回合），maxSendsPerHour 设为 60（social 发送尝试），
 其配置位置为 channels.telegram.social；不把 social 额度称为所有工具的统一总上限。
 allTopics、肥鱼昵称、主动机会开启和 quietHours 关闭继续沿用。
 
 定向验收覆盖一次补发确认、显式沉默、原文不外泄、已读缺口与忙时新消息、条件过滤/认领/过期/重启、
 普通文本与附件的真实回执替身、超时不重试、部分发送失败、跨群/私聊权限、入队语义及 schema 升级。
 不向实际群发送测试消息，不调用真实模型验证。发布版本、完整检查和实例核对结果见本机管线说明。
+
+
+## 发布结果
+
+已发布 `e714727f`。完整管线通过后端 878 项、provider 116 项、前端 1553 项及 lint/build；
+严格类型检查零错误/警告。运行容器 healthy、Telegram 已连接，实际库 schema 6、quick_check 正常。
+原消息/记忆/水位保留，角色与共享资料不变，除了上述三项 social 配置外其他配置不变。
+实际安装包的临时数据验证通过；未向群发送测试消息，也未使用真实模型做验收。
+额度配置已生效，旧临时词已清空；保留历史已读水位，由后续成功回合按 exposure 证据自动推进。
