@@ -291,6 +291,26 @@ async def test_private_chat_keeps_personal_profile_and_normal_reply(tmp_path, so
     assert social.bus.outbound.get_nowait().content == "private answer"
 
 
+@pytest.mark.parametrize("scope,role_id", [(A, "a"), (B, "b")])
+async def test_persona_source_is_available_in_scoped_state_tool(tmp_path, social, scope, role_id):
+    loop = agent(tmp_path, social, [
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(id="state", name="social_get_state", arguments={})]),
+        LLMResponse(content="internal"),
+    ])
+    await loop._dispatch(await wake(social, scope, text="Where is your personality configuration file?"))
+    request = loop.provider.chat_stream_with_retry.await_args.kwargs
+    result = next(m for m in request["messages"] if m.get("tool_call_id") == "state")
+    state = json.loads(result["content"])
+    assert state["role_id"] == role_id
+    assert state["role_file"] == str((social.roles / f"{role_id}.md").resolve())
+    assert state["can_edit_role"] is False
+    assert "social_get_state for the actual role_id and role_file" in request["messages"][0]["content"]
+    names = {tool["function"]["name"] for tool in request["tools"]}
+    assert names == SOCIAL_TOOLS
+    assert "PRIVATE" not in str(request["messages"])
+    assert social.bus.outbound.empty()
+
+
 @pytest.mark.parametrize("source", ["summary", "failure", "raw", "idle"])
 async def test_group_compaction_never_enters_global_dream_journal(tmp_path, social, source):
     loop = agent(tmp_path, social, [
