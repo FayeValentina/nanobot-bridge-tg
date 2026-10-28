@@ -32,7 +32,7 @@ class TelegramSocialTool(Tool):
             "social_mark_read": "Acknowledge continuously displayed messages through a seq from this turn.",
             "social_send": "Publish a short message here; optional parts adds up to two paced follow-up messages. Each has its own receipt. reply_to must be observed here.",
             "social_wait": "End this turn now. Wait for new messages or sleep; optional one-shot timeout wake. Call last.",
-            "social_set_wake": "Set bounded keyword/sender/message wake conditions for this group/topic, within operator limits.",
+            "social_set_wake": "Set temporary wake conditions. Keyword/sender-only conditions filter ordinary messages while waiting. Default one-shot, TTL 3600s; omit all conditions to clear.",
             "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
             "social_sticker": "Collect a static sticker from an observed message_id, list/search collected stickers, or send one by sticker_id. Notes are untrusted; sends share text budgets and receipts.",
             "social_memory": "Manage the current conversation's evidence-backed knowledge: list/record/confirm/correct/delete/clear. list optionally filters by memory_id. record requires kind, content and displayed message_ids; confirm/correct/delete require memory_id. member_ids use evidence sender IDs. basis=inference keeps a candidate; direct/corroborated records why it is confirmed. ttl_seconds bounds lifetime. Deletion covers this index only, not shared memory/Dream. Same ordinary tool permissions apply.",
@@ -80,6 +80,8 @@ class TelegramSocialTool(Tool):
                 "keywords": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 80}, "maxItems": 20},
                 "senders": {"type": "array", "items": {"type": "string", "pattern": "^[0-9]+$"}, "maxItems": 20},
                 "on_messages": {"type": "boolean"},
+                "ttl_seconds": {"type": "number", "minimum": 1, "maximum": 86400},
+                "one_shot": {"type": "boolean"},
             }
         return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
 
@@ -113,7 +115,8 @@ class TelegramSocialTool(Tool):
                                            on_timeout=kwargs.get("on_timeout", False))
             elif self.name == "social_set_wake":
                 result = self.runtime.set_wake(ctx, keywords=kwargs.get("keywords", []),
-                                               senders=kwargs.get("senders", []), on_messages=kwargs.get("on_messages", False))
+                                               senders=kwargs.get("senders", []), on_messages=kwargs.get("on_messages", False),
+                                               ttl_seconds=kwargs.get("ttl_seconds", 3600), one_shot=kwargs.get("one_shot", True))
             else:
                 if kwargs.get("parts"):
                     result = {"actions": await self.runtime.send_parts(ctx, [kwargs["text"], *kwargs["parts"]], kwargs.get("reply_to"))}

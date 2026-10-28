@@ -8,7 +8,7 @@ from typing import Any, TypeVar, overload
 
 from loguru import logger
 
-from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.events import DeliveryReceipt, InboundMessage, OutboundMessage
 from nanobot.bus.outbound_events import outbound_message_for_event
 from nanobot.events import AgentEvent
 
@@ -33,6 +33,7 @@ class MessageBus:
         self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
         self._handlers: list[EventHandler] = []
         self._pending: set[asyncio.Task[None]] = set()
+        self._delivery_handlers: dict[str, Callable[[OutboundMessage], Awaitable[DeliveryReceipt]]] = {}
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
         """Publish a message from a channel to the agent."""
@@ -45,6 +46,19 @@ class MessageBus:
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """Queue a routed message or event for its channel."""
         await self.outbound.put(msg)
+
+    def set_delivery_handler(
+        self, channel: str, handler: Callable[[OutboundMessage], Awaitable[DeliveryReceipt]],
+    ) -> None:
+        """Register a channel-owned confirmed sender for explicit message tools."""
+        self._delivery_handlers[channel] = handler
+
+    async def deliver_outbound(self, msg: OutboundMessage) -> DeliveryReceipt:
+        handler = self._delivery_handlers.get(msg.channel)
+        if handler is not None:
+            return await handler(msg)
+        await self.publish_outbound(msg)
+        return DeliveryReceipt("queued", detail="Accepted by the local queue; platform delivery is not confirmed.")
 
     async def publish_event(
         self,

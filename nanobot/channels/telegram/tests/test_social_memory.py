@@ -241,12 +241,13 @@ def test_schema_three_upgrade_preserves_observations_views_and_watermarks(social
     for table in ("proactive_state", "memory_evidence", "memories", "memory_suppressions", "memory_resets"):
         social.store.db.execute(f"DROP TABLE {table}")
     social.store.db.execute("ALTER TABLE wakes DROP COLUMN proactive_source")
+    social.store.db.execute("DROP TABLE message_deliveries")
     social.store.db.execute("PRAGMA user_version=3")
     social.store.db.commit()
     social.close()
     store = SocialStore(social.root)
     try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert store.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert store.state(A.session_key)["read_through"] == 1
         assert store.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1

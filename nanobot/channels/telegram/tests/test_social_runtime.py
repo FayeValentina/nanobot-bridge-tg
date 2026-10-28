@@ -49,6 +49,7 @@ def social(tmp_path):
     (root / "roles" / "b.md").write_text("PERSONA BETA", encoding="utf-8")
     config = TelegramSocialConfig.model_validate({
         "enabled": True,
+        "repairUnsentFinal": False,
         "coalesceSeconds": 0,
         "cooldownSeconds": 0,
         "sendCooldownSeconds": 0,
@@ -711,7 +712,7 @@ async def test_busy_turn_defers_new_wake_without_losing_watermark(tmp_path, soci
         await asyncio.wait_for(wait_completed(), 2)
         assert len(calls) == 2
         assert "NEW MESSAGE DURING TURN" in calls[1]
-        assert social.store.state(A.session_key)["read_through"] == 0
+        assert social.store.state(A.session_key)["read_through"] == 2
         assert social.bus.outbound.empty()
     finally:
         runner.cancel()

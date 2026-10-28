@@ -49,8 +49,10 @@ async def test_message_tool_keeps_task_local_context() -> None:
 
     result_one, result_two = await asyncio.gather(task_one(), task_two())
 
-    assert result_one == "Message sent to feishu:chat-a"
-    assert result_two == "Message sent to email:chat-b"
+    assert json.loads(result_one)["status"] == "queued"
+    assert json.loads(result_one)["chat_id"] == "chat-a"
+    assert json.loads(result_two)["status"] == "queued"
+    assert json.loads(result_two)["chat_id"] == "chat-b"
     assert ("feishu", "chat-a", "one") in seen
     assert ("email", "chat-b", "two") in seen
 
@@ -164,7 +166,8 @@ async def test_message_tool_basic_request_context_and_execute() -> None:
         RequestContext(channel="telegram", chat_id="chat-123", message_id="msg-456")
     ):
         result = await tool.execute(content="hello")
-    assert result == "Message sent to telegram:chat-123"
+    assert json.loads(result)["status"] == "queued"
+    assert json.loads(result)["chat_id"] == "chat-123"
     assert seen == [("telegram", "chat-123", "hello")]
 
 
@@ -183,7 +186,8 @@ async def test_message_tool_default_values_without_request_context() -> None:
     )
 
     result = await tool.execute(content="hi")
-    assert result == "Message sent to discord:general"
+    assert json.loads(result)["status"] == "queued"
+    assert json.loads(result)["chat_id"] == "general"
     assert seen == [("discord", "general", "hi")]
 
 

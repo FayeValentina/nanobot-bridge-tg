@@ -36,7 +36,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5):
+        if version not in (0, 1, 2, 3, 4, 5, 6):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -166,6 +166,18 @@ class SocialStore:
                     last_seq INTEGER NOT NULL DEFAULT 0, memory_versions TEXT NOT NULL DEFAULT '{}'
                 );
                 PRAGMA user_version=5;
+                COMMIT;
+            """)
+        if version < 6:
+            self.db.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE message_deliveries (
+                    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
+                    turn_id TEXT, created REAL NOT NULL, status TEXT NOT NULL,
+                    message_ids TEXT NOT NULL, detail TEXT
+                );
+                CREATE INDEX message_deliveries_scope ON message_deliveries(scope,created);
+                PRAGMA user_version=6;
                 COMMIT;
             """)
         path.chmod(0o600)
@@ -396,6 +408,15 @@ class SocialStore:
                 raise ValueError("only continuously displayed messages may be acknowledged")
             self.db.execute("UPDATE scopes SET read_through=? WHERE key=?", (through, key))
             return through
+
+    def acknowledge_seen(self, key: str, turn_id: str) -> int:
+        """Acknowledge only the contiguous prefix actually exposed in this turn."""
+        current = int(self.state(key)["read_through"])
+        shown = self._shown_sequences(key, turn_id)
+        through = current
+        while through + 1 in shown:
+            through += 1
+        return self.mark_read(key, turn_id, through)
 
     def wake(self, key: str, seq: int, limit: int, *, now: float) -> str | None:
         with self.db:

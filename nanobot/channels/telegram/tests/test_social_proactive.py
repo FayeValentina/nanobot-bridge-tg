@@ -498,12 +498,13 @@ def test_schema_four_upgrade_preserves_memory_watermarks_and_history(tmp_path):
     store.db.execute("UPDATE scopes SET next_seq=7,read_through=4,seen_through=5 WHERE key=?", (A.session_key,))
     store.db.execute("DROP TABLE proactive_state")
     store.db.execute("ALTER TABLE wakes DROP COLUMN proactive_source")
+    store.db.execute("DROP TABLE message_deliveries")
     store.db.execute("PRAGMA user_version=4")
     store.db.commit()
     store.close()
     upgraded = SocialStore(root)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert upgraded.db.execute("SELECT content FROM memories WHERE id='id'").fetchone()[0] == "remember me"
         assert upgraded.state(A.session_key)["read_through"] == 4
         assert upgraded.state(A.session_key)["seen_through"] == 5

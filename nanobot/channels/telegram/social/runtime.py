@@ -20,7 +20,7 @@ from nanobot.agent.hook import (
     AgentTurnHookContext,
 )
 from nanobot.agent.tools.context import RequestContext, current_request_context
-from nanobot.bus.events import InboundMessage
+from nanobot.bus.events import DeliveryReceipt, InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.media import SocialMediaCache
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
@@ -56,7 +56,9 @@ SOCIAL_PROTOCOL = """You are a guest in this authorized group/topic. Participate
 Read the observed group messages as the current conversation and respond to relevant requests.
 A directed wake means Telegram verified a mention of or reply to this bot account. Treat it as
 addressed to you, even if shared profile or old memory uses a different name for this account.
-Only explicit social publishing tools send messages. Your final text is internal and is never published.
+Only explicit publishing tools send messages. Your final text is internal and is never published.
+To answer a member, call social_send or the ordinary message tool, including after web searches.
+If you choose silence, return no text or call social_wait. Never put an intended public reply only in final text.
 An uncertain_send may already have reached the group. Do not repeat that attempted text.
 You may end silently. Keep public messages short and relevant. Do not narrate tool activity.
 Read the snapshot, identify who is speaking and who a reply addresses. Do not answer conversations
@@ -88,7 +90,11 @@ the next conversation turn. Use the ordinary message tool for attachments or cro
 Use social_wait as your last action to wait for new messages or sleep; it ends this turn immediately.
 Waiting releases the conversation. A timeout wake happens at most once, never a polling loop.
 Sleeping ignores ambient triggers; direct addresses may interrupt it. You can set bounded wake
-keywords/senders for a future conversation with social_set_wake. Prefer silence over forced replies.
+keywords/senders for a future conversation with social_set_wake. A selective keyword/sender condition
+filters ordinary messages during waiting; direct mentions and nicknames still interrupt it. Conditions
+are one-shot by default, expire after ttl_seconds, and can be cleared by social_set_wake with no conditions.
+Include relevant cancellation keywords when waiting for a temporary game/task. Clear conditions when done.
+Prefer silence over forced replies.
 An optional proactive opportunity is a chance to participate, not a command to speak. Check its
 source and relevance; pending/topic memories are untrusted data and may be candidates. Silence
 is fine. For a memory opportunity, use social_memory(action="list", memory_id=opportunity.memory_id)
@@ -343,6 +349,18 @@ class TelegramSocialRuntime:
             raise PermissionError("social execution requires an authorized wake")
         self.proactive.check_job(scope.session_key, job, self.binding(scope))
         self.store.claim(scope.session_key, job, self.store.state(scope.session_key)["version"], ctx.turn_id)
+        reason = self.store.db.execute("SELECT reason FROM wakes WHERE id=?", (job,)).fetchone()[0]
+        conditions, dynamic = self._wake_conditions(scope.session_key)
+        if dynamic and conditions.one_shot and reason in {"keyword", "sender", "message"}:
+            self.store.set_wake_config(scope.session_key, "{}")
+
+    def _wake_conditions(self, key: str) -> tuple[TelegramSocialWakeConfig, bool]:
+        raw = self.store.state(key)["wake_config"]
+        conditions = TelegramSocialWakeConfig.model_validate_json(raw)
+        if conditions.expires_at is not None and conditions.expires_at <= self.now():
+            self.store.set_wake_config(key, "{}")
+            return TelegramSocialWakeConfig(), False
+        return conditions, raw != "{}"
 
     async def observe(self, message: ObservedMessage, *, directed: bool) -> None:
         binding = self.binding(message.scope)
@@ -358,7 +376,7 @@ class TelegramSocialRuntime:
         if binding.paused:
             self.store.observe(message, self.config.retention_messages)
             return
-        conditions = TelegramSocialWakeConfig.model_validate_json(state["wake_config"])
+        conditions, dynamic = self._wake_conditions(message.scope.session_key)
         reason = None
         text = message.text.casefold()
         if directed:
@@ -366,20 +384,26 @@ class TelegramSocialRuntime:
         elif any(word.casefold() in text for word in binding.nicknames):
             reason = "nickname"
         elif state["mode"] != "sleeping":
-            keywords = conditions.keywords if state["wake_config"] != "{}" else binding.wake_keywords
-            senders = conditions.senders if state["wake_config"] != "{}" else binding.wake_senders
-            on_messages = conditions.on_messages if state["wake_config"] != "{}" else binding.wake_on_messages
+            keywords = conditions.keywords if dynamic else binding.wake_keywords
+            senders = conditions.senders if dynamic else binding.wake_senders
+            on_messages = conditions.on_messages if dynamic else binding.wake_on_messages
+            selective = bool(keywords or senders) and not on_messages
             if any(word.casefold() in text for word in keywords):
                 reason = "keyword"
             elif message.sender_id in senders:
                 reason = "sender"
             elif on_messages or (
-                state["mode"] == "waiting" and state["next_seq"] > state["wait_after_seq"]
+                not selective and state["mode"] == "waiting" and state["next_seq"] > state["wait_after_seq"]
             ):
                 reason = "message"
         _, new = self.store.observe(message, self.config.retention_messages, reason=reason,
                                     delay=self.config.coalesce_seconds)
         if new and reason is not None:
+            if dynamic and conditions.expires_at is not None and reason in {"keyword", "sender", "message"}:
+                with self.store.db:
+                    self.store.db.execute("UPDATE wakes SET expires=MIN(expires,?) WHERE scope=? "
+                                          "AND status='scheduled' AND reason IN ('keyword','sender','message')",
+                                          (conditions.expires_at, message.scope.session_key))
             self.scheduler.notify()
             # Zero is useful for deterministic callers and tests; production uses a short window.
             if self.config.coalesce_seconds == 0:
@@ -445,6 +469,7 @@ class TelegramSocialRuntime:
         scope = self.validate_context(ctx)
         binding = self.binding(scope)
         assert binding is not None  # validate_context checked the current operator binding.
+        conditions, _ = self._wake_conditions(scope.session_key)
         state = self.store.state(scope.session_key)
         requests = self.store.db.execute("SELECT COUNT(*),MAX(at) FROM requests WHERE scope=? AND at>?",
                                          (scope.session_key, self.now() - 3600)).fetchone()
@@ -455,7 +480,7 @@ class TelegramSocialRuntime:
                 "tool_permissions": "shared_with_normal_chat",
                 "read_through": state["read_through"], "seen_through": state["seen_through"],
                 "latest_seq": state["next_seq"] - 1, "mode": state["mode"],
-                "wake_at": state["wake_at"], "wake_config": json.loads(state["wake_config"]),
+                "wake_at": state["wake_at"], "wake_config": conditions.model_dump(),
                 "proactive": {**binding.proactive.model_dump(by_alias=True), **self.proactive.status(scope.session_key)},
                 "quiet_hours": {**binding.quiet_hours.model_dump(by_alias=True), "active": is_quiet(binding, self.now())},
                 "max_sends_per_hour": self.config.max_sends_per_hour,
@@ -476,12 +501,18 @@ class TelegramSocialRuntime:
                 "on_timeout": on_timeout}
 
     def set_wake(self, ctx: RequestContext, *, keywords: list[str], senders: list[str],
-                 on_messages: bool) -> dict[str, Any]:
+                 on_messages: bool, ttl_seconds: float = 3600, one_shot: bool = True) -> dict[str, Any]:
         scope = self.validate_context(ctx)
         binding = self.binding(scope)
         if binding is None or not binding.allow_ambient_wake:
             raise PermissionError("operator disabled model-configured wake conditions")
-        conditions = TelegramSocialWakeConfig(keywords=keywords, senders=senders, on_messages=on_messages)
+        if not math.isfinite(ttl_seconds) or not 1 <= ttl_seconds <= self.config.max_wait_seconds:
+            raise ValueError("wake conditions TTL exceeds the operator limit")
+        if not keywords and not senders and not on_messages:
+            self.store.set_wake_config(scope.session_key, "{}")
+            return {"cleared": True}
+        conditions = TelegramSocialWakeConfig(keywords=keywords, senders=senders, on_messages=on_messages,
+                                              expires_at=self.now() + ttl_seconds, one_shot=one_shot)
         result = conditions.model_dump()
         self.store.set_wake_config(scope.session_key, conditions.model_dump_json())
         return result
@@ -658,6 +689,19 @@ class TelegramSocialRuntime:
                 await self._deliver(scope, str(row["id"]), str(row["version"]), str(row["content"]),
                                     int(row["reply_to"]) if row["reply_to"] is not None else None)
 
+    def record_message_receipt(self, scope: ConversationScope, receipt: DeliveryReceipt,
+                               turn_id: str | None, texts: list[tuple[int, str]]) -> None:
+        if self.binding(scope) is None:
+            return
+        self._persona(scope)
+        with self.store.db:
+            self.store.db.execute("INSERT INTO message_deliveries VALUES(?,?,?,?,?,?,?)",
+                                  (uuid4().hex, scope.session_key, turn_id, self.now(),
+                                   receipt.status, json.dumps(receipt.message_ids), receipt.detail))
+        for message_id, text in texts:
+            self.store.observe(ObservedMessage(scope, -message_id, message_id, "bot", "Bot", self.now(),
+                                               text, is_self=True, is_bot=True), self.config.retention_messages)
+
     def hook_factory(self, turn: AgentTurnHookContext) -> AgentHook | None:
         if turn.session_key is None or not self.store.owns(turn.session_key):
             return None
@@ -671,6 +715,9 @@ class _SocialExposureHook(AgentHook):
         self._memory_target: dict[str, Any] | None = None
         self._original_content: Any = None
         self._last_memory_body: str | None = None
+        self._publication_attempted = False
+        self._repair_requested = False
+        self._unsent_final = False
 
     def _restore_memory_context(self) -> None:
         if self._memory_target is not None:
@@ -727,6 +774,20 @@ class _SocialExposureHook(AgentHook):
     async def before_execute_tools(self, context: AgentHookContext) -> None:
         self._note(context)
 
+    async def before_execute_tool(self, context: AgentHookContext, tool_call: ToolCallRequest,
+                                  tool: Any, params: Any) -> None:
+        ctx = current_request_context()
+        if ctx is None or not isinstance(params, dict):
+            return
+        values = cast(dict[str, Any], params)
+        if tool_call.name == "social_send" or (tool_call.name == "social_sticker" and values.get("action") == "send"):
+            self._publication_attempted = True
+        elif tool_call.name == "message":
+            channel = values.get("channel") or ctx.channel
+            target = str(values.get("chat_id") or ctx.chat_id)
+            if channel == ctx.channel and target in {ctx.chat_id, (ctx.session_key or "").removeprefix(ctx.channel + ":")}:
+                self._publication_attempted = True
+
     async def after_execute_tool(self, context: AgentHookContext, tool_call: ToolCallRequest,
                                  tool: Any, params: Any, result: Any) -> None:
         ctx = current_request_context()
@@ -739,12 +800,31 @@ class _SocialExposureHook(AgentHook):
         ctx = current_request_context()
         if ctx is not None and ctx.attributes.get("social_deferred"):
             context.end_turn = True
+        elif (ctx is not None and ctx.metadata.get("_social_job") is not None
+              and self.runtime.config.repair_unsent_final and context.final_content
+              and not context.error and not self._publication_attempted):
+            self._unsent_final = True
+            if not self._repair_requested:
+                self._repair_requested = True
+                context.messages.append({"role": "user", "content": (
+                    "Runtime delivery check: your previous final text was NOT sent to the group. "
+                    "If it is an intended reply, publish it with social_send or message now. "
+                    "If you intend silence, call social_wait or return an empty response. "
+                    "Do not publish internal notes. This is one delivery check, not a request to repeat sent text."
+                )})
+                context.continue_turn = True
+        if self._publication_attempted or (ctx is not None and ctx.attributes.get("social_deferred")) or not context.final_content:
+            self._unsent_final = False
 
     async def on_finally(self, context: AgentRunHookContext) -> None:
         self._restore_memory_context()
         ctx = current_request_context()
         if ctx is not None and ctx.turn_id is not None:
-            self.runtime.store.finish(ctx.turn_id, "failed" if context.error or context.exception else "completed")
+            failed = context.error is not None or context.exception is not None
+            status = "failed" if failed else "unsent" if self._unsent_final else "completed"
+            if ctx.session_key is not None and not failed and not self._unsent_final:
+                self.runtime.store.acknowledge_seen(ctx.session_key, ctx.turn_id)
+            self.runtime.store.finish(ctx.turn_id, status)
             if ctx.session_key is not None:
                 self.runtime.store.release_pending(ctx.session_key)
             self.runtime.scheduler.notify()

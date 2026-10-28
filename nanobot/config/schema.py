@@ -105,6 +105,8 @@ class TelegramSocialWakeConfig(Base):
     keywords: list[str] = Field(default_factory=list, max_length=20)
     senders: list[str] = Field(default_factory=list, max_length=20)
     on_messages: bool = False
+    expires_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    one_shot: bool = True
 
     @field_validator("keywords")
     @classmethod
@@ -123,6 +125,7 @@ class TelegramSocialConfig(Base):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     scopes: list[TelegramSocialScopeConfig] = Field(default_factory=list, max_length=100)
+    repair_unsent_final: bool = True
     snapshot_messages: int = Field(default=30, ge=2, le=100)
     snapshot_chars: int = Field(default=12000, ge=2000, le=32000)
     retention_messages: int = Field(default=500, ge=100, le=10000)

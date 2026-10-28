@@ -42,6 +42,7 @@ def social(tmp_path):
     (root / "roles" / "guest.md").write_text("A friendly guest", encoding="utf-8")
     config = TelegramSocialConfig.model_validate({
         "enabled": True,
+        "repairUnsentFinal": False,
         "scopes": [
             {"chatId": A.chat_id, "threadId": A.thread_id, "roleId": "guest"},
             {"chatId": B.chat_id, "threadId": B.thread_id, "roleId": "guest"},
@@ -622,7 +623,7 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
     db.close()
     store = SocialStore(root)
     try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 6
         state = store.state(A.session_key)
         assert (state["next_seq"], state["read_through"], state["seen_through"]) == (7, 4, 5)
         assert state["mode"] == "observing"

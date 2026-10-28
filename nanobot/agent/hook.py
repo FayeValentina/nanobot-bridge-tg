@@ -33,6 +33,7 @@ class AgentHookContext:
     session_key: str | None = None
     model_messages: list[dict[str, Any]] = field(default_factory=list)
     end_turn: bool = False
+    continue_turn: bool = False  # A hook may request another iteration after a terminal response.
 
 
 @dataclass(slots=True)

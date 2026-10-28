@@ -798,6 +798,9 @@ class AgentRunner:
             context.final_content = final_content
             context.stop_reason = stop_reason
             await hook.after_iteration(context)
+            if context.continue_turn:
+                final_content = None
+                continue
             break
         else:
             stop_reason = "max_iterations"

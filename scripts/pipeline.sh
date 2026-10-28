@@ -17,6 +17,8 @@ case "${1:-help}" in
       nanobot/agent/autocompact.py nanobot/agent/context.py nanobot/agent/hook.py \
       nanobot/agent/loop.py nanobot/agent/memory.py nanobot/agent/runner.py \
       nanobot/agent/tools/base.py nanobot/agent/tools/context.py nanobot/agent/tools/telegram_social.py \
+      nanobot/agent/tools/message.py nanobot/bus/events.py nanobot/bus/queue.py \
+      tests/tools/test_message_tool.py tests/test_tool_contextvars.py \
       nanobot/agent/tools/execution.py \
       nanobot/agent/turn_delivery.py nanobot/session/manager.py nanobot/config/schema.py \
       nanobot/channels/manager.py nanobot/channels/telegram/runtime.py \
@@ -29,6 +31,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_memory.py \
       nanobot/channels/telegram/tests/test_social_proactive.py \
       nanobot/channels/telegram/tests/test_shared_tools.py \
+      nanobot/channels/telegram/tests/test_reply_reliability.py \
       nanobot/channels/telegram/tests/test_stream_pacing.py \
       nanobot/cli/gateway_runtime.py nanobot/webui/settings_system.py \
       nanobot/providers/openai_compat_provider.py tests/providers/test_litellm_kwargs.py \
@@ -39,7 +42,7 @@ case "${1:-help}" in
       tests/agent/test_telegram_social_contracts.py tests/agent/test_context_builder.py \
       tests/agent/test_consolidator.py tests/agent/test_turn_delivery.py \
       tests/agent/test_loop_tool_context.py tests/agent/test_turn_hooks.py \
-      tests/agent/test_dream.py tests/agent/test_task_cancel.py \
+      tests/agent/test_dream.py tests/agent/test_task_cancel.py tests/tools/test_message_tool.py tests/test_tool_contextvars.py \
       tests/agent/test_autocompact_unit.py tests/agent/test_runner_tool_execution.py \
       tests/agent/test_runner_goal_continue.py tests/agent/test_loop_runner_integration.py \
       tests/cli/test_gateway_runtime.py \

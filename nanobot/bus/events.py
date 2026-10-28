@@ -49,6 +49,15 @@ class InboundMessage:
         return self.channel != "system"
 
 
+@dataclass(frozen=True)
+class DeliveryReceipt:
+    """Platform-confirmed IDs, or an explicit queued/failed/unknown outcome."""
+
+    status: Literal["queued", "sent", "failed", "unknown"]
+    message_ids: tuple[int, ...] = ()
+    detail: str | None = None
+
+
 @dataclass
 class OutboundMessage:
     """Message to send to a chat channel.

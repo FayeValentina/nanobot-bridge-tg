@@ -36,7 +36,7 @@ from telegram.ext import (
 )
 from telegram.request import BaseRequest, HTTPXRequest
 
-from nanobot.bus.events import OutboundMessage
+from nanobot.bus.events import DeliveryReceipt, OutboundMessage
 from nanobot.bus.outbound_events import ProgressEvent
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
@@ -591,6 +591,7 @@ class TelegramChannel(BaseChannel):
         self._last_poll_ok: float = 0.0  # monotonic time of last getUpdates round trip
         self._app_ready = asyncio.Event()  # cleared while the app is being rebuilt
         self._teardown_lock = asyncio.Lock()
+        self._confirmed_send_lock = asyncio.Lock()
 
     def _require_app(self) -> TelegramApplication:
         if self._app is None:
@@ -636,6 +637,7 @@ class TelegramChannel(BaseChannel):
         redirect_lib_logging("httpx", level="WARNING")
 
         self._running = True
+        self.bus.set_delivery_handler(self.name, self.send_confirmed)
         backoff = RESTART_BACKOFF_INITIAL_SECONDS
         while self._running:
             try:
@@ -1094,6 +1096,81 @@ class TelegramChannel(BaseChannel):
         buf.text = tail
         buf.message_id = sent.message_id
         buf.draft_id = None
+
+    async def send_confirmed(self, msg: OutboundMessage) -> DeliveryReceipt:
+        """Ordinary message tool delivery, without social budgets or ambiguous retries."""
+        async with self._confirmed_send_lock:
+            return await self._send_confirmed(msg)
+
+    async def _send_confirmed(self, msg: OutboundMessage) -> DeliveryReceipt:
+        message_ids: list[int] = []
+        sent_texts: list[tuple[int, str]] = []
+        chat, metadata = self._resolve_topic_target(msg.chat_id, msg.metadata)
+        thread = int(metadata.get("message_thread_id") or 0)
+        scope = ConversationScope(self.name, int(chat), thread)
+        reply_id = metadata.get("message_id")
+        reply = ReplyParameters(message_id=int(reply_id), allow_sending_without_reply=True) if reply_id and self.config.reply_to_message else None
+        kwargs: dict[str, Any] = {"chat_id": int(chat), "reply_parameters": reply}
+        if thread:
+            kwargs["message_thread_id"] = thread
+        try:
+            app = await self._wait_for_app()
+            if app is None:
+                raise RuntimeError("Telegram is stopped; nothing was sent.")
+            for path in msg.media:
+                kind = self._get_media_type(path)
+                param = kind if kind in {"photo", "video", "voice", "audio"} else "document"
+                sender = getattr(app.bot, "send_" + param)
+                extra: dict[str, Any] = {"supports_streaming": True} if param == "video" else {}
+                value: str | bytes
+                if self._is_remote_media_url(path):
+                    ok, reason = validate_url_target(path)
+                    if not ok:
+                        raise ValueError(f"unsafe media URL: {reason}")
+                    value = path
+                else:
+                    value = Path(path).read_bytes()
+                    extra["filename"] = Path(path).name
+                sent = await sender(**kwargs, **{param: value}, **extra)
+                message_ids.append(int(sent.message_id))
+            text = msg.content
+            markup = self._build_keyboard(msg.buttons) if msg.buttons else None
+            if msg.buttons and markup is None:
+                text += "\n\n" + self._buttons_as_text(msg.buttons)
+            chunks = _split_telegram_markdown(text, TELEGRAM_MAX_MESSAGE_LEN) if text else []
+            for i, chunk in enumerate(chunks):
+                send_kwargs = {**kwargs, "reply_markup": markup if i == len(chunks) - 1 else None}
+                try:
+                    sent = await app.bot.send_message(text=_markdown_to_telegram_html(chunk), parse_mode="HTML", **send_kwargs)
+                except BadRequest as exc:
+                    # Only an explicit parse rejection proves the first request was not accepted.
+                    if not any(word in str(exc).lower() for word in ("parse", "entity", "entities")):
+                        raise
+                    sent = await app.bot.send_message(text=chunk, **send_kwargs)
+                message_ids.append(int(sent.message_id))
+                sent_texts.append((int(sent.message_id), chunk))
+            receipt = DeliveryReceipt("sent", tuple(message_ids))
+        except (BadRequest, RetryAfter) as exc:
+            receipt = DeliveryReceipt("failed", tuple(message_ids), f"{type(exc).__name__}; request rejected, do not repeat the confirmed prefix.")
+        except (TimedOut, NetworkError, asyncio.TimeoutError):
+            receipt = DeliveryReceipt("unknown", tuple(message_ids), "Platform outcome unknown; do not resend. IDs listed are the confirmed prefix.")
+        except asyncio.CancelledError:
+            self._record_message_receipt(scope, metadata, DeliveryReceipt("unknown", tuple(message_ids), "Cancelled during delivery; do not resend."), sent_texts)
+            raise
+        except Exception as exc:
+            receipt = DeliveryReceipt("failed", tuple(message_ids), f"{type(exc).__name__}; do not repeat the confirmed prefix.")
+        self._record_message_receipt(scope, metadata, receipt, sent_texts)
+        return receipt
+
+    def _record_message_receipt(self, scope: ConversationScope, metadata: dict[str, Any],
+                                receipt: DeliveryReceipt, texts: list[tuple[int, str]]) -> None:
+        self.logger.info("Message delivery {} to {}: {}", receipt.status, scope.session_key, receipt.message_ids)
+        if self.social is not None:
+            try:
+                self.social.record_message_receipt(scope, receipt, metadata.get("_delivery_turn_id"), texts)
+            except Exception:
+                # A journal failure must never turn an accepted send into an invitation to resend.
+                self.logger.exception("Failed to journal ordinary Telegram delivery; platform status is {}", receipt.status)
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""

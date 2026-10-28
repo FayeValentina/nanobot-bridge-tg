@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -232,7 +233,8 @@ async def test_message_tool_allows_workspace_absolute_media_when_restricted(tmp_
         media=[str(image)],
     )
 
-    assert result == "Message sent to telegram:1 with 1 attachments"
+    assert json.loads(result)["status"] == "queued"
+    assert json.loads(result)["attachments"] == 1
     assert sent[0].media == [str(image.resolve())]
 
 
@@ -350,7 +352,7 @@ async def test_message_tool_allows_ws_explicit_when_matches_context(tmp_path) ->
             chat_id=conv,
             media=[str(f)],
         )
-    assert result.startswith("Message sent")
+    assert json.loads(result)["status"] == "queued"
     assert sent[0].chat_id == conv
 
 
@@ -373,6 +375,6 @@ async def test_message_tool_cli_context_may_target_other_ws_chat(tmp_path) -> No
             chat_id=target,
             media=[str(f)],
         )
-    assert result.startswith("Message sent")
+    assert json.loads(result)["status"] == "queued"
     assert sent[0].channel == "websocket"
     assert sent[0].chat_id == target

@@ -2,9 +2,11 @@
 
 # pyright: reportIncompatibleMethodOverride=false
 
+import json
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,7 +16,7 @@ from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
 from nanobot.agent.tools.context import ToolContext, current_request_context
 from nanobot.agent.tools.path_utils import resolve_workspace_path
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
-from nanobot.bus.events import OutboundMessage
+from nanobot.bus.events import DeliveryReceipt, OutboundMessage
 from nanobot.config.paths import get_workspace_path
 from nanobot.security.workspace_access import current_tool_workspace
 
@@ -76,8 +78,10 @@ class MessageTool(Tool):
         default_message_id: str | None = None,
         workspace: str | Path | None = None,
         restrict_to_workspace: bool = False,
+        delivery_callback: Callable[[OutboundMessage], Awaitable[DeliveryReceipt]] | None = None,
     ):
         self._send_callback = send_callback
+        self._delivery_callback = delivery_callback
         self._workspace = (
             Path(workspace).expanduser() if workspace is not None else get_workspace_path()
         )
@@ -96,6 +100,7 @@ class MessageTool(Tool):
         send_callback = ctx.bus.publish_outbound if ctx.bus else None
         return cls(
             send_callback=send_callback,
+            delivery_callback=ctx.bus.deliver_outbound if ctx.bus else None,
             workspace=ctx.workspace,
             restrict_to_workspace=ctx.config.restrict_to_workspace,
         )
@@ -231,6 +236,8 @@ class MessageTool(Tool):
         metadata = dict(default_metadata) if same_target else {}
         if message_id:
             metadata["message_id"] = message_id
+        if request_ctx is not None and request_ctx.turn_id is not None:
+            metadata["_delivery_turn_id"] = request_ctx.turn_id
         if media:
             metadata["_record_channel_delivery"] = True
 
@@ -248,16 +255,18 @@ class MessageTool(Tool):
             return f"Message acknowledged for {channel}:{chat_id} (not delivered)"
 
         try:
-            await self._send_callback(msg)
+            if self._delivery_callback is not None:
+                receipt = await self._delivery_callback(msg)
+            else:
+                await self._send_callback(msg)
+                receipt = DeliveryReceipt("queued", detail="Callback accepted the message; platform delivery is not confirmed.")
             sends = _CURRENT_MESSAGE_SENDS.get()
-            if sends is not None:
+            if sends is not None and (receipt.status != "failed" or receipt.message_ids):
                 sends.add((channel, chat_id))
-            media_info = f" with {len(media)} attachments" if media else ""
-            button_info = (
-                f" with {sum(len(row) for row in button_rows)} button(s)"
-                if button_rows
-                else ""
-            )
-            return f"Message sent to {channel}:{chat_id}{media_info}{button_info}"
+            if receipt.status == "failed":
+                return ToolResult.error(json.dumps(asdict(receipt), ensure_ascii=False))
+            return json.dumps({"channel": channel, "chat_id": chat_id,
+                               **asdict(receipt), "attachments": len(media or []),
+                               "buttons": sum(len(row) for row in button_rows or [])}, ensure_ascii=False)
         except Exception as e:
             return ToolResult.error(f"Error sending message: {str(e)}")
