@@ -20,7 +20,7 @@ from nanobot.bus.outbound_events import (
 from nanobot.bus.queue import MessageBus
 from nanobot.bus.runtime_events import RuntimeEventPublisher
 from nanobot.channels.notification_routes import notification_metadata
-from nanobot.events import AgentEvent, EventSink
+from nanobot.events import NO_EVENTS, AgentEvent, EventSink
 from nanobot.providers.base import LLMUsage
 from nanobot.session.keys import UNIFIED_SESSION_KEY, last_channel_from_metadata
 
@@ -81,6 +81,10 @@ class TurnDeliveryFactory:
         self.bus = bus
         self.runtime_event_publisher = RuntimeEventPublisher(bus)
         self.route_policy = route_policy
+        self.suppress_output: Callable[[str], bool] | None = None
+
+    def _is_suppressed(self, key: str) -> bool:
+        return self.suppress_output is not None and self.suppress_output(key)
 
     def create(
         self,
@@ -101,6 +105,7 @@ class TurnDeliveryFactory:
             session_key=session_key,
             route=route,
             enable_stream=enable_stream,
+            output_suppressed=self._is_suppressed(session_key),
         )
 
     def unrouted(self, msg: InboundMessage, session_key: str) -> TurnDelivery:
@@ -115,6 +120,7 @@ class TurnDeliveryFactory:
                 chat_id=msg.chat_id,
                 metadata=dict(msg.metadata or {}),
             ),
+            output_suppressed=self._is_suppressed(session_key),
         )
 
     def session_events(
@@ -123,6 +129,8 @@ class TurnDeliveryFactory:
         session_metadata: dict[str, Any],
     ) -> EventSink:
         """Bind idle notifications to one route without acquiring a turn owner."""
+        if self._is_suppressed(session_key):
+            return NO_EVENTS
         saved_route = session_metadata.get("_compaction_route")
         if isinstance(saved_route, dict):
             saved_route = cast(dict[str, Any], saved_route)
@@ -184,6 +192,7 @@ class TurnDelivery:
     session_key: str
     route: TurnRoute
     enable_stream: bool = False
+    output_suppressed: bool = False
     delivery_message: InboundMessage = field(init=False)
     lifecycle_message: InboundMessage = field(init=False)
     _stream_base_id: str | None = field(init=False, default=None)
@@ -196,7 +205,7 @@ class TurnDelivery:
     _retry_status: RetryStatusEvent | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
-        self._routed_events = _bind_events(self.bus, self.route)
+        self._routed_events = NO_EVENTS if self.output_suppressed else _bind_events(self.bus, self.route)
         self.events = EventSink(self._publish_event, self._routed_events.accepts)
         self.delivery_message = dataclasses.replace(
             self.input_message,
@@ -207,7 +216,7 @@ class TurnDelivery:
         self.lifecycle_message = (
             self.delivery_message if self.route.publish_lifecycle else self.input_message
         )
-        if self.enable_stream and self.delivery_message.metadata.get("_wants_stream"):
+        if not self.output_suppressed and self.enable_stream and self.delivery_message.metadata.get("_wants_stream"):
             self._stream_base_id = f"{self.session_key}:{time.time_ns()}"
 
     @property
@@ -305,9 +314,9 @@ class TurnDelivery:
         if response is not None:
             completed_channel = response.channel
             completed_chat_id = response.chat_id
-            if response.channel != "websocket" or stop_reason != "error":
+            if not self.output_suppressed and (response.channel != "websocket" or stop_reason != "error"):
                 await self.bus.publish_outbound(response)
-        elif self.lifecycle_message.channel == "cli":
+        elif not self.output_suppressed and self.lifecycle_message.channel == "cli":
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=self.lifecycle_message.channel,
@@ -334,14 +343,15 @@ class TurnDelivery:
             )
 
     async def fail(self, *, publish_completion: bool) -> None:
-        await self.bus.publish_outbound(
-            OutboundMessage(
-                channel=self.lifecycle_message.channel,
-                chat_id=self.lifecycle_message.chat_id,
-                content="Sorry, I encountered an error.",
-                metadata=dict(self.lifecycle_message.metadata or {}),
+        if not self.output_suppressed:
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=self.lifecycle_message.channel,
+                    chat_id=self.lifecycle_message.chat_id,
+                    content="Sorry, I encountered an error.",
+                    metadata=dict(self.lifecycle_message.metadata or {}),
+                )
             )
-        )
         if publish_completion:
             await self.runtime_event_publisher.turn_completed(
                 channel=self.lifecycle_message.channel,

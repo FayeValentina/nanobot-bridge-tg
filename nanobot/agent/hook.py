@@ -31,6 +31,8 @@ class AgentHookContext:
     stop_reason: str | None = None
     error: str | None = None
     session_key: str | None = None
+    model_messages: list[dict[str, Any]] = field(default_factory=list)
+    end_turn: bool = False
 
 
 @dataclass(slots=True)

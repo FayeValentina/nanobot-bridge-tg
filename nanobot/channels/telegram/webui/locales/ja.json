@@ -3,6 +3,9 @@
     "docsLabel": "Telegram 設定ガイドを開く",
     "officialLabel": "BotFather を開く",
     "fields": {
+      "social": {
+        "label": "グループ会話への参加"
+      },
       "token": {
         "label": "ボットトークン",
         "placeholder": "123456:ABC..."

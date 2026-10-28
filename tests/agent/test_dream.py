@@ -10,6 +10,7 @@ from nanobot.security.workspace_access import (
     default_workspace_scope,
     reset_workspace_scope,
 )
+from nanobot.session.manager import SessionPolicy
 from nanobot.utils.prompt_templates import render_template
 
 
@@ -401,10 +402,15 @@ class TestEphemeralDirect:
         )
 
         with (
-            patch("nanobot.agent.loop.SessionManager"),
+            patch("nanobot.agent.loop.SessionManager") as mock_sessions,
             patch("nanobot.agent.loop.SubagentManager") as mock_sub,
             patch("nanobot.agent.loop.Consolidator"),
         ):
+            # New policy fields must be concrete defaults, not truthy Mock children.
+            policy = SessionPolicy()
+            mock_sessions.return_value.get_or_create.return_value.policy = policy
+            mock_sessions.return_value.resolve_policy.return_value = policy
+            mock_sessions.return_value.policy_for_key.return_value = policy
             mock_sub.return_value.cancel_by_session = AsyncMock(return_value=0)
             loop = AgentLoop(
                 bus=bus,

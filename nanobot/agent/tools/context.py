@@ -40,6 +40,7 @@ class RequestContext:
     turn_id: str | None = None
     workspace: Path | None = None
     attributes: dict[str, Any] = field(default_factory=dict)
+    allow_private_context: bool = True
 
 
 @runtime_checkable

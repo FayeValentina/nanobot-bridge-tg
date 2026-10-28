@@ -204,6 +204,12 @@ def test_every_runtime_channel_field_has_a_webui_contract() -> None:
         runtime_fields.discard("enabled")
         setup = plugin.setup
         assert setup is not None
+        # One JSON settings field owns its nested runtime configuration.
+        json_fields = {key for key, spec in setup.fields.items() if spec.kind == "json"}
+        runtime_fields = {
+            next((root for root in json_fields if field.startswith(root + ".")), field)
+            for field in runtime_fields
+        }
         contract_fields = set(setup.fields)
         internal_fields = INTERNAL_CHANNEL_FIELDS.get(name, set())
 

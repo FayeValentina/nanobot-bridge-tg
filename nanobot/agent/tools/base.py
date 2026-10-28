@@ -206,6 +206,9 @@ class Tool(ABC):
     config_key: str = ""
     _plugin_discoverable: bool = True
     _scopes: set[str] = {"core"}
+    # Application-owned tools can require a session capability grant even when
+    # registered in the shared registry. Registration alone grants no access.
+    requires_explicit_allowlist: bool = False
 
     @classmethod
     def config_cls(cls) -> type[BaseModel] | None:

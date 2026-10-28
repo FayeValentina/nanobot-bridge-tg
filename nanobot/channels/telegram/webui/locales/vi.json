@@ -3,6 +3,9 @@
     "docsLabel": "Mở hướng dẫn Telegram",
     "officialLabel": "Mở BotFather",
     "fields": {
+      "social": {
+        "label": "Tham gia trò chuyện nhóm"
+      },
       "token": {
         "label": "Token bot",
         "placeholder": "123456:ABC..."

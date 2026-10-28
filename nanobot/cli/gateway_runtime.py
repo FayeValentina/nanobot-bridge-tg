@@ -203,6 +203,7 @@ def _pick_heartbeat_target_from_sessions(
     sessions: Iterable[dict[str, Any]],
     archived_keys: Iterable[str],
     unified_session_metadata: dict[str, Any] | None = None,
+    target_allowed: Callable[[str, str], bool] | None = None,
 ) -> tuple[str, str]:
     enabled = set(enabled_channels)
     archived = set(archived_keys)
@@ -214,7 +215,10 @@ def _pick_heartbeat_target_from_sessions(
             route = last_channel_from_metadata(unified_session_metadata)
             if route is not None:
                 channel, chat_id = route
-                if channel not in {"cli", "system"} and channel in enabled:
+                if (
+                    channel not in {"cli", "system"} and channel in enabled
+                    and (target_allowed is None or target_allowed(channel, chat_id))
+                ):
                     return channel, chat_id
             continue
         if ":" not in key:
@@ -222,7 +226,7 @@ def _pick_heartbeat_target_from_sessions(
         channel, chat_id = key.split(":", 1)
         if channel in {"cli", "system"}:
             continue
-        if channel in enabled and chat_id:
+        if channel in enabled and chat_id and (target_allowed is None or target_allowed(channel, chat_id)):
             return channel, chat_id
     return "cli", "direct"
 
@@ -464,12 +468,26 @@ def _run_gateway(
     cron = CronService(cron_store_path)
     trigger_store = LocalTriggerStore(config.workspace_path)
 
+    from nanobot.agent.tools.telegram_social import TelegramSocialTool
+    from nanobot.channels.telegram.social.runtime import SOCIAL_TOOLS, TelegramSocialRuntime
+    from nanobot.config.schema import TelegramSocialConfig
+
+    telegram_section = config.channels.model_dump(by_alias=True).get("telegram", {})
+    social_config = TelegramSocialConfig.model_validate(
+        cast(dict[str, Any], telegram_section).get("social", {}) if isinstance(telegram_section, dict) else {},
+    )
+    telegram_social = TelegramSocialRuntime(
+        social_config, Path(config_path).parent / "telegram-social", bus,
+    )
+
     turn_delivery_factory = TurnDeliveryFactory(
         bus,
         route_policy=WebuiTurnRoutePolicy(session_manager),
     )
 
     tools = ToolRegistry()
+    for name in sorted(SOCIAL_TOOLS):
+        tools.register(TelegramSocialTool(telegram_social, name))
     mcp_provider = MCPProvider.from_config(config, tools)
 
     recovery = RecoveryCoordinator(
@@ -493,9 +511,11 @@ def _run_gateway(
         provider_signature=provider_snapshot.signature,
         local_trigger_store=trigger_store,
         hooks=[_MCPReadinessHook(mcp_provider)],
-        hook_factories=[create_file_edit_activity_hook],
+        hook_factories=[create_file_edit_activity_hook, telegram_social.hook_factory],
         tool_registry=tools,
         recovery_admission=recovery,
+        session_policy_resolver=telegram_social.policy_for_session,
+        request_admission=telegram_social.admit_request,
     )
     def _schedule_webui_background(awaitable: Awaitable[None]) -> None:
         agent.schedule_background(cast(Coroutine[Any, Any, None], awaitable))
@@ -704,6 +724,12 @@ def _run_gateway(
 
     def _webui_refresh_runtime_config() -> None:
         agent.refresh_runtime_config()
+        from nanobot.config.loader import load_config
+
+        fresh_telegram = load_config().channels.model_dump(by_alias=True).get("telegram", {})
+        telegram_social.configure(TelegramSocialConfig.model_validate(
+            cast(dict[str, Any], fresh_telegram).get("social", {}) if isinstance(fresh_telegram, dict) else {},
+        ))
 
     def _webui_skill_state_action(disabled_skills: set[str]) -> None:
         config.agents.defaults.disabled_skills = sorted(disabled_skills)
@@ -730,6 +756,7 @@ def _run_gateway(
         webui_skill_state_action=_webui_skill_state_action,
         webui_recovery_action=recovery.handle_action,
         config_path=Path(config_path),
+        telegram_social=telegram_social,
     )
 
     def _pick_heartbeat_target() -> tuple[str, str]:
@@ -745,6 +772,7 @@ def _run_gateway(
             sessions=session_manager.list_sessions(),
             archived_keys=sidebar_state.get("archived_keys", []),
             unified_session_metadata=unified_metadata,
+            target_allowed=telegram_social.allows_personal_delivery,
         )
 
     if channels.enabled_channels:
@@ -1022,6 +1050,7 @@ def _run_gateway(
                 flushed = agent.sessions.flush_all()
                 if flushed:
                     logger.info("Shutdown: flushed {} session(s) to disk", flushed)
+                telegram_social.close()
             finally:
                 restore_shutdown_handlers()
 

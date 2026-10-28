@@ -122,6 +122,10 @@ class AutoCompact:
             logger.info("Auto-compact: reloading session {} (archiving={})", key, key in self._archiving)
             session = self.sessions.get_or_create(key)
         # Hot path: summary from in-memory dict (process hasn't restarted).
+        if not session.policy.include_profile:
+            # Scoped personas may change while the process is alive. Their
+            # persisted summary/boundary is authoritative, never this cache.
+            self._summaries.pop(key, None)
         entry = self._summaries.pop(key, None)
         if entry:
             return session, entry

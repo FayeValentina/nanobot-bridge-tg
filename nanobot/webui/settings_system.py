@@ -244,12 +244,15 @@ def save_channel_config_values(
             channel_config,
             instance_id=instance_id,
         )
+        updated_channels = type(config.channels).model_validate(
+            config.channels.model_dump(by_alias=True) | {name: updated_section},
+        )
     except ValueError as exc:
         raise WebUISettingsError(
             f"Invalid {name} configuration: {exc}",
             status=400,
         ) from exc
-    setattr(config.channels, name, updated_section)
+    config.channels = updated_channels
     return saved
 
 

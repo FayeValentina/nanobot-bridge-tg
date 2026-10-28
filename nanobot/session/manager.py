@@ -270,6 +270,24 @@ class SessionPolicy:
     persist: bool = True
     log_content: bool = True
     disabled_tools: frozenset[str] = frozenset()
+    allowed_tools: frozenset[str] | None = None
+    include_profile: bool = True
+    include_memory: bool = True
+    include_skills: bool = True
+    archive_memory: bool = True
+    allow_commands: bool = True
+    tool_only: bool = False
+    enabled: bool = True
+    persona: str = ""
+    context_version: str | None = None
+
+
+ISOLATED_CONTEXT_KEY = "_isolated_context"
+ISOLATED_SESSION_POLICY = SessionPolicy(
+    allowed_tools=frozenset(), include_profile=False, include_memory=False,
+    include_skills=False, archive_memory=False, allow_commands=False,
+    tool_only=True, enabled=False, log_content=False,
+)
 
 
 @dataclass
@@ -289,6 +307,8 @@ class Session:
     def __post_init__(self) -> None:
         if not isinstance(cast(object, self.metadata), dict):
             self.metadata = {}
+        if self.metadata.get(ISOLATED_CONTEXT_KEY) is True:
+            self.policy = ISOLATED_SESSION_POLICY
         if not isinstance(cast(object, self.provider_state), ProviderConversationState):
             self.provider_state = None
         # An out-of-range offset (corrupt metadata) would hide all history; reset it.
@@ -1661,6 +1681,7 @@ class SessionManager:
         self._overflow_cache: WeakValueDictionary[str, Session] = WeakValueDictionary()
         self._max_cached_sessions = SESSION_CACHE_MAX_SIZE
         self._delete_observer: Callable[[str], None] | None = None
+        self._policy_resolver: Callable[[Session], SessionPolicy | None] | None = None
 
     def _remember(self, session: Session) -> None:
         """Keep recent sessions strongly cached without duplicating live objects."""
@@ -1684,7 +1705,32 @@ class SessionManager:
 
     def get_cached(self, key: str) -> Session | None:
         """Return a cached session without creating or loading one from disk."""
-        return self._cached(key)
+        session = self._cached(key)
+        if session is not None:
+            self.resolve_policy(session)
+        return session
+
+    def set_policy_resolver(
+        self, resolver: Callable[[Session], SessionPolicy | None],
+    ) -> None:
+        """Install the application-owned policy resolver, including after reload."""
+        self._policy_resolver = resolver
+
+    def resolve_policy(self, session: Session) -> SessionPolicy:
+        resolver = self._policy_resolver
+        if resolver is not None:
+            policy = resolver(session)
+            if policy is not None:
+                session.policy = policy
+                return policy
+        if session.metadata.get(ISOLATED_CONTEXT_KEY) is True:
+            session.policy = ISOLATED_SESSION_POLICY
+        return session.policy
+
+    def policy_for_key(self, key: str) -> SessionPolicy:
+        # Inspect routing policy without recreating a required transient session.
+        session = self._cached(key) or self._load(key) or Session(key=key)
+        return self.resolve_policy(session)
 
     def set_delete_observer(self, observer: Callable[[str], None]) -> None:
         """Observe explicit session deletion for process-local state cleanup."""
@@ -1749,6 +1795,7 @@ class SessionManager:
         """
         session = self._cached(key)
         if session is not None:
+            self.resolve_policy(session)
             return session
 
         session = self._load(key)
@@ -1756,6 +1803,7 @@ class SessionManager:
             session = Session(key=key)
 
         self._remember(session)
+        self.resolve_policy(session)
         return session
 
     def get_or_create_transient(

@@ -3,6 +3,9 @@
     "docsLabel": "打开 Telegram 配置指南",
     "officialLabel": "打开 BotFather",
     "fields": {
+      "social": {
+        "label": "群友仿真"
+      },
       "token": {
         "label": "机器人令牌",
         "placeholder": "123456:ABC..."

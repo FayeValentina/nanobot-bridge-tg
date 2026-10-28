@@ -3,6 +3,9 @@
     "docsLabel": "Buka panduan Telegram",
     "officialLabel": "Buka BotFather",
     "fields": {
+      "social": {
+        "label": "Partisipasi percakapan grup"
+      },
       "token": {
         "label": "Token bot",
         "placeholder": "123456:ABC..."

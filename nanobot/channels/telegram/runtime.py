@@ -26,16 +26,30 @@ from telegram import (
     User,
 )
 from telegram.error import BadRequest, InvalidToken, NetworkError, RetryAfter, TimedOut
-from telegram.ext import Application, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationHandlerStop,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 from telegram.request import BaseRequest, HTTPXRequest
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import ProgressEvent
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
+from nanobot.channels.telegram.social.models import (
+    ConversationScope,
+    ObservedMessage,
+    SocialDeliveryUnknownError,
+    SocialRateLimitError,
+)
+from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 from nanobot.command.builtin import build_help_text
 from nanobot.config.paths import get_media_dir
-from nanobot.config.schema import Base
+from nanobot.config.schema import Base, TelegramSocialConfig
 from nanobot.events import ContextCompactionEvent
 from nanobot.security.network import validate_url_target
 from nanobot.utils.helpers import split_message
@@ -421,6 +435,7 @@ class TelegramConfig(Base):
     reply_to_message: bool = False
     react_emoji: str = "👀"
     group_policy: Literal["open", "mention"] = "mention"
+    social: TelegramSocialConfig = Field(default_factory=TelegramSocialConfig)
     connection_pool_size: int = 32
     pool_timeout: float = 5.0
     streaming: bool = True
@@ -545,11 +560,17 @@ class TelegramChannel(BaseChannel):
     def default_config(cls) -> dict[str, Any]:
         return TelegramConfig().model_dump(by_alias=True)
 
-    def __init__(self, config: Any, bus: MessageBus):
+    def __init__(self, config: Any, bus: MessageBus, *, social: TelegramSocialRuntime | None = None):
         if isinstance(config, dict):
             config = TelegramConfig.model_validate(config)
         super().__init__(config, bus)
         self.config: TelegramConfig = config
+        if self.config.social.enabled and social is None:
+            raise ValueError("Telegram social mode requires the gateway-owned social runtime")
+        self.social = social
+        if social is not None:
+            social.configure(self.config.social)
+            social.set_sender(self._send_social_text)
         self._app: TelegramApplication | None = None
         self._typing_tasks: dict[str, asyncio.Task[None]] = {}  # chat_id -> typing loop task
         self._media_group_buffers: dict[str, dict[str, Any]] = {}
@@ -685,6 +706,10 @@ class TelegramChannel(BaseChannel):
         )
         self._app = builder.build()
         self._app.add_error_handler(self._on_error)
+        if self.social is not None:
+            self._app.add_handler(
+                MessageHandler(filters.ChatType.GROUPS, self._on_social_update), group=-1,
+            )
 
         # Add command handlers (using Regex to support @username suffixes before bot initialization)
         self._app.add_handler(MessageHandler(filters.Regex(r"^/start(?:@\w+)?$"), self._on_start))
@@ -722,6 +747,8 @@ class TelegramChannel(BaseChannel):
             self.logger.debug("inline keyboards enabled")
         else:
             allowed_updates = ["message"]
+        if self.config.social.enabled:
+            allowed_updates.append("edited_message")
 
         if self.config.mode == "webhook":
             self.logger.info("Starting bot (webhook mode)...")
@@ -743,6 +770,11 @@ class TelegramChannel(BaseChannel):
             self.logger.debug("bot commands registered")
         except Exception as e:
             self.logger.warning("Failed to register bot commands: {}", e)
+
+        # Recover before accepting new updates, so the scan cannot requeue a
+        # live turn that just arrived from polling during gateway startup.
+        if self.social is not None:
+            await self.social.recover()
 
         if self.config.mode == "webhook":
             # ``url_path`` is the local HTTP route. ``webhook_url`` is the
@@ -836,6 +868,8 @@ class TelegramChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop the Telegram bot."""
         self._running = False
+        if self.social is not None:
+            await self.social.scheduler.stop()
 
         # Cancel all typing indicators
         for chat_id in list(self._typing_tasks):
@@ -1058,6 +1092,9 @@ class TelegramChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""
+        if self._social_target(msg.chat_id, msg.metadata):
+            # Only the scope-checked social tool calls the dedicated sender.
+            return
         app = await self._wait_for_app()
         if app is None:
             self.logger.warning("bot not running")
@@ -1325,6 +1362,9 @@ class TelegramChannel(BaseChannel):
         merge_next: bool = False,
     ) -> None:
         """Stream a rich draft in private chats, then persist the final message."""
+        if self._social_target(chat_id, metadata or {}):
+            self._stream_bufs.pop(chat_id, None)
+            return
         app = await self._wait_for_app()
         if app is None:
             return
@@ -1617,6 +1657,8 @@ class TelegramChannel(BaseChannel):
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
+        if await self._observe_social(update):
+            return
         if not update.message or not update.effective_user:
             return
 
@@ -1633,6 +1675,8 @@ class TelegramChannel(BaseChannel):
 
     async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command for allowed users only."""
+        if await self._observe_social(update):
+            return
         if not update.message or not update.effective_user:
             return
         user = update.effective_user
@@ -1761,6 +1805,81 @@ class TelegramChannel(BaseChannel):
             if add_failure_content:
                 return [], [f"[{media_type}: download failed]"]
             return [], []
+
+    def _social_target(self, chat_id: str, metadata: dict[str, Any]) -> bool:
+        if self.social is None:
+            return False
+        try:
+            scope = ConversationScope(self.name, int(chat_id), int(metadata.get("message_thread_id") or 0))
+        except (TypeError, ValueError):
+            return False
+        return self.social.binding(scope) is not None
+
+    async def _send_social_text(
+        self, scope: ConversationScope, text: str, reply_to: int | None,
+    ) -> int:
+        if self.social is None or self.social.binding(scope) is None:
+            raise PermissionError("social send is no longer authorized")
+        app = self._require_app()
+        kwargs: dict[str, Any] = {"chat_id": scope.chat_id, "text": text}
+        if scope.thread_id:
+            kwargs["message_thread_id"] = scope.thread_id
+        if reply_to is not None:
+            kwargs["reply_parameters"] = ReplyParameters(
+                message_id=reply_to, allow_sending_without_reply=False,
+            )
+        try:
+            # A timeout may follow acceptance. Do not use _call_with_retry here.
+            result = await app.bot.send_message(**kwargs)
+        except RetryAfter as exc:
+            delay = exc.retry_after
+            raise SocialRateLimitError(delay.total_seconds() if isinstance(delay, timedelta) else float(delay)) from exc
+        except (TimedOut, NetworkError) as exc:
+            raise SocialDeliveryUnknownError("platform outcome unknown") from exc
+        if not isinstance(result.message_id, int) or result.message_id <= 0:
+            raise SocialDeliveryUnknownError("platform receipt is invalid")
+        return result.message_id
+
+    async def _on_social_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if await self._observe_social(update):
+            raise ApplicationHandlerStop
+
+    async def _observe_social(self, update: Update) -> bool:
+        social = self.social
+        if social is None:
+            return False
+        message = update.message or update.edited_message
+        if message is None or message.chat.type not in ("group", "supergroup"):
+            return False
+        scope = ConversationScope(self.name, message.chat_id, message.message_thread_id or 0)
+        if social.binding(scope) is None:
+            return False
+        user = message.from_user
+        if user is None or message.sender_chat is not None:
+            self.logger.debug("Social observation skipped: sender has no stable user identity")
+            return True
+        bot_id, bot_username = await self._ensure_bot_identity()
+        text = message.text or message.caption or ""
+        directed = False
+        if bot_username:
+            directed = self._has_mention_entity(
+                text, list(message.entities or message.caption_entities or ()), bot_username, bot_id,
+            )
+        reply_user = message.reply_to_message.from_user if message.reply_to_message else None
+        directed = directed or bool(bot_id and reply_user and reply_user.id == bot_id)
+        media: list[str] = []
+        for kind in ("photo", "video", "animation", "voice", "audio", "document", "sticker"):
+            if getattr(message, kind, None):
+                media.append(kind)
+        observed = ObservedMessage(
+            scope=scope, update_id=update.update_id, message_id=message.message_id,
+            sender_id=str(user.id), display_name=user.full_name,
+            timestamp=message.date.timestamp(), text=text or "[non-text message]",
+            reply_to=message.reply_to_message.message_id if message.reply_to_message else None,
+            media=tuple(media), is_self=bool(bot_id and user.id == bot_id), is_bot=bool(user.is_bot),
+        )
+        await social.observe(observed, directed=bool(directed and not user.is_bot and update.edited_message is None))
+        return True
 
     async def _ensure_bot_identity(self) -> tuple[int | None, str | None]:
         """Load bot identity once and reuse it for mention/reply checks."""
@@ -1917,6 +2036,8 @@ class TelegramChannel(BaseChannel):
 
     async def _process_forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Process a queued slash command."""
+        if await self._observe_social(update):
+            return
         message = update.message
         user = update.effective_user
         if message is None or user is None:
@@ -1946,6 +2067,8 @@ class TelegramChannel(BaseChannel):
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
+        if self.social is not None and update.edited_message is not None and await self._observe_social(update):
+            return
         if not update.message or not update.effective_user:
             return
         if not self._running:
@@ -1955,6 +2078,8 @@ class TelegramChannel(BaseChannel):
 
     async def _process_message_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Process a queued Telegram message update."""
+        if await self._observe_social(update):
+            return
 
         message = update.message
         user = update.effective_user
@@ -2203,6 +2328,11 @@ class TelegramChannel(BaseChannel):
         user = update.effective_user
         query_message = query.message
         chat_id = query_message.chat.id if query_message else None
+        if chat_id and self._social_target(str(chat_id), {
+            "message_thread_id": getattr(query_message, "message_thread_id", None),
+        }):
+            await query.answer()
+            return
         sender_id = self._sender_id(user)
         if not chat_id:
             self.logger.warning("Callback query without chat_id")

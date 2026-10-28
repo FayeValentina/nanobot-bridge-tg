@@ -3,6 +3,9 @@
     "docsLabel": "Abrir guía de Telegram",
     "officialLabel": "Abrir BotFather",
     "fields": {
+      "social": {
+        "label": "Participación en grupos"
+      },
       "token": {
         "label": "Token del bot",
         "placeholder": "123456:ABC..."

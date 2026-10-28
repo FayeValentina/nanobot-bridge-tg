@@ -105,19 +105,27 @@ class ContextBuilder:
         session_summary: SessionSummary | None = None,
         workspace: Path | None = None,
         include_memory: bool = True,
+        include_profile: bool = True,
+        include_skills: bool = True,
+        trusted_persona: str = "",
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         root = workspace or self.workspace
-        parts = [self._get_identity(channel=channel, workspace=root)]
+        parts = [
+            self._get_identity(channel=channel, workspace=root)
+            if include_profile else "You are an AI assistant in a shared conversation."
+        ]
 
-        bootstrap = self._load_bootstrap_files(root)
+        bootstrap = self._load_bootstrap_files(root) if include_profile else ""
         if bootstrap:
             parts.append(bootstrap)
 
         parts.append(render_template("agent/tool_contract.md"))
+        if trusted_persona:
+            parts.append(f"# Conversation persona\n\n{trusted_persona}")
 
         project_path = root.expanduser().resolve()
-        if project_path != self.workspace.expanduser().resolve():
+        if include_profile and project_path != self.workspace.expanduser().resolve():
             parts.append(
                 "# Current Project\n\n"
                 f"Working directory: {project_path}\n"
@@ -129,7 +137,7 @@ class ContextBuilder:
             if memory and not self._is_template_content(memory, "memory/MEMORY.md"):
                 parts.append(f"# Memory\n\n## Long-term Memory\n{memory}")
 
-        active_skills = self.skills.get_always_skills()
+        active_skills = self.skills.get_always_skills() if include_skills else []
         if active_skills:
             active_content = self.skills.load_skills_for_context(active_skills)
             if active_content:
@@ -138,7 +146,7 @@ class ContextBuilder:
         skills_summary = self.skills.build_skills_summary(
             exclude=set(active_skills),
             workspace=root,
-        )
+        ) if include_skills else ""
         if skills_summary:
             parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
 
@@ -240,6 +248,9 @@ class ContextBuilder:
         runtime_context_blocks: Sequence[RuntimeContextBlock] | None = None,
         workspace: Path | None = None,
         include_memory: bool = True,
+        include_profile: bool = True,
+        include_skills: bool = True,
+        trusted_persona: str = "",
     ) -> list[dict[str, Any]]:
         """Compatibility wrapper for callers that need merged adjacent roles."""
         messages = self.build_transcript(
@@ -254,6 +265,9 @@ class ContextBuilder:
             channel=channel,
             workspace=workspace,
             include_memory=include_memory,
+            include_profile=include_profile,
+            include_skills=include_skills,
+            trusted_persona=trusted_persona,
         )
         if current_message is None:
             return messages
@@ -280,6 +294,9 @@ class ContextBuilder:
         channel: str | None = None,
         workspace: Path | None = None,
         include_memory: bool = True,
+        include_profile: bool = True,
+        include_skills: bool = True,
+        trusted_persona: str = "",
     ) -> list[dict[str, Any]]:
         """Build a model transcript while preserving the fresh-turn boundary."""
         root = workspace or self.workspace
@@ -291,6 +308,9 @@ class ContextBuilder:
                     session_summary=transcript.session_summary,
                     workspace=root,
                     include_memory=include_memory,
+                    include_profile=include_profile,
+                    include_skills=include_skills,
+                    trusted_persona=trusted_persona,
                 ),
             },
             *transcript.history,
@@ -303,6 +323,7 @@ class ContextBuilder:
             media=list(transcript.media) if transcript.media else None,
             current_role=transcript.current_role,
             runtime_context_blocks=transcript.runtime_context_blocks,
+            include_skills=include_skills,
         )
         messages.append(current)
         return messages
@@ -314,13 +335,17 @@ class ContextBuilder:
         media: list[str] | None = None,
         current_role: str = "user",
         runtime_context_blocks: Sequence[RuntimeContextBlock] | None = None,
+        include_skills: bool = True,
     ) -> dict[str, Any]:
         """Build only the fresh turn message without merging it into history."""
         content = self.build_user_content(current_message, image_paths=media)
         blocks: list[RuntimeContextBlock] = []
         if current_role == "user":
             blocks.extend(runtime_context_blocks or ())
-            skill_context = self.skills.build_explicit_skill_runtime_context(current_message)
+            skill_context = (
+                self.skills.build_explicit_skill_runtime_context(current_message)
+                if include_skills else None
+            )
             if skill_context is not None and skill_context not in blocks:
                 blocks.append(skill_context)
         merged, runtime_context_meta = append_runtime_context(content, blocks)

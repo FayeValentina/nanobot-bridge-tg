@@ -20,6 +20,89 @@ if TYPE_CHECKING:
     from nanobot.agent.tools.web import WebToolsConfig
 
 
+class TelegramSocialScopeConfig(Base):
+    """Operator-authorized group/topic; observation does not grant administration."""
+
+    model_config = ConfigDict(extra="forbid")
+    chat_id: int = Field(lt=0)
+    thread_id: int = Field(default=0, ge=0)
+    role_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    background: str = Field(default="", max_length=4096)
+    enabled: bool = True
+    observe_from: list[str] = Field(default_factory=lambda: ["*"])
+    paused: bool = False
+    nicknames: list[str] = Field(default_factory=list, max_length=20)
+    wake_keywords: list[str] = Field(default_factory=list, max_length=20)
+    wake_senders: list[str] = Field(default_factory=list, max_length=20)
+    wake_on_messages: bool = False
+    allow_ambient_wake: bool = True
+
+    @field_validator("nicknames", "wake_keywords")
+    @classmethod
+    def validate_wake_words(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() or len(value) > 80 for value in values):
+            raise ValueError("wake words must contain 1–80 characters")
+        return values
+
+    @field_validator("wake_senders")
+    @classmethod
+    def validate_wake_senders(cls, values: list[str]) -> list[str]:
+        if any(not value.isascii() or not value.isdigit() for value in values):
+            raise ValueError("wakeSenders accepts Telegram user IDs")
+        return values
+
+    @field_validator("observe_from")
+    @classmethod
+    def validate_observers(cls, values: list[str]) -> list[str]:
+        if any(value != "*" and (not value.isascii() or not value.isdigit()) for value in values):
+            raise ValueError("observeFrom accepts Telegram user IDs or '*'")
+        return values
+
+
+class TelegramSocialWakeConfig(Base):
+    """Model-editable attention conditions; contains no authorization or budgets."""
+
+    model_config = ConfigDict(extra="forbid")
+    keywords: list[str] = Field(default_factory=list, max_length=20)
+    senders: list[str] = Field(default_factory=list, max_length=20)
+    on_messages: bool = False
+
+    @field_validator("keywords")
+    @classmethod
+    def validate_keywords(cls, values: list[str]) -> list[str]:
+        return TelegramSocialScopeConfig.validate_wake_words(values)
+
+    @field_validator("senders")
+    @classmethod
+    def validate_senders(cls, values: list[str]) -> list[str]:
+        return TelegramSocialScopeConfig.validate_wake_senders(values)
+
+
+class TelegramSocialConfig(Base):
+    """Opt-in Telegram text social mode; runtime state is stored outside config."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    scopes: list[TelegramSocialScopeConfig] = Field(default_factory=list, max_length=100)
+    snapshot_messages: int = Field(default=30, ge=2, le=100)
+    snapshot_chars: int = Field(default=12000, ge=2000, le=32000)
+    retention_messages: int = Field(default=500, ge=100, le=10000)
+    max_requests_per_hour: int = Field(default=12, ge=1, le=120)
+    max_sends_per_hour: int = Field(default=6, ge=1, le=60)
+    max_text_chars: int = Field(default=2000, ge=1, le=4000)
+    coalesce_seconds: float = Field(default=1.5, ge=0, le=10)
+    cooldown_seconds: float = Field(default=10, ge=0, le=300)
+    send_cooldown_seconds: float = Field(default=2, ge=0, le=60)
+    max_wait_seconds: int = Field(default=3600, ge=1, le=86400)
+
+    @model_validator(mode="after")
+    def validate_scopes(self) -> TelegramSocialConfig:
+        keys = [(scope.chat_id, scope.thread_id) for scope in self.scopes]
+        if len(set(keys)) != len(keys):
+            raise ValueError("duplicate social group/topic authorization")
+        return self
+
+
 class ChannelsConfig(Base):
     """Configuration for chat channels.
 
@@ -37,6 +120,15 @@ class ChannelsConfig(Base):
     send_max_retries: int = Field(default=3, ge=0, le=10)  # Max delivery attempts (initial send included)
     transcription_provider: str = "groq"  # Deprecated: use top-level transcription.provider
     transcription_language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}$")  # Deprecated: use top-level transcription.language
+
+    @model_validator(mode="after")
+    def validate_telegram_social(self) -> ChannelsConfig:
+        section = (self.model_extra or {}).get("telegram")
+        if isinstance(section, dict):
+            social = cast(dict[object, object], section).get("social")
+            if social is not None:
+                TelegramSocialConfig.model_validate(social)
+        return self
 
 
 class TranscriptionConfig(Base):

@@ -26,7 +26,7 @@ from nanobot.llm_usage.context import llm_usage_source
 from nanobot.providers.base import LLMResponse, ProviderConversationState
 from nanobot.providers.conversation_state import ProviderConversationStateController
 from nanobot.runtime_context import public_history_messages
-from nanobot.session.manager import Session, SessionManager
+from nanobot.session.manager import Session, SessionManager, SessionPolicy
 from nanobot.session.summary import is_summary_checkpoint, session_summary_from_metadata
 from nanobot.utils.gitstore import GitStore
 from nanobot.utils.helpers import (
@@ -769,11 +769,35 @@ class MemoryArchiver:
         build_messages: Callable[..., list[dict[str, Any]]],
         get_tool_definitions: Callable[[], list[dict[str, Any]]],
         resolve_prompt_context: Callable[[Session], tuple[str | None, Path | None]] | None = None,
+        resolve_policy: Callable[[str], SessionPolicy] | None = None,
     ) -> None:
         self.store = store
         self._build_messages = build_messages
         self._get_tool_definitions = get_tool_definitions
         self._resolve_prompt_context = resolve_prompt_context
+        self._resolve_policy = resolve_policy
+
+    def policy(self, key: str) -> SessionPolicy:
+        return self._resolve_policy(key) if self._resolve_policy is not None else SessionPolicy()
+
+    def prompt_policy(self, key: str) -> dict[str, Any]:
+        if self._resolve_policy is None:
+            return {}
+        policy = self.policy(key)
+        return {
+            "include_profile": policy.include_profile,
+            "include_memory": policy.include_memory and policy.persist,
+            "include_skills": policy.include_skills,
+            "trusted_persona": policy.persona,
+        }
+
+    def tool_definitions(self, key: str) -> list[dict[str, Any]]:
+        policy = self.policy(key)
+        return [
+            tool for tool in self._get_tool_definitions()
+            if tool.get("function", {}).get("name") not in policy.disabled_tools
+            and (policy.allowed_tools is None or tool.get("function", {}).get("name") in policy.allowed_tools)
+        ]
 
     def _raw_checkpoint(
         self,
@@ -784,7 +808,12 @@ class MemoryArchiver:
         max_tokens: int,
     ) -> str:
         """Persist the failed chunk and return a bounded replacement checkpoint."""
-        raw = self.store.raw_archive(messages, session_key=session_key)
+        policy = self.policy(session_key)
+        raw = (
+            self.store.raw_archive(messages, session_key=session_key)
+            if policy.archive_memory and policy.persist
+            else self.store._build_raw_checkpoint(messages)
+        )
         return self._combine_raw_checkpoint(
             raw,
             previous_summary=previous_summary,
@@ -851,6 +880,9 @@ class MemoryArchiver:
                     else runtime.generation.max_tokens
                 ),
             )
+
+        if not self.policy(session_key).enabled:
+            return raw_fallback()
 
         prompt = render_template(
             "agent/consolidator_archive.md",
@@ -989,7 +1021,8 @@ class MemoryArchiver:
         if not summary:
             logger.warning("Memory archive provider summary was not safe to replay, raw-dumping")
             return raw_fallback()
-        if summary != "(nothing)":
+        policy = self.policy(session_key)
+        if summary != "(nothing)" and policy.archive_memory and policy.persist:
             self.store.append_history(summary, session_key=session_key)
         return summary
 
@@ -1056,8 +1089,9 @@ class MemoryArchiver:
             channel=channel,
             session_summary=session_summary,
             workspace=workspace,
+            **self.prompt_policy(session.key),
         )
-        tools = self._get_tool_definitions()
+        tools = self.tool_definitions(session.key)
         return await self.archive(
             messages,
             runtime=runtime,
@@ -1081,6 +1115,7 @@ class Consolidator:
         build_messages: Callable[..., list[dict[str, Any]]],
         get_tool_definitions: Callable[[], list[dict[str, Any]]],
         resolve_prompt_context: Callable[[Session], tuple[str | None, Path | None]] | None = None,
+        resolve_policy: Callable[[str], SessionPolicy] | None = None,
     ):
         self.store = store
         self.sessions = sessions
@@ -1091,6 +1126,7 @@ class Consolidator:
             build_messages=build_messages,
             get_tool_definitions=get_tool_definitions,
             resolve_prompt_context=resolve_prompt_context,
+            resolve_policy=resolve_policy,
         )
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
             weakref.WeakValueDictionary()
@@ -1188,12 +1224,13 @@ class Consolidator:
             current_message="[token-probe]",
             channel=channel,
             session_summary=summary,
+            **self.archiver.prompt_policy(session.key),
         )
         return estimate_prompt_tokens_chain(
             runtime.provider,
             runtime.model,
             probe_messages,
-            self._get_tool_definitions(),
+            self.archiver.tool_definitions(session.key),
         )
 
     def _input_token_budget(self, runtime: LLMRuntime) -> int:

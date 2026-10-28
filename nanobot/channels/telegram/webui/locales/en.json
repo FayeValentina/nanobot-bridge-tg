@@ -3,6 +3,9 @@
     "docsLabel": "Open Telegram setup",
     "officialLabel": "Open BotFather",
     "fields": {
+      "social": {
+        "label": "Group social mode"
+      },
       "token": {
         "label": "Bot token",
         "placeholder": "123456:ABC..."

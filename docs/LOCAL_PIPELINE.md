@@ -134,4 +134,4 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 - 独立测试实例已验证真实升级、手动回滚，以及通过预检后故意失败的升级能自动恢复旧容器和数据。
 - 模型与 Telegram 的最终业务体验由管理员发送测试消息确认，管线不会向真实群自动发送测试消息。
 
-本次仅搭建本机开发发布基础设施，`MIGRATION_PLAN.md` 中的仿真功能尚未开始实现。
+本机开发发布基础设施及 `MIGRATION_PLAN.md` 的 M0/M1/M2 源码工作已完成，实验与文字群友验收随 `test` 执行；详见 [M0 验证记录](M0_CONTRACTS.md)、[M1 实现说明](M1_IMPLEMENTATION.md) 和 [M2 实现说明](M2_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色与标准库 SQLite，随既有整实例备份保存，不替换 JSONL 会话。M2 将 social schema 从 1 事务升级到 2；旧版 M1 不接受 schema 2，降级需同时恢复升级前数据备份。本次仅验证临时库迁移，未升级生产数据。实际部署版本以实例 `state.json` 和发布记录为准；仿真默认关闭，尚未连接真实群，M3–M5 尚未开始。

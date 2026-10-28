@@ -41,6 +41,7 @@ from nanobot.utils.restart import (
 )
 
 if TYPE_CHECKING:
+    from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
     from nanobot.cron.service import CronService
     from nanobot.session.manager import SessionManager
     from nanobot.triggers.local_store import LocalTriggerStore
@@ -111,12 +112,14 @@ class ChannelManager:
             Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None
         ) = None,
         config_path: Path | None = None,
+        telegram_social: TelegramSocialRuntime | None = None,
     ):
         if config_path is None:
             from nanobot.config.loader import get_config_path
 
             config_path = get_config_path()
         self.config = config
+        self._telegram_social = telegram_social
         self._config_path = config_path.expanduser().resolve(strict=False)
         self.bus = bus
         self._session_manager = session_manager
@@ -180,6 +183,8 @@ class ChannelManager:
         runtime_name: str | None = None,
     ) -> BaseChannel:
         kwargs: dict[str, Any] = {}
+        if cls.name == "telegram" and self._telegram_social is not None:
+            kwargs["social"] = self._telegram_social
         if cls.name == "websocket":
             from nanobot.channels.websocket.runtime import WebSocketConfig
             from nanobot.webui.gateway_services import build_gateway_services

@@ -113,6 +113,7 @@ class AgentRunSpec:
     provider_state: ProviderConversationState | None = None
     llm_usage_source: LLMUsageSource | None = None
     events: EventSink = NO_EVENTS
+    silent_final: bool = False
 
 
 @dataclass(slots=True)
@@ -455,6 +456,7 @@ class AgentRunner:
             )
             assert request_state.messages is not None
             messages_for_model = request_state.messages
+            context.model_messages = deepcopy(messages_for_model)
             conversation_state.observe_response(response, messages)
             if request_state.compaction is not None:
                 request_state.compaction.accept_request(
@@ -576,6 +578,9 @@ class AgentRunner:
                 if _drained:
                     had_injections = True
                 await hook.after_iteration(context)
+                if context.end_turn:
+                    stop_reason = "tool_end"
+                    break
                 continue
 
             if response.has_tool_calls:
@@ -587,7 +592,8 @@ class AgentRunner:
 
             clean = hook.finalize_content(context, response.content)
             if (
-                response.finish_reason
+                not spec.silent_final
+                and response.finish_reason
                 not in {"error", "length", "refusal", "content_filter"}
                 and is_blank_text(clean)
             ):
@@ -628,7 +634,7 @@ class AgentRunner:
                 original_content = response.content
                 clean = hook.finalize_content(context, response.content)
 
-            if response.finish_reason == "length":
+            if response.finish_reason == "length" and not spec.silent_final:
                 if len(length_recovery_parts) < _MAX_LENGTH_RECOVERIES:
                     length_recovery_parts.append(
                         _restore_outer_whitespace(clean or "", original_content)
@@ -735,6 +741,12 @@ class AgentRunner:
                 failure_error_kind = LLMProvider.public_error_kind(response)
                 break
             if is_blank_text(clean):
+                if spec.silent_final:
+                    final_content = None
+                    stop_reason = "silent"
+                    context.stop_reason = stop_reason
+                    await hook.after_iteration(context)
+                    break
                 final_content = EMPTY_FINAL_RESPONSE_MESSAGE
                 stop_reason = "empty_final_response"
                 error = final_content

@@ -81,7 +81,7 @@ from nanobot.session.automation_turns import automation_history_overrides
 from nanobot.session.goal_state import goal_state_runtime_lines
 from nanobot.session.history_visibility import HIDDEN_HISTORY_META
 from nanobot.session.keys import UNIFIED_SESSION_KEY, remember_last_channel
-from nanobot.session.manager import SESSION_CACHE_MAX_SIZE, Session, SessionManager
+from nanobot.session.manager import SESSION_CACHE_MAX_SIZE, Session, SessionManager, SessionPolicy
 from nanobot.session.model_selection import (
     SESSION_MODEL_PRESET_METADATA_KEY,
     model_preset_from_metadata,
@@ -299,6 +299,8 @@ class AgentLoop:
         local_trigger_store: LocalTriggerStore | None = None,
         idle_compact_check_interval_seconds: int = 0,
         recovery_admission: RecoveryAdmission | None = None,
+        session_policy_resolver: Callable[[Session], SessionPolicy | None] | None = None,
+        request_admission: Callable[[RequestContext], None] | None = None,
     ):
         from nanobot.config.schema import ToolsConfig
 
@@ -306,6 +308,7 @@ class AgentLoop:
         defaults = AgentDefaults()
         self.bus = bus
         self._recovery_admission = recovery_admission
+        self._request_admission = request_admission
         if turn_delivery_factory is not None:
             if turn_delivery_factory.bus is not bus:
                 raise ValueError("turn delivery factory must use the agent message bus")
@@ -373,6 +376,12 @@ class AgentLoop:
 
         self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
         self.sessions = session_manager or SessionManager(workspace)
+        if session_policy_resolver is not None:
+            self.sessions.set_policy_resolver(session_policy_resolver)
+        self.turn_delivery_factory.suppress_output = lambda key: (
+            self.sessions.policy_for_key(key).tool_only
+            or not self.sessions.policy_for_key(key).enabled
+        )
         # One file-read/write tracker per logical session. The tool registry is
         # shared by this loop, so tools resolve the active state via contextvars.
         self._file_state_store = FileStateStore(max_sessions=SESSION_CACHE_MAX_SIZE)
@@ -435,6 +444,7 @@ class AgentLoop:
             sessions=self.sessions,
             build_messages=self.context.build_messages,
             get_tool_definitions=self.tools.get_definitions,
+            resolve_policy=self.sessions.policy_for_key,
             resolve_prompt_context=PersistedPromptContextResolver(
                 workspace_scopes=self.workspace_scopes,
                 unified_session=unified_session,
@@ -744,6 +754,7 @@ class AgentLoop:
             runtime=ctx.runtime,
             metadata=dict(ctx.msg.metadata or {}),
             attributes=dict(ctx.attributes),
+            allow_private_context=ctx.session.policy.include_profile and ctx.session.policy.include_skills,
             sender_id=ctx.msg.sender_id,
             turn_id=ctx.turn_id,
             workspace=scope.project_path,
@@ -756,7 +767,7 @@ class AgentLoop:
         assert ctx.request_context is not None
         return await self._resolve_runtime_context_for_request(
             ctx.request_context,
-            ctx.tools or self.tools,
+            ctx.tools if ctx.tools is not None else self.tools,
         )
 
     async def _resolve_runtime_context_for_request(
@@ -766,13 +777,13 @@ class AgentLoop:
     ) -> list[RuntimeContextBlock]:
         providers = [
             *tools.get_runtime_context_providers(),
-            *self._runtime_context_providers,
+            *(self._runtime_context_providers if request.allow_private_context else []),
         ]
         blocks = runtime_context_blocks_from_metadata(request.metadata)
         blocks.extend(await resolve_runtime_context(providers, request))
         skill_context = self.context.skills.build_explicit_skill_runtime_context(
             request.original_user_text or ""
-        )
+        ) if request.allow_private_context else None
         if skill_context is not None and skill_context not in blocks:
             blocks.append(skill_context)
         return blocks
@@ -785,6 +796,9 @@ class AgentLoop:
         dispatch_fn: Callable[[CommandContext], Awaitable[OutboundMessage | None]],
     ) -> None:
         """Dispatch a command directly from the run() loop and publish the result."""
+        if not self.sessions.policy_for_key(key).allow_commands:
+            await self._dispatch(msg)
+            return
         if normalize_command_text(raw).lower() == "/compact":
             # Compaction must wait for the active turn to commit its session.
             task = asyncio.create_task(self._dispatch(msg))
@@ -1028,6 +1042,7 @@ class AgentLoop:
                         sender_id=pending_msg.sender_id,
                         turn_id=request_ctx.turn_id,
                         workspace=scope.project_path,
+                        allow_private_context=request_ctx.allow_private_context,
                     )
                     blocks = await self._resolve_runtime_context_for_request(
                         pending_request,
@@ -1121,14 +1136,17 @@ class AgentLoop:
             self.context.build_transcript,
             channel=request_ctx.channel,
             workspace=effective_scope.project_path,
-            include_memory=session.policy.persist if session is not None else True,
+            include_memory=(session.policy.persist and session.policy.include_memory) if session else True,
+            include_profile=session.policy.include_profile if session else True,
+            include_skills=session.policy.include_skills if session else True,
+            trusted_persona=session.policy.persona if session else "",
         )
         if request_context is None:
             request_ctx = dataclasses.replace(
                 request_ctx,
                 workspace=effective_scope.project_path,
             )
-        effective_tools = tools or self.tools
+        effective_tools = tools if tools is not None else self.tools
         file_state_token = bind_file_states(self._file_state_store.for_session(active_session_key))
         request_token = bind_request_context(request_ctx)
         workspace_token = bind_workspace_scope(effective_scope)
@@ -1149,6 +1167,8 @@ class AgentLoop:
         try:
             for scope in turn_scopes or ():
                 turn_scope_stack.enter_context(scope)
+            if self._request_admission is not None:
+                self._request_admission(request_ctx)
             hook = build_agent_turn_hook(AgentTurnHookSpec(
                 events=events,
                 streaming=streaming,
@@ -1203,12 +1223,13 @@ class AgentLoop:
                 ),
                 injection_callback=_drain_pending,
                 terminal_injection_callback=_wait_for_pending,
-                continuation_callback=_goal_continue,
+                continuation_callback=None if session is not None and session.policy.tool_only else _goal_continue,
                 finalize_on_max_iterations=turn_continuation.should_finalize_on_max_iterations(
                     pending_queue_available=pending_queue is not None and session is not None,
                     session_metadata=session_metadata,
                     message_metadata=request_metadata,
-                ),
+                ) and not (session is not None and session.policy.tool_only),
+                silent_final=session.policy.tool_only if session is not None else False,
                 provider_state=provider_state,
                 llm_usage_source=source_from_request(
                     active_session_key,
@@ -1765,13 +1786,27 @@ class AgentLoop:
             else:
                 ctx.session = self.sessions.get_or_create(ctx.session_key)
         session = ctx.session
+        policy = self.sessions.resolve_policy(session)
+        if not policy.enabled:
+            raise PermissionError("session execution is not authorized")
+        if policy.context_version is not None:
+            ctx.attributes["context_version"] = policy.context_version
         ctx.ephemeral = ctx.ephemeral or not session.policy.persist
-        tools = ctx.tools or self.tools
-        if session.policy.disabled_tools:
+        tools = ctx.tools if ctx.tools is not None else self.tools
+        has_scoped_tools = any(
+            tool.requires_explicit_allowlist
+            for name in tools.tool_names if (tool := tools.get(name)) is not None
+        )
+        if policy.disabled_tools or policy.allowed_tools is not None or has_scoped_tools:
             restricted = ToolRegistry()
             for name in tools.tool_names:
                 tool = tools.get(name)
-                if name not in session.policy.disabled_tools and tool:
+                if (
+                    tool is not None
+                    and name not in policy.disabled_tools
+                    and (policy.allowed_tools is None or name in policy.allowed_tools)
+                    and (policy.allowed_tools is not None or not tool.requires_explicit_allowlist)
+                ):
                     restricted.register(tool)
             tools = restricted
         ctx.tools = tools
@@ -1814,6 +1849,8 @@ class AgentLoop:
         if ctx.kind is TurnKind.SYSTEM or ctx.msg.channel == "system":
             return False
         session = ctx.require_session()
+        if not session.policy.allow_commands:
+            return False
         raw = ctx.msg.content.strip()
         _, automation_metadata = automation_history_overrides(ctx.msg.metadata)
         is_user_turn = (
@@ -1919,6 +1956,7 @@ class AgentLoop:
                 ctx.msg.content,
                 media=ctx.msg.media if ctx.kind is TurnKind.USER and ctx.msg.media else None,
                 runtime_context_blocks=ctx.runtime_context_blocks,
+                include_skills=session.policy.include_skills,
             )
             task_id = ctx.msg.metadata.get("subagent_task_id") if is_subagent else None
             already_staged = False
@@ -2008,7 +2046,7 @@ class AgentLoop:
             ctx.suppress_response = True
         ctx.usage = result.usage
         ctx.delivery.record_usage(result.round_usages)
-        if ctx.kind is TurnKind.USER:
+        if ctx.kind is TurnKind.USER and not ctx.require_session().policy.tool_only:
             await turn_continuation.maybe_continue_turn(ctx)
 
     async def _persist_turn(self, ctx: TurnContext) -> None:
@@ -2019,6 +2057,7 @@ class AgentLoop:
             ctx.kind is TurnKind.USER
             and (ctx.final_content is None or not ctx.final_content.strip())
             and not ctx.suppress_response
+            and not session.policy.tool_only
         ):
             ctx.final_content = EMPTY_FINAL_RESPONSE_MESSAGE
 
@@ -2065,7 +2104,7 @@ class AgentLoop:
             ctx.stop_reason,
             failure_error_kind=ctx.failure_error_kind,
         )
-        if ctx.suppress_response:
+        if ctx.suppress_response or ctx.require_session().policy.tool_only:
             ctx.outbound = None
             return
         if ctx.kind is TurnKind.SYSTEM:
