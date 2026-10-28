@@ -458,6 +458,11 @@ class SocialStore:
 
     def recovery_jobs(self) -> list[WakeJob]:
         with self.db:
+            # A process may die after Telegram accepted an ordinary tool send.
+            self.db.execute("UPDATE message_deliveries SET status='unknown',detail='Interrupted before platform receipt; do not resend.' WHERE status='queued'")
+            self.db.execute("UPDATE wakes SET status='cancelled' WHERE status IN ('scheduled','queued','running') "
+                            "AND EXISTS (SELECT 1 FROM message_deliveries d WHERE d.scope=wakes.scope "
+                            "AND d.turn_id=wakes.turn_id AND d.status='unknown')")
             # Refund even expired queued opportunities before status recovery;
             # no model claimed these reservations before the restart.
             for opportunity in self.db.execute("SELECT * FROM wakes WHERE reason='proactive' AND status='queued'").fetchall():

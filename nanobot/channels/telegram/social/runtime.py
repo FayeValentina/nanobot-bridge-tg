@@ -690,17 +690,24 @@ class TelegramSocialRuntime:
                                     int(row["reply_to"]) if row["reply_to"] is not None else None)
 
     def record_message_receipt(self, scope: ConversationScope, receipt: DeliveryReceipt,
-                               turn_id: str | None, texts: list[tuple[int, str]]) -> None:
+                               turn_id: str | None, texts: list[tuple[int, str]],
+                               delivery_id: str | None = None) -> str | None:
         if self.binding(scope) is None:
-            return
+            return None
         self._persona(scope)
         with self.store.db:
-            self.store.db.execute("INSERT INTO message_deliveries VALUES(?,?,?,?,?,?,?)",
-                                  (uuid4().hex, scope.session_key, turn_id, self.now(),
-                                   receipt.status, json.dumps(receipt.message_ids), receipt.detail))
+            if delivery_id is None:
+                delivery_id = uuid4().hex
+                self.store.db.execute("INSERT INTO message_deliveries VALUES(?,?,?,?,?,?,?)",
+                                      (delivery_id, scope.session_key, turn_id, self.now(),
+                                       receipt.status, json.dumps(receipt.message_ids), receipt.detail))
+            else:
+                self.store.db.execute("UPDATE message_deliveries SET status=?,message_ids=?,detail=? WHERE id=? AND scope=?",
+                                      (receipt.status, json.dumps(receipt.message_ids), receipt.detail, delivery_id, scope.session_key))
         for message_id, text in texts:
             self.store.observe(ObservedMessage(scope, -message_id, message_id, "bot", "Bot", self.now(),
                                                text, is_self=True, is_bot=True), self.config.retention_messages)
+        return delivery_id
 
     def hook_factory(self, turn: AgentTurnHookContext) -> AgentHook | None:
         if turn.session_key is None or not self.store.owns(turn.session_key):

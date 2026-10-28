@@ -236,3 +236,27 @@ async def test_confirmed_ordinary_delivery_keeps_cross_chat_permissions(social, 
     assert kwargs["chat_id"] == chat
     assert kwargs.get("message_thread_id", 0) == thread
     assert social.store.db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()[0] == 0
+
+
+async def test_interrupted_ordinary_send_is_not_reawakened_after_restart(social):
+    class ProcessInterrupted(BaseException):
+        pass
+    ctx = context(social, turn="interrupted-turn")
+    tg = channel(social)
+    tg._app_ready.set()
+    tg._app.bot.send_message.side_effect = ProcessInterrupted()
+    with pytest.raises(ProcessInterrupted):
+        await tg.send_confirmed(OutboundMessage("telegram", str(A.chat_id), "accepted before process exit",
+                                                metadata={"message_thread_id": A.thread_id, "_delivery_turn_id": ctx.turn_id}))
+    assert social.store.db.execute("SELECT status FROM message_deliveries").fetchone()[0] == "queued"
+    root, config, bus, now = social.root, social.config, social.bus, social.now
+    social.close()
+    restored = TelegramSocialRuntime(config, root, bus, now=now)
+    try:
+        restored.store.recovery_jobs()
+        assert restored.store.db.execute("SELECT status FROM message_deliveries").fetchone()[0] == "unknown"
+        assert restored.store.db.execute("SELECT status FROM wakes WHERE turn_id=?", (ctx.turn_id,)).fetchone()[0] == "cancelled"
+        await restored.run_due()
+        assert bus.inbound.empty()
+    finally:
+        restored.close()
