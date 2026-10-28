@@ -288,6 +288,8 @@ class SocialMemory:
         active_filter = "" if request.include_inactive else " AND status IN ('candidate','confirmed')"
         for row in self.db.execute("SELECT * FROM memories WHERE scope=?" + active_filter + " ORDER BY updated DESC,id", (scope,)):
             item = self._entry(row)
+            if request.memory_id is not None and item.id != request.memory_id:
+                continue
             if not request.include_inactive and item.status in {"deleted", "expired"}:
                 continue
             if request.kind is not None and item.kind != request.kind:

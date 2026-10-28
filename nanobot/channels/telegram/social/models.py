@@ -93,6 +93,16 @@ class Snapshot(TypedDict):
     uncertain_send: UncertainSend | None
     mode: str
     wake_reason: str | None
+    opportunity: dict[str, object] | None
+
+
+class ProactiveCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["memory", "unread", "configured"]
+    seq: int = Field(ge=0)
+    expires_at: float
+    memory_id: str | None = None
+    revision: int | None = None
 
 
 class WakeJob(TypedDict):

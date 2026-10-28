@@ -4,6 +4,7 @@ from nanobot.channels._manifest import DIRECT_GROUP_POLICIES, field, required
 from nanobot.channels.contracts import ChannelSetupSpec
 from nanobot.channels.plugin import ChannelPlugin
 from nanobot.channels.telegram.validation import validate
+from nanobot.config.schema import TelegramSocialConfig
 
 SETUP_SPEC = ChannelSetupSpec(
     fields={
@@ -11,7 +12,7 @@ SETUP_SPEC = ChannelSetupSpec(
         "proxy": field(),
         "allowFrom": field("list"),
         "groupPolicy": field("enum", choices=DIRECT_GROUP_POLICIES, default="mention"),
-        "social": field("json", default={"enabled": False, "scopes": []}),
+        "social": field("json", default=TelegramSocialConfig().model_dump(by_alias=True)),
         "mode": field("enum", choices={"polling", "webhook"}, default="polling"),
         "replyToMessage": field("bool", default=False),
         "reactEmoji": field(default="👀"),

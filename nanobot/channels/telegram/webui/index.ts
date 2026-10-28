@@ -15,6 +15,7 @@ export default {
         { key: "channels.telegram.proxy", section: "connection" },
         { key: "channels.telegram.allowFrom", section: "access" },
         { key: "channels.telegram.groupPolicy", section: "behavior" },
+        { key: "channels.telegram.social", section: "behavior" },
       ],
     },
   },

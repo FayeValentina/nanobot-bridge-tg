@@ -1,6 +1,6 @@
 # M4：主动参与与群记忆学习实施计划
 
-2026-10-28 状态：M4a 已完成并发布到实际实例 `b121b14c`，见 [M4a 说明](M4A_IMPLEMENTATION.md)；M4b 尚未开始。本页是分批实施与验收依据，
+2026-10-28 状态：M4a 已发布 `b121b14c`；M4b 已实现，正在完成发布验收，见 [M4b 说明](M4B_IMPLEMENTATION.md)。本页是分批实施与验收依据，
 权限以 [共用工具权限约定](SHARED_TOOL_PERMISSIONS.md) 为准，部署以 [本机管线](LOCAL_PIPELINE.md) 为准。
 
 ## 进入条件与当前缺口
@@ -18,9 +18,9 @@
 | 长期记忆 | 已可使用普通共享记忆、归档和 Dream | 结构化群知识、来源证据、候选确认、纠正/删除和过期 |
 | 网页管理 | 现有通道配置与后端接口 | M4 只同步新增字段与接口；专用管理面板仍属 M5 |
 
-代码依据：配置在 `nanobot/config/schema.py`，当前没有 proactive/quiet-hours 配置；
+进入阶段前代码依据：配置在 `nanobot/config/schema.py`，当时没有 proactive/quiet-hours 配置；
 `social/store.py` 已负责 wakes、单次 timers 与请求/发送记录；`social/scheduler.py` 已有一个事件驱动工作器。
-以上为进入 M4 前的基线。M4a 已新增 `social/memory.py` 与工具，具体能力见实现说明；
+以上为进入 M4 前的基线。M4a 已新增 `social/memory.py` 与工具，M4b 已新增 `social/proactive.py` 和按 scope 的主动/安静时段配置，具体能力见实现说明；
 普通 Dream 可用不等同于完成本计划的全部群知识与主动参与能力。
 
 ## 实施批次

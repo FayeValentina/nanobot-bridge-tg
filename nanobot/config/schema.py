@@ -20,6 +20,42 @@ if TYPE_CHECKING:
     from nanobot.agent.tools.web import WebToolsConfig
 
 
+class TelegramSocialProactiveConfig(Base):
+    """Optional opportunities, evaluated locally before any model request."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    interval_seconds: int = Field(default=1800, ge=60, le=86400)
+    ttl_seconds: int = Field(default=120, ge=30, le=600)
+    context_max_age_seconds: int = Field(default=1800, ge=60, le=86400)
+    require_context: bool = True
+
+
+class TelegramSocialQuietHoursConfig(Base):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    timezone: str = "UTC"
+    start: str = Field(default="23:00", pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+    end: str = Field(default="08:00", pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"unknown timezone {value!r}") from None
+        return value
+
+    @model_validator(mode="after")
+    def validate_window(self) -> TelegramSocialQuietHoursConfig:
+        if self.start == self.end:
+            raise ValueError("quiet hours start and end must differ")
+        return self
+
+
 class TelegramSocialScopeConfig(Base):
     """Operator-authorized group/topic; observation does not grant administration."""
 
@@ -36,6 +72,8 @@ class TelegramSocialScopeConfig(Base):
     wake_senders: list[str] = Field(default_factory=list, max_length=20)
     wake_on_messages: bool = False
     allow_ambient_wake: bool = True
+    proactive: TelegramSocialProactiveConfig = Field(default_factory=TelegramSocialProactiveConfig)
+    quiet_hours: TelegramSocialQuietHoursConfig = Field(default_factory=TelegramSocialQuietHoursConfig)
 
     @field_validator("nicknames", "wake_keywords")
     @classmethod

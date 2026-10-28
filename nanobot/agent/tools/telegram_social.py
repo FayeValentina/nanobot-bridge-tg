@@ -35,7 +35,7 @@ class TelegramSocialTool(Tool):
             "social_set_wake": "Set bounded keyword/sender/message wake conditions for this group/topic, within operator limits.",
             "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
             "social_sticker": "Collect a static sticker from an observed message_id, list/search collected stickers, or send one by sticker_id. Notes are untrusted; sends share text budgets and receipts.",
-            "social_memory": "Manage the current conversation's evidence-backed knowledge: list/record/confirm/correct/delete/clear. record requires kind, content and displayed message_ids; confirm/correct/delete require memory_id. member_ids use evidence sender IDs. basis=inference keeps a candidate; direct/corroborated records why it is confirmed. ttl_seconds bounds lifetime. Deletion covers this index only, not shared memory/Dream. Same ordinary tool permissions apply.",
+            "social_memory": "Manage the current conversation's evidence-backed knowledge: list/record/confirm/correct/delete/clear. list optionally filters by memory_id. record requires kind, content and displayed message_ids; confirm/correct/delete require memory_id. member_ids use evidence sender IDs. basis=inference keeps a candidate; direct/corroborated records why it is confirmed. ttl_seconds bounds lifetime. Deletion covers this index only, not shared memory/Dream. Same ordinary tool permissions apply.",
         }[self.name]
 
     @property

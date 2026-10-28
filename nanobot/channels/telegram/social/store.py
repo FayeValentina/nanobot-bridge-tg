@@ -13,6 +13,7 @@ from nanobot.channels.telegram.social.models import (
     ConversationScope,
     MediaReference,
     ObservedMessage,
+    ProactiveCandidate,
     QuotedMessage,
     Snapshot,
     SnapshotMessage,
@@ -35,7 +36,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4):
+        if version not in (0, 1, 2, 3, 4, 5):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -153,6 +154,18 @@ class SocialStore:
                     scope TEXT PRIMARY KEY REFERENCES scopes(key), through_seq INTEGER NOT NULL
                 );
                 PRAGMA user_version=4;
+                COMMIT;
+            """)
+        if version < 5:
+            self.db.executescript("""
+                BEGIN IMMEDIATE;
+                ALTER TABLE wakes ADD COLUMN proactive_source TEXT;
+                CREATE TABLE proactive_state (
+                    scope TEXT PRIMARY KEY REFERENCES scopes(key), version TEXT NOT NULL,
+                    next_check REAL, last_check REAL, decision TEXT NOT NULL DEFAULT 'disabled',
+                    last_seq INTEGER NOT NULL DEFAULT 0, memory_versions TEXT NOT NULL DEFAULT '{}'
+                );
+                PRAGMA user_version=5;
                 COMMIT;
             """)
         path.chmod(0o600)
@@ -311,7 +324,12 @@ class SocialStore:
             "uncertain_send": self.uncertain_send(key),
             "mode": state["mode"],
             "wake_reason": self.db.execute("SELECT reason FROM wakes WHERE id=?", (job_id,)).fetchone()[0] if job_id else None,
+            "opportunity": None,
         }
+        if job_id:
+            source = self.db.execute("SELECT proactive_source FROM wakes WHERE id=?", (job_id,)).fetchone()[0]
+            if source:
+                result["opportunity"] = ProactiveCandidate.model_validate_json(source).model_dump()
         body = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         with self.db:
             self.db.execute("INSERT INTO views VALUES(?,?,?,?,?,?,0,?)", (
@@ -346,6 +364,11 @@ class SocialStore:
             # A read tool can expose a busy-time trigger within the current run.
             # Only real provider exposure consumes it; returning the page alone cannot.
             for seq in seen:
+                direct = self.db.execute("SELECT 1 FROM wakes WHERE scope=? AND status='scheduled' "
+                                         "AND trigger_seq=? AND reason IN ('directed','nickname')", (key, seq)).fetchone()
+                if direct:
+                    self.db.execute("UPDATE wakes SET reason='directed',proactive_source=NULL "
+                                    "WHERE scope=? AND turn_id=? AND reason='proactive'", (key, turn_id))
                 self.db.execute("UPDATE wakes SET status='running',turn_id=? WHERE scope=? AND version=? "
                                 "AND status='scheduled' AND trigger_seq=? AND expires>?",
                                 (turn_id, key, state["version"], seq, self.now()))
@@ -414,6 +437,10 @@ class SocialStore:
 
     def recovery_jobs(self) -> list[WakeJob]:
         with self.db:
+            # Refund even expired queued opportunities before status recovery;
+            # no model claimed these reservations before the restart.
+            for opportunity in self.db.execute("SELECT * FROM wakes WHERE reason='proactive' AND status='queued'").fetchall():
+                self._refund_unclaimed_opportunity(opportunity)
             # A durable wait decision is already the end of that run, even if
             # shutdown happened before the runner's completion hook.
             self.db.execute("UPDATE wakes SET status='completed' WHERE status='running' AND scope IN "
@@ -451,6 +478,22 @@ class SocialStore:
                     ))
             self.db.execute("UPDATE scopes SET mode='observing' WHERE mode='active'")
             return result
+
+    def _refund_unclaimed_opportunity(self, row: sqlite3.Row) -> None:
+        if row["status"] == "queued" and row["turn_id"] is None and row["requested"] is not None:
+            self.db.execute("DELETE FROM requests WHERE rowid=(SELECT rowid FROM requests WHERE scope=? AND at=? LIMIT 1)",
+                            (row["scope"], row["requested"]))
+            self.db.execute("UPDATE wakes SET requested=NULL WHERE id=?", (row["id"],))
+
+    def cancel_opportunity(self, job: str, reason: str) -> None:
+        """Caller owns the transaction; an unclaimed slot was not a model call."""
+        row = self.db.execute("SELECT * FROM wakes WHERE id=? AND reason='proactive'", (job,)).fetchone()
+        if row is None:
+            return
+        self._refund_unclaimed_opportunity(row)
+        self.db.execute("UPDATE wakes SET status='cancelled' WHERE id=?", (job,))
+        self.db.execute("UPDATE actions SET status='failed',error=? WHERE scope=? AND status='queued' "
+                        "AND turn_id=?", (f"opportunity skipped: {reason}", row["scope"], row["turn_id"]))
 
     def reserve_send(self, key: str, version: str, text: str, limit: int, *, turn: str | None = None,
                      sticker: MediaReference | None = None) -> str:
@@ -584,15 +627,19 @@ class SocialStore:
     def _schedule(self, key: str, seq: int, reason: str, delay: float) -> None:
         """Caller owns the transaction, including observation/dedup when applicable."""
         now = self.now()
-        rank = {"timeout": 0, "message": 1, "sender": 2, "keyword": 3, "nickname": 4, "directed": 5}
+        rank = {"proactive": -1, "timeout": 0, "message": 1, "sender": 2, "keyword": 3, "nickname": 4, "directed": 5}
         state = self.state(key)
         if state["mode"] == "paused":
             return
+        # A queued opportunity has not reached a model yet. Let an actual
+        # conversation replace it; its old bus item will fail ordinary claim.
+        for opportunity in self.db.execute("SELECT id FROM wakes WHERE scope=? AND reason='proactive' AND status='queued'", (key,)).fetchall():
+            self.cancel_opportunity(str(opportunity[0]), "conversation arrived")
         row = self.db.execute("SELECT * FROM wakes WHERE scope=? AND version=? "
                               "AND status='scheduled'", (key, state["version"])).fetchone()
         if row is not None:
             chosen = reason if rank[reason] >= rank[str(row["reason"])] else str(row["reason"])
-            self.db.execute("UPDATE wakes SET trigger_seq=?,reason=?,due=MIN(due,?),expires=? WHERE id=?",
+            self.db.execute("UPDATE wakes SET trigger_seq=?,reason=?,due=MIN(due,?),expires=?,proactive_source=NULL WHERE id=?",
                             (max(seq, int(row["trigger_seq"])), chosen, now + delay,
                              now + 120, row["id"]))
         else:
@@ -665,7 +712,8 @@ class SocialStore:
     def next_due(self) -> float | None:
         row = self.db.execute("SELECT MIN(at) FROM (SELECT MIN(MIN(due,expires)) AS at FROM wakes "
                               "WHERE status='scheduled' UNION ALL SELECT MIN(wake_at) FROM scopes "
-                              "UNION ALL SELECT MIN(MIN(due,expires)) FROM actions WHERE status='queued')").fetchone()
+                              "UNION ALL SELECT MIN(MIN(due,expires)) FROM actions WHERE status='queued' "
+                              "UNION ALL SELECT MIN(next_check) FROM proactive_state)").fetchone()
         return float(row[0]) if row[0] is not None else None
 
     def last_send(self, key: str) -> float | None:
