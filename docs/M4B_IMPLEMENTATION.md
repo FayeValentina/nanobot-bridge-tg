@@ -92,4 +92,13 @@ schema 4→5 增加 proactive_state 表和 wakes.proactive_source；原观察、
 现有群友/记忆/共用权限验收继续保留，模型与 Telegram 均使用替身，不向真实群发送测试消息。
 完整既有 `scripts/pipeline.sh test` 已通过：后端 818 项、provider 116 项、前端 96 文件共 1553 项，
 Ruff、WebUI lint/build 通过；修改模块严格类型 0 errors / 0 warnings。
-发布版本和实际实例核对在发布完成后补记。
+已按通过检查的提交构建并沿用原 build/deploy 流程发布实际实例
+`c080f626d64c82057387707cbd4c9966feb89b53`，wheel/Telegram/WebUI/鉴权/健康冒烟通过。
+实际容器 healthy、Telegram 已连接；只读核对 schema 5、quick_check 正常，原水位与记忆 ID 保留，
+配置和角色文件指纹与发布前一致，当前 scope 的主动检查仍按原配置关闭。
+
+已在实际安装镜像内以独立临时数据库验证主动机会、quiet 拦截、普通发送不受 quiet 门禁、
+共用权限及重启恢复，未向实际群发送测试消息，也未启动第二个实际数据库所有者。
+上一运行版本为 `b121b14c1ebe962941bebe85d426364dc98bae8f`，整实例备份为
+`~/.local/share/nanobot-bridge-tg-deploy/backups/1793195590288086496/`。
+M4a 与 M4b 已完成本机发布，下一阶段是 M5；活跃程度继续通过本人实际反馈调整。
