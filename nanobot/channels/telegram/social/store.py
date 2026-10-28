@@ -11,7 +11,9 @@ from uuid import uuid4
 
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
+    MediaReference,
     ObservedMessage,
+    QuotedMessage,
     Snapshot,
     SnapshotMessage,
     SocialState,
@@ -33,7 +35,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -111,6 +113,23 @@ class SocialStore:
                 PRAGMA user_version=2;
                 COMMIT;
             """)
+        if version < 3:
+            self.db.executescript("""
+                BEGIN IMMEDIATE;
+                ALTER TABLE messages ADD COLUMN media_refs TEXT NOT NULL DEFAULT '[]';
+                ALTER TABLE messages ADD COLUMN reply_context TEXT;
+                ALTER TABLE messages ADD COLUMN album_id TEXT;
+                ALTER TABLE actions ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';
+                ALTER TABLE actions ADD COLUMN media_ref TEXT;
+                CREATE TABLE stickers (
+                    scope TEXT NOT NULL REFERENCES scopes(key), id TEXT NOT NULL,
+                    media_ref TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+                    uses INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL,
+                    PRIMARY KEY(scope,id)
+                );
+                PRAGMA user_version=3;
+                COMMIT;
+            """)
         path.chmod(0o600)
 
     def close(self) -> None:
@@ -176,8 +195,11 @@ class SocialStore:
                 self.db.execute("INSERT INTO updates VALUES(?,?)", (msg.scope.channel, msg.update_id))
             if existing is not None:
                 self.db.execute(
-                    "UPDATE messages SET text=?, media=? WHERE scope=? AND message_id=?",
-                    (msg.text[:4000], json.dumps(msg.media), key, msg.message_id),
+                    "UPDATE messages SET text=?,media=?,media_refs=?,reply_context=?,album_id=? "
+                    "WHERE scope=? AND message_id=?",
+                    (msg.text[:4000], json.dumps(msg.media),
+                     json.dumps([ref.model_dump() for ref in msg.media_refs]),
+                     msg.reply.model_dump_json() if msg.reply else None, msg.album_id, key, msg.message_id),
                 )
                 return int(existing[0]), False
             seq = int(self.state(key)["next_seq"])
@@ -185,10 +207,13 @@ class SocialStore:
             if not msg.is_self and not msg.is_bot:
                 self.db.execute("UPDATE scopes SET event_seq=? WHERE key=?", (seq, key))
             self.db.execute(
-                "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO messages(scope,seq,update_id,message_id,sender_id,display_name,at,text,"
+                "reply_to,media,is_self,media_refs,reply_context,album_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (key, seq, msg.update_id, msg.message_id, msg.sender_id,
                  msg.display_name[:120], msg.timestamp, msg.text[:4000], msg.reply_to,
-                 json.dumps(msg.media), int(msg.is_self)),
+                 json.dumps(msg.media), int(msg.is_self),
+                 json.dumps([ref.model_dump() for ref in msg.media_refs]),
+                 msg.reply.model_dump_json() if msg.reply else None, msg.album_id),
             )
             self.db.execute("DELETE FROM messages WHERE scope=? AND seq<=?", (key, seq - retention))
             # Keep update dedup bounded too. Old platform replays below the retained
@@ -225,16 +250,28 @@ class SocialStore:
         records: list[SnapshotMessage] = []
         remaining = chars - 1200
         for row in rows:
+            quoted = QuotedMessage.model_validate_json(row["reply_context"]).summary() if row["reply_context"] else None
+            if quoted is not None:
+                quoted["text"] = str(quoted["text"])[:max(0, min(400, remaining // 8))]
             record: SnapshotMessage = {
                 "seq": int(row["seq"]), "message_id": int(row["message_id"]),
                 "sender_id": str(row["sender_id"]), "name": str(row["display_name"]),
                 "timestamp": float(row["at"]), "age_seconds": max(0, int(now - float(row["at"]))),
-                "text": row["text"][:max(0, min(1200, remaining // 2))],
+                "text": row["text"][:max(0, min(1200, remaining // (4 if quoted else 2)))],
                 "reply_to": int(row["reply_to"]) if row["reply_to"] is not None else None,
                 "media": json.loads(row["media"]),
+                "media_details": [MediaReference.model_validate(ref).summary() for ref in json.loads(row["media_refs"])],
                 "is_self": bool(row["is_self"]),
+                "reply": quoted,
+                "album_id": str(row["album_id"]) if row["album_id"] else None,
             }
             size = len(json.dumps(record, ensure_ascii=False))
+            # Quotes add fixed identity/media fields. Shorten both excerpts
+            # before dropping an otherwise useful message at small budgets.
+            while quoted is not None and size > remaining and (record["text"] or quoted["text"]):
+                record["text"] = record["text"][:len(record["text"]) // 2]
+                quoted["text"] = str(quoted["text"])[:len(str(quoted["text"])) // 2]
+                size = len(json.dumps(record, ensure_ascii=False))
             if size > remaining:
                 break
             records.append(record)
@@ -390,13 +427,15 @@ class SocialStore:
             self.db.execute("UPDATE scopes SET mode='observing' WHERE mode='active'")
             return result
 
-    def reserve_send(self, key: str, version: str, text: str, limit: int, *, turn: str | None = None) -> str:
+    def reserve_send(self, key: str, version: str, text: str, limit: int, *, turn: str | None = None,
+                     sticker: MediaReference | None = None) -> str:
         with self.db:
             if self.state(key)["version"] != version:
                 raise PermissionError("conversation configuration changed")
             if self.db.execute(
                 "SELECT 1 FROM actions WHERE scope=? AND version=? AND status='unknown' "
-                "AND trim(content)=trim(?) AND created>?", (key, version, text, self.now() - 86400),
+                "AND kind=? AND trim(content)=trim(?) AND created>?",
+                (key, version, "sticker" if sticker else "text", text, self.now() - 86400),
             ).fetchone():
                 raise PermissionError("delivery of this text is unknown; do not blindly repeat it")
             count = self.db.execute(
@@ -405,8 +444,10 @@ class SocialStore:
             if count >= limit:
                 raise PermissionError("hourly send budget exhausted")
             action = uuid4().hex
-            self.db.execute("INSERT INTO actions(id,scope,version,content,status,created,turn_id) VALUES(?,?,?,?,?,?,?)", (
+            self.db.execute("INSERT INTO actions(id,scope,version,content,status,created,turn_id,kind,media_ref) "
+                            "VALUES(?,?,?,?,?,?,?,?,?)", (
                 action, key, version, text, "sending", self.now(), turn,
+                "sticker" if sticker else "text", sticker.model_dump_json() if sticker else None,
             ))
             self.db.execute("DELETE FROM actions WHERE scope=? AND created<?", (key, self.now() - 604800))
             self.db.execute("INSERT INTO send_attempts VALUES(?,?)", (key, self.now()))
@@ -423,6 +464,11 @@ class SocialStore:
 
     def delivery(self, action: str, status: str, message_id: int | None = None, error: str | None = None) -> None:
         with self.db:
+            previous = self.db.execute("SELECT * FROM actions WHERE id=?", (action,)).fetchone()
+            if status == "sent" and previous is not None and previous["status"] != "sent" and previous["kind"] == "sticker":
+                ref = MediaReference.model_validate_json(previous["media_ref"])
+                self.db.execute("UPDATE stickers SET uses=uses+1,updated=? WHERE scope=? AND id=?",
+                                (self.now(), previous["scope"], ref.unique_id))
             self.db.execute(
                 "UPDATE actions SET status=?,message_id=?,error=?,due=? WHERE id=?",
                 (status, message_id, error[:200] if error else None, self.now(), action),
@@ -434,8 +480,52 @@ class SocialStore:
 
     def has_message(self, key: str, message_id: int) -> bool:
         return self.db.execute(
-            "SELECT 1 FROM messages WHERE scope=? AND message_id=?", (key, message_id),
+            "SELECT 1 FROM messages WHERE scope=? AND (message_id=? OR (reply_to=? AND reply_context IS NOT NULL))",
+            (key, message_id, message_id),
         ).fetchone() is not None
+
+    def media_for_message(self, key: str, message_id: int) -> list[MediaReference]:
+        row = self.db.execute("SELECT media_refs FROM messages WHERE scope=? AND message_id=?",
+                              (key, message_id)).fetchone()
+        if row is not None:
+            return [MediaReference.model_validate(ref) for ref in json.loads(row[0])]
+        row = self.db.execute("SELECT reply_context FROM messages WHERE scope=? AND reply_to=? "
+                              "AND reply_context IS NOT NULL ORDER BY seq DESC LIMIT 1", (key, message_id)).fetchone()
+        if row is not None:
+            return QuotedMessage.model_validate_json(row[0]).media_refs
+        raise PermissionError("media message was not observed in this group/topic")
+
+    def collect_sticker(self, key: str, ref: MediaReference, note: str | None, limit: int) -> str:
+        if ref.kind != "sticker" or ref.animated or ref.video:
+            raise ValueError("only static stickers can be collected in this release")
+        note = " ".join(note.split()) if note is not None else None
+        if note is not None and len(note) > 400:
+            raise ValueError("sticker note exceeds 400 characters")
+        with self.db:
+            exists = self.db.execute("SELECT 1 FROM stickers WHERE scope=? AND id=?", (key, ref.unique_id)).fetchone()
+            count = self.db.execute("SELECT COUNT(*) FROM stickers WHERE scope=?", (key,)).fetchone()[0]
+            if not exists and count >= limit:
+                raise PermissionError("sticker collection limit reached")
+            self.db.execute("INSERT INTO stickers(scope,id,media_ref,note,updated) VALUES(?,?,?,?,?) "
+                            "ON CONFLICT(scope,id) DO UPDATE SET media_ref=excluded.media_ref,"
+                            "note=COALESCE(?,stickers.note),updated=excluded.updated",
+                            (key, ref.unique_id, ref.model_dump_json(), note or "", self.now(), note))
+        return ref.unique_id
+
+    def sticker(self, key: str, sticker_id: str) -> MediaReference:
+        row = self.db.execute("SELECT media_ref FROM stickers WHERE scope=? AND id=?", (key, sticker_id)).fetchone()
+        if row is None:
+            raise PermissionError("sticker is not collected in this group/topic")
+        return MediaReference.model_validate_json(row[0])
+
+    def list_stickers(self, key: str, query: str) -> list[dict[str, object]]:
+        if len(query) > 100:
+            raise ValueError("sticker query exceeds 100 characters")
+        rows = self.db.execute("SELECT * FROM stickers WHERE scope=? AND "
+                               "(instr(lower(note),lower(?))>0 OR instr(media_ref,?)>0) "
+                               "ORDER BY updated DESC LIMIT 30", (key, query, query)).fetchall()
+        return [{"sticker_id": row["id"], "note": row["note"], "uses": row["uses"],
+                 "emoji": MediaReference.model_validate_json(row["media_ref"]).emoji} for row in rows]
 
     def pause(self, key: str) -> None:
         with self.db:

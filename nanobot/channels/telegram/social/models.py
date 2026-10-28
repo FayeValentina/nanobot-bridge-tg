@@ -3,6 +3,45 @@
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class MediaReference(BaseModel):
+    """Telegram-owned identifiers; never constructed from model tool parameters."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["photo", "sticker", "animation", "video", "document"]
+    file_id: str = Field(min_length=1, max_length=512)
+    unique_id: str = Field(min_length=1, max_length=256)
+    size: int | None = Field(default=None, ge=0)
+    width: int = Field(default=0, ge=0)
+    height: int = Field(default=0, ge=0)
+    emoji: str = Field(default="", max_length=64)
+    sticker_set: str = Field(default="", max_length=128)
+    animated: bool = False
+    video: bool = False
+    thumbnail_id: str | None = Field(default=None, max_length=512)
+    mime: str = Field(default="", max_length=128)
+
+    def summary(self) -> str:
+        variant = "video" if self.video else "animated" if self.animated else "static"
+        return f"{self.kind} {variant} {self.emoji}".strip()
+
+
+class QuotedMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    message_id: int = Field(gt=0)
+    sender_id: str = Field(max_length=64)
+    name: str = Field(max_length=120)
+    timestamp: float
+    text: str = Field(max_length=1000)
+    is_bot: bool = False
+    media_refs: list[MediaReference] = Field(default_factory=list, max_length=4)
+
+    def summary(self) -> dict[str, object]:
+        return {**self.model_dump(exclude={"media_refs"}),
+                "media": [ref.summary() for ref in self.media_refs]}
+
 
 class SocialState(TypedDict):
     key: str
@@ -32,7 +71,10 @@ class SnapshotMessage(TypedDict):
     text: str
     reply_to: int | None
     media: list[str]
+    media_details: list[str]
     is_self: bool
+    reply: dict[str, object] | None
+    album_id: str | None
 
 
 class UncertainSend(TypedDict):
@@ -113,6 +155,9 @@ class ObservedMessage:
     media: tuple[str, ...] = ()
     is_self: bool = False
     is_bot: bool = False
+    media_refs: tuple[MediaReference, ...] = ()
+    reply: QuotedMessage | None = None
+    album_id: str | None = None
 
 
 class SocialDeliveryUnknownError(RuntimeError):

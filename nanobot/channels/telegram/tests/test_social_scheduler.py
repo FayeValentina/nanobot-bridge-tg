@@ -612,6 +612,8 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
             created REAL,expires REAL,turn_id TEXT);
         CREATE TABLE actions(id TEXT PRIMARY KEY,scope TEXT,version TEXT,content TEXT,status TEXT,
             created REAL,message_id INTEGER,error TEXT);
+        CREATE TABLE messages(scope TEXT,seq INTEGER,update_id INTEGER,message_id INTEGER,
+            sender_id TEXT,display_name TEXT,at REAL,text TEXT,reply_to INTEGER,media TEXT,is_self INTEGER);
         INSERT INTO scopes VALUES('telegram:-1001:topic:42','telegram',-1001,42,'v1',7,4,5);
         INSERT INTO actions VALUES('old','telegram:-1001:topic:42','v1','hello','sent',1,501,NULL);
         PRAGMA user_version=1;
@@ -619,7 +621,7 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
     db.close()
     store = SocialStore(root)
     try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 3
         state = store.state(A.session_key)
         assert (state["next_seq"], state["read_through"], state["seen_through"]) == (7, 4, 5)
         assert state["mode"] == "observing"

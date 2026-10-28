@@ -94,6 +94,12 @@ class TelegramSocialConfig(Base):
     cooldown_seconds: float = Field(default=10, ge=0, le=300)
     send_cooldown_seconds: float = Field(default=2, ge=0, le=60)
     max_wait_seconds: int = Field(default=3600, ge=1, le=86400)
+    media_max_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
+    media_max_pixels: int = Field(default=20_000_000, ge=1024, le=40_000_000)
+    media_max_edge: int = Field(default=1536, ge=64, le=2048)
+    media_max_images_per_turn: int = Field(default=4, ge=1, le=8)
+    media_cache_bytes: int = Field(default=64 * 1024 * 1024, ge=1024 * 1024, le=512 * 1024 * 1024)
+    sticker_limit: int = Field(default=200, ge=1, le=1000)
 
     @model_validator(mode="after")
     def validate_scopes(self) -> TelegramSocialConfig:
