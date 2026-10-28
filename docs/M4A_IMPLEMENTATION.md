@@ -69,6 +69,14 @@ Agent 集成通过真实工具执行路径验证按需学习、续轮删除刷�
 
 专项回归 209 项通过；完整既有 `scripts/pipeline.sh test` 通过后端 767 项、provider 116 项、
 前端 96 文件共 1553 项，Ruff、WebUI lint/build 通过；修改模块严格类型 0 errors / 0 warnings。
-部署版本和备份在发布完成后补记。
+已按通过检查的提交快照构建，并沿用原 build/deploy 命令发布实际实例
+`b121b14c1ebe962941bebe85d426364dc98bae8f`。wheel 导入、Telegram 依赖、WebUI、鉴权和健康冒烟通过，
+容器 healthy、Telegram 已连接。只读核对实际数据库 schema 4、quick_check 正常，原水位保留，
+配置与角色文件 SHA-256 与发布前一致。未向实际数据库预写测试知识。
+
+实际安装镜像内以独立临时数据核对 social_memory 注册、普通/群友权限相同、记录/删除/重启及 schema 4，
+未创建第二个实际群存储所有者，也未发送真实 Telegram 测试消息。
+上一运行版本为 `bbb8853c992c078d96b8c5d462ed333460aab63c`，整实例备份为
+`~/.local/share/nanobot-bridge-tg-deploy/backups/1793186433861704817/`。
 所有自动化用临时数据、Telegram 和模型替身，不向实际群发送测试消息。
 旧程序不接受 schema 4，降级必须恢复发布前整实例数据备份；沿用既有自动备份/健康/失败回滚流程。

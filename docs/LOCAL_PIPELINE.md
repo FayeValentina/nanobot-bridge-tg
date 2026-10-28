@@ -22,7 +22,16 @@ GitHub Actions 工作流和社区 Issue 模板已移除，所有测试、构建�
 
 ## 当前生产状态
 
-2026-10-28 当前实际实例已更新为 `bbb8853c992c078d96b8c5d462ed333460aab63c`，
+2026-10-28 当前实际实例已更新为 M4a `b121b14c1ebe962941bebe85d426364dc98bae8f`，
+新增有来源的群记忆、确认/纠错/删除/过期和有界相关性注入，延续普通工具权限。
+完整既有 `pipeline.sh test` 通过后端 767 项、provider 116 项、前端 1553 项与 lint/build，
+修改模块严格类型 0 errors / 0 warnings；随后复用原 build/deploy 发布。
+实际库 schema 3→4、完整性和原水位保留，配置/角色与发布前指纹一致，容器 healthy、Telegram 已连接。
+安装镜像内用临时数据验证记忆生命周期与共用权限；未向真实群发送测试消息。
+上一版本 `bbb8853c` 与数据备份 `backups/1793186433861704817/` 可供原管线回滚。
+M4b 主动机会/安静时段和 M5 尚未开始，详见 [M4a 说明](M4A_IMPLEMENTATION.md)。
+
+此前共用权限发布记录：`bbb8853c992c078d96b8c5d462ed333460aab63c`，
 包含 M0–M3 首批与本人要求的共用工具权限调整。后端 738 项、provider 适配 116 项、
 前端全部 1553 项（单 worker）及 lint/build 通过；沿用原构建、备份、部署和健康检查，
 容器 healthy、Telegram 已连接。实际镜像内已核对共用权限、旧隔离标记迁移及路由版本。
@@ -176,4 +185,4 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 - 独立测试实例已验证真实升级、手动回滚，以及通过预检后故意失败的升级能自动恢复旧容器和数据。
 - 模型与 Telegram 的最终业务体验由管理员发送测试消息确认，管线不会向真实群自动发送测试消息。
 
-本机开发发布基础设施及 M0–M3 首批已完成，验收随 `test` 执行；详见 [M0 验证记录](M0_CONTRACTS.md)、[M1 实现说明](M1_IMPLEMENTATION.md)、[M2 实现说明](M2_IMPLEMENTATION.md) 和 [M3 实现说明](M3_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色、SQLite 与有界媒体缓存，随整实例备份保存，不替换 JSONL 会话。M2 引入 schema 2，M3 实际发布已升级到 schema 3；旧程序不接受新版本，降级需同时恢复对应数据备份。软件默认关闭仿真，本人实际实例已显式启用；M4、M5 尚未开始，已核对具备进入 M4 的基础，下一批范围见 [M4 实施计划](M4_PLAN.md)。实际部署版本以实例 `state.json` 和上方发布记录为准。
+本机开发发布基础设施、M0–M3 首批及 M4a 已完成，验收随 `test` 执行；详见 [M0 验证记录](M0_CONTRACTS.md)、[M1 实现说明](M1_IMPLEMENTATION.md)、[M2 实现说明](M2_IMPLEMENTATION.md)、[M3 实现说明](M3_IMPLEMENTATION.md) 和 [M4a 说明](M4A_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色、SQLite 与有界媒体缓存，随整实例备份保存，不替换 JSONL 会话。M2 引入 schema 2，M3 升级至 3，M4a 实际发布已升级至 4；旧程序不接受新版本，降级需同时恢复对应数据备份。软件默认关闭仿真，本人实际实例已显式启用；M4b、M5 尚未开始，下一批范围见 [M4 实施计划](M4_PLAN.md)。实际部署版本以实例 `state.json` 和上方发布记录为准。
