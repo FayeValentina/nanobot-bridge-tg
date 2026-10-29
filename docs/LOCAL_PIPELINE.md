@@ -22,6 +22,9 @@ GitHub Actions 工作流和社区 Issue 模板已移除，所有测试、构建�
 
 ## 当前生产状态
 
+2026-10-29 后续开发顺序：按 [迁移计划 v2.0](MIGRATION_V2_PLAN.md) 先补等待、接话、唤醒、参与节奏与收尾机制；
+M5 专用管理界面暂缓。v2.0 当前仅为计划文档，未更改下述运行版本或配置。
+
 2026-10-29 当前实际实例为群回复可靠性版本 `e714727fc63657db5b7a9b291a401a083c2c3bdf`。
 修复漏掉显式发送、等待期间关键词过滤、临时条件消费/过期、已读收尾和普通 message 平台回执/中断恢复。
 本机 social 设置 maxRequestsPerHour=120、maxSendsPerHour=60、repairUnsentFinal=true；
