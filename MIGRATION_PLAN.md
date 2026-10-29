@@ -2,14 +2,15 @@
 
 > **2026-10-29 后续顺序更新**：按本人要求，M5 专用管理界面暂缓，先补齐影响对话的二代仿真机制。
 > 新的实施依据为 [迁移计划 v2.0](docs/MIGRATION_V2_PLAN.md)。V2-A（动态等待、答后关注、睡前观察）已发布 `93fcb83f`，
-> 三个机制实际已启用，schema 7，见 [V2-A 记录](docs/V2A_IMPLEMENTATION.md)。下一批为 V2-B（触发/潜水条件），
-> 随后补参与节奏、收尾/分条/查询、学习与表达能力。本页保留 M0–M4 的原始范围和完成记录。
+> 三个机制实际已启用，见 [V2-A 记录](docs/V2A_IMPLEMENTATION.md)。V2-B（触发/潜水条件）也已发布 `29579798`，schema 8，
+> 本机提问、5% 概率及指定条件潜水中断已启用，见 [V2-B 记录](docs/V2B_IMPLEMENTATION.md)。下一批为 V2-C（参与节奏），
+> 随后补收尾/分条/查询、学习与表达能力。本页保留 M0–M4 的原始范围和完成记录。
 
 > 状态：M0–M3 首批及 M4a/M4b 已完成实现、验收和本机发布；M5 尚未开始。仿真在当前实际实例已按本人配置启用，新增主动机会/安静时段保留关闭默认值。GIF/WebM/TGS 本批提供缩略图或元信息降级，逐帧理解和动画发送按需后续扩展。当前部署以 [本机管线说明](docs/LOCAL_PIPELINE.md) 及实例 state.json 为准。
 > 目标：把 qq-bridge 的群友仿真、人格、多媒体及群内记忆能力移植到 nanobot，使用 Telegram 收发消息，保持 nanobot 的轻量与可扩展性。
 > 最近核对：2026-10-28，M4a 见 [群记忆说明](docs/M4A_IMPLEMENTATION.md)，M4b 见 [主动机会说明](docs/M4B_IMPLEMENTATION.md)。分批范围和验收见 [M4 实施计划](docs/M4_PLAN.md)。日常发布操作以 [本机管线说明](docs/LOCAL_PIPELINE.md) 为准。
 > 本机部署记录：M0–M2 已提交为 `798d172d` 并部署到独立验证实例（8766 / 18791），健康检查与安装包离线验证通过；该次部署未切换实际使用实例，详见 [部署记录](docs/M2_DEPLOYMENT.md)。用户后续明确：个人本机使用，无测试群前置要求，后续功能批次默认及时部署到实际使用实例（8765 / 18790），以 [本机迭代约定](docs/LOCAL_PIPELINE.md) 为准。
-> 当前实际实例：V2-A `93fcb83f`，schema 7，动态等待、答后关注和睡前观察已启用。保留群回复可靠性修复 `e714727f`、整群仿真与 M4a/M4b。主动机会开启，quietHours 关闭；本机 social 额度仍为每小时 120 个唤醒回合/60 次 social 发送尝试。容器健康、Telegram 已连接，原水位、记忆、角色与其他配置保留。详见 [V2-A 记录](docs/V2A_IMPLEMENTATION.md)、[群回复可靠性修复](docs/REPLY_RELIABILITY.md) 与 [整群仿真说明](docs/GROUP_SOCIAL.md)。
+> 当前实际实例：V2-B `29579798`，schema 8，提问/概率/指定潜水中断已启用，支持有限/无限及带时区绝对等待；V2-A 动态等待、答后关注和睡前观察保留启用。保留群回复可靠性修复、整群仿真与 M4a/M4b。主动机会开启，quietHours 关闭；本机 social 额度仍为每小时 120 个唤醒回合/60 次 social 发送尝试。容器健康、Telegram 已连接，原水位、记忆、角色与其他配置保留。详见 [V2-B 记录](docs/V2B_IMPLEMENTATION.md)、[V2-A 记录](docs/V2A_IMPLEMENTATION.md) 与 [整群仿真说明](docs/GROUP_SOCIAL.md)。
 
 > 2026-10-28 后续调整：支持按群启用所有话题的仿真，保持实际话题会话与发送路由，见 [按群启用说明](docs/GROUP_SOCIAL.md)。
 

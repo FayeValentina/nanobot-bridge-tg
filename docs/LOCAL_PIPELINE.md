@@ -23,9 +23,18 @@ GitHub Actions 工作流和社区 Issue 模板已移除，所有测试、构建�
 ## 当前生产状态
 
 2026-10-29 后续开发顺序：按 [迁移计划 v2.0](MIGRATION_V2_PLAN.md) 先补等待、接话、唤醒、参与节奏与收尾机制；
-M5 专用管理界面暂缓。V2-A 已完成，下一批为 V2-B。
+M5 专用管理界面暂缓。V2-A/B 已完成，下一批为 V2-C。
 
-2026-10-29 当前实际实例为 V2-A `93fcb83f5cf4fc7027cb82435ca7ed67fc9fa29b`。
+2026-10-29 当前实际实例为 V2-B `295797983bd5368078188d6716814949b48804d5`。
+提问触发、5% 普通消息概率，以及关键词/指定成员/提问潜水中断已启用；概率和普通消息不打断潜水。
+支持有限/无限及带明确时区的绝对等待，临时条件仍有 TTL。V2-A、角色、群范围、模型、额度、主动机会和 quietHours 配置保留。
+完整原管线通过后端 1036 项、provider 116 项、前端 1553 项、Ruff 与 WebUI lint/build；新增 V2-B 定向验收 102 项，修改模块严格类型零错误/警告。
+实际安装 wheel 离线链路、容器健康、Telegram 连接、schema 7→8 与 quick_check、原水位/记忆和角色/工作区指纹已核验。
+除三项 scope 增量外配置指纹一致，2 个实际作用域的调度版本已对应启用后的策略；未向真实群发送验收消息。
+上一实际版本 `93fcb83f`，发布前整实例备份 `backups/1793239186020715409/`；启用预设前配置备份 `backups/v2b-preset-20261029T020128/`。
+旧代码不支持 schema 8 和新增字段，回滚应连同对应数据。详见 [V2-B 实现与发布](V2B_IMPLEMENTATION.md)。
+
+此前 V2-A 版本为 `93fcb83f5cf4fc7027cb82435ca7ed67fc9fa29b`。
 动态等待（1.5/4 秒静默、12 秒总上限）、答后关注（30 秒本地检查、120/300 秒窗口）、睡前观察（300 秒）已启用。
 原管线通过后端 934 项、provider 116 项、前端 1553 项与 Ruff、WebUI lint/build；新增 56 项 V2-A 定向验收通过，修改模块严格类型零错误/警告。
 实际镜像离线探针、容器健康、Telegram 连接、schema 6→7 与 quick_check、原水位/记忆 ID 和角色/工作区指纹均核验通过。
@@ -230,4 +239,4 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 - 独立测试实例已验证真实升级、手动回滚，以及通过预检后故意失败的升级能自动恢复旧容器和数据。
 - 模型与 Telegram 的最终业务体验由管理员发送测试消息确认，管线不会向真实群自动发送测试消息。
 
-本机开发发布基础设施、M0–M3 首批、完整 M4 和 V2-A 已完成，验收随 `test` 执行；详见 [M0](M0_CONTRACTS.md)、[M1](M1_IMPLEMENTATION.md)、[M2](M2_IMPLEMENTATION.md)、[M3](M3_IMPLEMENTATION.md)、[M4a](M4A_IMPLEMENTATION.md)、[M4b](M4B_IMPLEMENTATION.md) 与 [V2-A](V2A_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色、SQLite 与有界媒体缓存，随整实例备份保存，不替换 JSONL 会话。当前实际库 schema 7；旧程序不接受新版本，降级需同时恢复对应数据备份。软件默认关闭仿真及新增可选机制；本人实际实例已显式启用仿真、主动机会和 V2-A，quietHours 仍关闭，M5 暂缓。实际部署版本以实例 `state.json` 和上方发布记录为准。
+本机开发发布基础设施、M0–M3 首批、完整 M4 和 V2-A/B 已完成，验收随 `test` 执行；详见 [M0](M0_CONTRACTS.md)、[M1](M1_IMPLEMENTATION.md)、[M2](M2_IMPLEMENTATION.md)、[M3](M3_IMPLEMENTATION.md)、[M4a](M4A_IMPLEMENTATION.md)、[M4b](M4B_IMPLEMENTATION.md)、[V2-A](V2A_IMPLEMENTATION.md) 与 [V2-B](V2B_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色、SQLite 与有界媒体缓存，随整实例备份保存，不替换 JSONL 会话。当前实际库 schema 8；旧程序不接受新版本，降级需同时恢复对应数据备份。软件默认关闭仿真及新增可选机制；本人实际实例已显式启用仿真、主动机会、V2-A 和 V2-B 预设，quietHours 仍关闭，M5 暂缓。实际部署版本以实例 `state.json` 和上方发布记录为准。
