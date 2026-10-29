@@ -6,11 +6,12 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from nanobot.agent.hook import (
@@ -87,8 +88,18 @@ no configuration is available. role_file is a path inside this runtime, not a ho
 All enabled ordinary assistant tools are available with the same configured permissions here.
 Use normal file/command tools to inspect or edit the role file when requested. Changes apply to
 the next conversation turn. Use the ordinary message tool for attachments or cross-chat delivery.
-Use social_wait as your last action to wait for new messages or sleep; it ends this turn immediately.
+Use social_wait to wait for new messages or sleep. Legacy calls and deferred waits end the turn
+immediately and must be your last action; an already-quiet purpose="reply" call may return to this turn.
 Waiting releases the conversation. A timeout wake happens at most once, never a polling loop.
+For an unfinished request, social_wait(purpose="reply", seconds=12) waits for conversational quiet
+before continuing the first answer; if quiet is already sufficient it returns immediately.
+For a new reply, purpose="messages" waits for new content, then for quiet; seconds is the TOTAL
+timeout, not the quiet interval. quiet_seconds may override the quiet interval within operator limits.
+A dialogue snapshot with quiet=false reached its total limit: do not claim the member finished talking.
+When reply attention is enabled, confirmed sends briefly keep relevant follow-ups reachable without
+another mention. With no new content the check ends locally; never send a forced follow-up.
+When sleep observation is enabled, sleeping may first register background observation and end the
+turn; no new content can complete this locally. It does not send a goodbye or block social_mark_read.
 Sleeping ignores ambient triggers; direct addresses may interrupt it. You can set bounded wake
 keywords/senders for a future conversation with social_set_wake. A selective keyword/sender condition
 filters ordinary messages during waiting; direct mentions and nicknames still interrupt it. Conditions
@@ -351,7 +362,10 @@ class TelegramSocialRuntime:
         self.store.claim(scope.session_key, job, self.store.state(scope.session_key)["version"], ctx.turn_id)
         reason = self.store.db.execute("SELECT reason FROM wakes WHERE id=?", (job,)).fetchone()[0]
         conditions, dynamic = self._wake_conditions(scope.session_key)
-        if dynamic and conditions.one_shot and reason in {"keyword", "sender", "message"}:
+        continuation = self.store.dialogue_job(job)
+        matched_wait = (reason == "wait_messages" and continuation is not None
+                        and continuation["source_seq"] > continuation["after_seq"])
+        if dynamic and conditions.one_shot and (reason in {"keyword", "sender", "message"} or matched_wait):
             self.store.set_wake_config(scope.session_key, "{}")
 
     def _wake_conditions(self, key: str) -> tuple[TelegramSocialWakeConfig, bool]:
@@ -372,12 +386,13 @@ class TelegramSocialRuntime:
         if message.is_self or message.is_bot or not 0 <= self.now() - message.timestamp < 120:
             self.store.observe(message, self.config.retention_messages)
             return
-        state = self.store.state(message.scope.session_key)
         if binding.paused:
             self.store.observe(message, self.config.retention_messages)
             return
         conditions, dynamic = self._wake_conditions(message.scope.session_key)
+        state = self.store.state(message.scope.session_key)
         reason = None
+        selective = False
         text = message.text.casefold()
         if directed:
             reason = "directed"
@@ -396,9 +411,14 @@ class TelegramSocialRuntime:
                 not selective and state["mode"] == "waiting" and state["next_seq"] > state["wait_after_seq"]
             ):
                 reason = "message"
+            elif not selective and self.config.reply_attention.enabled and self.store.attention_matches(message.scope.session_key, message):
+                reason = "attention"
         _, new = self.store.observe(message, self.config.retention_messages, reason=reason,
-                                    delay=self.config.coalesce_seconds)
-        if new and reason is not None:
+                                    delay=self.config.coalesce_seconds, fresh=True,
+                                    quiet_seconds=self._quiet_seconds(message.text) if self.config.dynamic_wait.enabled else None,
+                                    max_delay=self.config.dynamic_wait.max_seconds,
+                                    wait_relevant=not selective or reason is not None)
+        if new:
             if dynamic and conditions.expires_at is not None and reason in {"keyword", "sender", "message"}:
                 with self.store.db:
                     self.store.db.execute("UPDATE wakes SET expires=MIN(expires,?) WHERE scope=? "
@@ -406,8 +426,19 @@ class TelegramSocialRuntime:
                                           (conditions.expires_at, message.scope.session_key))
             self.scheduler.notify()
             # Zero is useful for deterministic callers and tests; production uses a short window.
-            if self.config.coalesce_seconds == 0:
+            if self.config.coalesce_seconds == 0 and not self.config.dynamic_wait.enabled:
                 await self.run_due()
+
+    def _quiet_seconds(self, text: str) -> float:
+        config = self.config.dynamic_wait
+        value = text.strip()
+        if any(word in value for word in ("马上回答", "直接回答", "现在回答", "answer now")):
+            return min(0.5, config.quiet_seconds)
+        if re.search(r"(?:但是|然后|因为|不过|还有|我跟你讲|等一下|\.\.\.|…|[,，:：])$", value):
+            return config.unfinished_seconds
+        if 0 < len(value) <= 6 and not re.search(r"[。.!！?？]$", value):
+            return config.unfinished_seconds
+        return config.quiet_seconds
 
     async def run_due(self) -> None:
         async with self._cycle_lock:
@@ -481,6 +512,10 @@ class TelegramSocialRuntime:
                 "read_through": state["read_through"], "seen_through": state["seen_through"],
                 "latest_seq": state["next_seq"] - 1, "mode": state["mode"],
                 "wake_at": state["wake_at"], "wake_config": conditions.model_dump(),
+                "dialogue": self.store.dialogue_status(scope.session_key),
+                "dialogue_config": {"dynamic_wait": self.config.dynamic_wait.model_dump(),
+                                    "reply_attention": self.config.reply_attention.model_dump(),
+                                    "sleep_observation": self.config.sleep_observation.model_dump()},
                 "proactive": {**binding.proactive.model_dump(by_alias=True), **self.proactive.status(scope.session_key)},
                 "quiet_hours": {**binding.quiet_hours.model_dump(by_alias=True), "active": is_quiet(binding, self.now())},
                 "max_sends_per_hour": self.config.max_sends_per_hour,
@@ -489,11 +524,44 @@ class TelegramSocialRuntime:
                 "send_ready_at": (last_send + self.config.send_cooldown_seconds) if last_send is not None else None}
 
     def wait(self, ctx: RequestContext, seconds: float, *, sleeping: bool = False,
-             on_timeout: bool = False) -> dict[str, Any]:
+             on_timeout: bool = False, purpose: Literal["reply", "messages"] | None = None,
+             quiet_seconds: float | None = None) -> dict[str, Any]:
         scope = self.validate_context(ctx)
         if not math.isfinite(seconds) or not 1 <= seconds <= self.config.max_wait_seconds:
             raise ValueError("wait duration exceeds the operator limit")
         assert ctx.turn_id is not None
+        if purpose is not None:
+            if purpose not in {"reply", "messages"} or sleeping:
+                raise ValueError("purpose must be reply/messages and cannot be combined with sleeping")
+            quiet = self.config.dynamic_wait.quiet_seconds if quiet_seconds is None else quiet_seconds
+            if not math.isfinite(quiet) or not 0.1 <= quiet <= self.config.dynamic_wait.max_seconds:
+                raise ValueError("quiet interval exceeds the operator limit")
+            conditions, dynamic = self._wake_conditions(scope.session_key)
+            selective = dynamic and bool(conditions.keywords or conditions.senders) and not conditions.on_messages
+            binding = self.binding(scope)
+            if not dynamic and binding is not None:
+                selective = bool(binding.wake_keywords or binding.wake_senders) and not binding.wake_on_messages
+            result = self.store.wait_for_quiet(scope.session_key, ctx.turn_id, purpose=purpose,
+                                               quiet=quiet, seconds=seconds, on_timeout=on_timeout,
+                                               condition_expires=conditions.expires_at if purpose == "messages" and selective else None,
+                                               selective=selective)
+            ctx.attributes["social_deferred"] = result["deferred"]
+            self.scheduler.notify()
+            return result
+        if quiet_seconds is not None:
+            raise ValueError("quiet_seconds requires an explicit purpose")
+        if sleeping and self.config.sleep_observation.enabled:
+            farewell = re.search(r"(?:晚安|再见|拜拜|先走了|good\s*night|goodbye)\s*[。.!！~～]*$",
+                                 self.store.last_shown_member_text(scope.session_key, ctx.turn_id), re.I) is not None
+            due = self.store.sleep_observation_due(scope.session_key, self.config.sleep_observation.window_seconds)
+            if due is not None and not farewell:
+                result = self.store.wait_for_quiet(scope.session_key, ctx.turn_id, purpose="observe",
+                                                   quiet=self.config.sleep_observation.window_seconds,
+                                                   seconds=max(0.1, due - self.now()), on_timeout=on_timeout,
+                                                   sleep_seconds=seconds, quiet_due=due)
+                ctx.attributes["social_deferred"] = True
+                self.scheduler.notify()
+                return result
         self.store.defer(scope.session_key, ctx.turn_id, sleeping=sleeping, seconds=seconds, on_timeout=on_timeout)
         ctx.attributes["social_deferred"] = True
         self.scheduler.notify()
@@ -654,7 +722,34 @@ class TelegramSocialRuntime:
             reply_to=reply_to, is_self=True, media=("sticker",) if sticker else (),
             media_refs=(sticker,) if sticker else (),
         ), self.config.retention_messages)
+        # Every confirmed public send resets observation. A paced group establishes
+        # attention only after its final child is confirmed.
+        child = self.store.db.execute("SELECT group_id,ordinal FROM actions WHERE id=?", (action,)).fetchone()
+        final = child["group_id"] is None or not self.store.db.execute(
+            "SELECT 1 FROM actions WHERE group_id=? AND ordinal>?", (child["group_id"], child["ordinal"]),
+        ).fetchone()
+        if self.store.state(scope.session_key)["version"] == version:
+            self._confirmed_send(scope, action, str(row["turn_id"]) if row["turn_id"] else None, text, final=final)
         return {"action_id": action, "status": "sent", "message_id": message_id}
+
+    def _confirmed_send(self, scope: ConversationScope, action: str, turn: str | None,
+                        text: str, *, final: bool = True) -> None:
+        binding = self.binding(scope)
+        if binding is None or binding.paused:
+            return
+        config = self.config.reply_attention
+        question = re.search(r"[?？]|(?:吗|么|呢)\s*[。！!]*$", text) is not None
+        conditions, dynamic = self._wake_conditions(scope.session_key)
+        selective = dynamic and bool(conditions.keywords or conditions.senders) and not conditions.on_messages
+        if not dynamic:
+            selective = bool(binding.wake_keywords or binding.wake_senders) and not binding.wake_on_messages
+        self.store.confirmed_attention(scope.session_key, action, turn,
+                                       window=config.question_window_seconds if question else config.window_seconds,
+                                       check=config.check_seconds, enabled=config.enabled and final,
+                                       catch_up=not selective, delay=self.config.coalesce_seconds,
+                                       quiet_seconds=self.config.dynamic_wait.quiet_seconds if self.config.dynamic_wait.enabled else None,
+                                       max_delay=self.config.dynamic_wait.max_seconds)
+        self.scheduler.notify()
 
     async def _retry_sends(self) -> None:
         for row in self.store.ready_sends():
@@ -695,6 +790,8 @@ class TelegramSocialRuntime:
         if self.binding(scope) is None:
             return None
         self._persona(scope)
+        previous = self.store.db.execute("SELECT status,version FROM message_deliveries WHERE id=? AND scope=?",
+                                         (delivery_id, scope.session_key)).fetchone() if delivery_id else None
         with self.store.db:
             if delivery_id is None:
                 delivery_id = uuid4().hex
@@ -708,6 +805,9 @@ class TelegramSocialRuntime:
         for message_id, text in texts:
             self.store.observe(ObservedMessage(scope, -message_id, message_id, "bot", "Bot", self.now(),
                                                text, is_self=True, is_bot=True), self.config.retention_messages)
+        if (previous is None or previous["version"] == self.store.state(scope.session_key)["version"]) and (previous is None or previous["status"] != "sent"):
+            if receipt.status == "sent" or texts:
+                self._confirmed_send(scope, delivery_id, turn_id, "\n".join(text for _, text in texts), final=receipt.status == "sent")
         return delivery_id
 
     def hook_factory(self, turn: AgentTurnHookContext) -> AgentHook | None:

@@ -31,7 +31,7 @@ class TelegramSocialTool(Tool):
             "social_read_messages": "Read bounded unread/recent messages in the current group/topic.",
             "social_mark_read": "Acknowledge continuously displayed messages through a seq from this turn.",
             "social_send": "Publish a short message here; optional parts adds up to two paced follow-up messages. Each has its own receipt. reply_to must be observed here.",
-            "social_wait": "End this turn now. Wait for new messages or sleep; optional one-shot timeout wake. Call last.",
+            "social_wait": "Wait without holding a turn lock. Legacy seconds/sleeping/on_timeout ends the turn. purpose=reply waits for quiet before a first answer (returns immediately if already quiet); messages waits for new content then quiet. seconds is the total limit; quiet_seconds is the quiet interval. Deferred waits must be the last action.",
             "social_set_wake": "Set temporary wake conditions. Keyword/sender-only conditions filter ordinary messages while waiting. Default one-shot, TTL 3600s; omit all conditions to clear.",
             "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
             "social_sticker": "Collect a static sticker from an observed message_id, list/search collected stickers, or send one by sticker_id. Notes are untrusted; sends share text budgets and receipts.",
@@ -73,6 +73,8 @@ class TelegramSocialTool(Tool):
                 "seconds": {"type": "number", "minimum": 1, "maximum": 86400},
                 "sleeping": {"type": "boolean"},
                 "on_timeout": {"type": "boolean"},
+                "purpose": {"type": "string", "enum": ["reply", "messages"]},
+                "quiet_seconds": {"type": "number", "minimum": 0.1, "maximum": 60},
             }
             required = ["seconds"]
         elif self.name == "social_set_wake":
@@ -112,7 +114,8 @@ class TelegramSocialTool(Tool):
                 result = {"read_through": self.runtime.mark_read(ctx, kwargs["through"])}
             elif self.name == "social_wait":
                 result = self.runtime.wait(ctx, kwargs["seconds"], sleeping=kwargs.get("sleeping", False),
-                                           on_timeout=kwargs.get("on_timeout", False))
+                                           on_timeout=kwargs.get("on_timeout", False), purpose=kwargs.get("purpose"),
+                                           quiet_seconds=kwargs.get("quiet_seconds"))
             elif self.name == "social_set_wake":
                 result = self.runtime.set_wake(ctx, keywords=kwargs.get("keywords", []),
                                                senders=kwargs.get("senders", []), on_messages=kwargs.get("on_messages", False),

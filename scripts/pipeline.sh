@@ -32,6 +32,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_proactive.py \
       nanobot/channels/telegram/tests/test_shared_tools.py \
       nanobot/channels/telegram/tests/test_reply_reliability.py \
+      nanobot/channels/telegram/tests/test_social_dialogue.py \
       nanobot/channels/telegram/tests/test_stream_pacing.py \
       nanobot/cli/gateway_runtime.py nanobot/webui/settings_system.py \
       nanobot/providers/openai_compat_provider.py tests/providers/test_litellm_kwargs.py \
