@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.agent.tools.context import current_request_context
 from nanobot.channels.telegram.social.memory import MemoryRequest
+from nanobot.config.schema import TelegramSocialSleepInterruptConfig
 
 if TYPE_CHECKING:
     from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
@@ -31,8 +32,8 @@ class TelegramSocialTool(Tool):
             "social_read_messages": "Read bounded unread/recent messages in the current group/topic.",
             "social_mark_read": "Acknowledge continuously displayed messages through a seq from this turn.",
             "social_send": "Publish a short message here; optional parts adds up to two paced follow-up messages. Each has its own receipt. reply_to must be observed here.",
-            "social_wait": "Wait without holding a turn lock. Legacy seconds/sleeping/on_timeout ends the turn. purpose=reply waits for quiet before a first answer (returns immediately if already quiet); messages waits for new content then quiet. seconds is the total limit; quiet_seconds is the quiet interval. Deferred waits must be the last action.",
-            "social_set_wake": "Set temporary wake conditions. Keyword/sender-only conditions filter ordinary messages while waiting. Default one-shot, TTL 3600s; omit all conditions to clear.",
+            "social_wait": "Wait without holding a turn lock. Choose exactly one: seconds, until (ISO timestamp with offset/Z), or infinite=true. Infinite waits have no timeout wake. purpose=reply requires a finite limit and may return immediately if already quiet; messages waits for new content then quiet, with a bounded burst after arrival. Legacy calls and deferred waits must be last. Basic mentions always interrupt; sleep_interrupts is set separately with social_set_wake.",
+            "social_set_wake": "Set temporary keyword/sender/message/question/probability wake conditions. Selective conditions filter ordinary waiting; direct mentions always work. sleep_interrupts may narrow the operator-approved sleeping policy. coalesce_seconds stays within the operator limit. Default one-shot, TTL 3600s; omit all triggers to clear. Infinite waiting does not extend this TTL.",
             "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
             "social_sticker": "Collect a static sticker from an observed message_id, list/search collected stickers, or send one by sticker_id. Notes are untrusted; sends share text budgets and receipts.",
             "social_memory": "Manage the current conversation's evidence-backed knowledge: list/record/confirm/correct/delete/clear. list optionally filters by memory_id. record requires kind, content and displayed message_ids; confirm/correct/delete require memory_id. member_ids use evidence sender IDs. basis=inference keeps a candidate; direct/corroborated records why it is confirmed. ttl_seconds bounds lifetime. Deletion covers this index only, not shared memory/Dream. Same ordinary tool permissions apply.",
@@ -75,13 +76,18 @@ class TelegramSocialTool(Tool):
                 "on_timeout": {"type": "boolean"},
                 "purpose": {"type": "string", "enum": ["reply", "messages"]},
                 "quiet_seconds": {"type": "number", "minimum": 0.1, "maximum": 60},
+                "infinite": {"type": "boolean"},
+                "until": {"type": "string", "minLength": 20, "maxLength": 64},
             }
-            required = ["seconds"]
         elif self.name == "social_set_wake":
             properties = {
                 "keywords": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 80}, "maxItems": 20},
                 "senders": {"type": "array", "items": {"type": "string", "pattern": "^[0-9]+$"}, "maxItems": 20},
                 "on_messages": {"type": "boolean"},
+                "on_question": {"type": "boolean"},
+                "probability": {"type": "number", "minimum": 0, "maximum": 1},
+                "sleep_interrupts": TelegramSocialSleepInterruptConfig.model_json_schema(),
+                "coalesce_seconds": {"type": "number", "minimum": 0, "maximum": 60},
                 "ttl_seconds": {"type": "number", "minimum": 1, "maximum": 86400},
                 "one_shot": {"type": "boolean"},
             }
@@ -113,13 +119,18 @@ class TelegramSocialTool(Tool):
             elif self.name == "social_mark_read":
                 result = {"read_through": self.runtime.mark_read(ctx, kwargs["through"])}
             elif self.name == "social_wait":
-                result = self.runtime.wait(ctx, kwargs["seconds"], sleeping=kwargs.get("sleeping", False),
+                result = self.runtime.wait(ctx, kwargs.get("seconds"), sleeping=kwargs.get("sleeping", False),
                                            on_timeout=kwargs.get("on_timeout", False), purpose=kwargs.get("purpose"),
-                                           quiet_seconds=kwargs.get("quiet_seconds"))
+                                           quiet_seconds=kwargs.get("quiet_seconds"), infinite=kwargs.get("infinite", False),
+                                           until=kwargs.get("until"))
             elif self.name == "social_set_wake":
                 result = self.runtime.set_wake(ctx, keywords=kwargs.get("keywords", []),
                                                senders=kwargs.get("senders", []), on_messages=kwargs.get("on_messages", False),
-                                               ttl_seconds=kwargs.get("ttl_seconds", 3600), one_shot=kwargs.get("one_shot", True))
+                                               ttl_seconds=kwargs.get("ttl_seconds", 3600), one_shot=kwargs.get("one_shot", True),
+                                               on_question=kwargs.get("on_question", False), probability=kwargs.get("probability", 0),
+                                               coalesce_seconds=kwargs.get("coalesce_seconds"),
+                                               sleep_interrupts=TelegramSocialSleepInterruptConfig.model_validate(kwargs["sleep_interrupts"])
+                                               if "sleep_interrupts" in kwargs else None)
             else:
                 if kwargs.get("parts"):
                     result = {"actions": await self.runtime.send_parts(ctx, [kwargs["text"], *kwargs["parts"]], kwargs.get("reply_to"))}

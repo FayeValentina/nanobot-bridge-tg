@@ -2060,6 +2060,7 @@ class TelegramChannel(BaseChannel):
             media=tuple(media), is_self=bool(bot_id and user.id == bot_id), is_bot=bool(user.is_bot),
             media_refs=self._social_media_refs(message), reply=quoted,
             album_id=message.media_group_id,
+            bot_username=bot_username, is_edit=update.edited_message is not None,
         )
         await social.observe(observed, directed=bool(directed and not user.is_bot and update.edited_message is None))
         return True
