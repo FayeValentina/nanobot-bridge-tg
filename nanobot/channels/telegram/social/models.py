@@ -116,6 +116,7 @@ class ProactiveCandidate(BaseModel):
     expires_at: float
     memory_id: str | None = None
     revision: int | None = None
+    context: str = Field(default="", max_length=1000)
 
 
 class WakeJob(TypedDict):

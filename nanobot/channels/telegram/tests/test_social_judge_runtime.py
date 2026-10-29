@@ -107,14 +107,15 @@ async def test_continuous_messages_are_batched_with_a_fixed_total_cap(social):
     assert social.bus.inbound.qsize()==1
 
 
-async def test_topic_root_is_not_presented_as_a_member_reply(social):
+@pytest.mark.parametrize("creator", [456, 999])
+async def test_topic_root_is_not_presented_as_a_member_reply(social, creator):
     provider=decide(social)
     tg=channel(social)
     data=telegram_update(text="肥鱼呢",reply=True).to_dict()
     data["message"]["date"]=int(social.now())
     quote=data["message"]["reply_to_message"]
     quote.update(message_id=A.thread_id,text="",from_user=None)
-    quote["from"]={"id":456,"is_bot":False,"first_name":"Creator"}
+    quote["from"]={"id":creator,"is_bot":creator==999,"first_name":"Creator"}
     await tg._observe_social(Update.de_json(data,None))
     await due(social)
     snapshot=JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])

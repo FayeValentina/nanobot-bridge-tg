@@ -2035,7 +2035,9 @@ class TelegramChannel(BaseChannel):
                 text, list(message.entities or message.caption_entities or ()), bot_username, bot_id,
             )
         reply_user = message.reply_to_message.from_user if message.reply_to_message else None
-        directed = directed or bool(bot_id and reply_user and reply_user.id == bot_id)
+        topic_root = bool(scope.thread_id and message.reply_to_message
+                          and message.reply_to_message.message_id == scope.thread_id)
+        directed = directed or bool(bot_id and reply_user and reply_user.id == bot_id and not topic_root)
         media: list[str] = []
         for kind in ("photo", "video", "animation", "voice", "audio", "document", "sticker"):
             if getattr(message, kind, None):
@@ -2050,7 +2052,7 @@ class TelegramChannel(BaseChannel):
                 name=(reply_user.full_name if reply_user else "Unknown")[:120],
                 timestamp=reply.date.timestamp(), text=(reply.text or reply.caption or "")[:1000],
                 is_bot=bool(bot_id and reply_user and reply_user.id == bot_id),
-                is_topic_root=bool(scope.thread_id and reply.message_id == scope.thread_id),
+                is_topic_root=topic_root,
                 media_refs=list(self._social_media_refs(reply)),
             )
         observed = ObservedMessage(

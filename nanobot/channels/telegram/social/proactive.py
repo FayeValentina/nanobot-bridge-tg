@@ -62,6 +62,7 @@ class SocialProactive:
         if ideas:
             entry = ideas[0]
             return ProactiveCandidate(kind="memory", memory_id=entry.id, revision=entry.revision,
+                                      context=entry.content[:1000],
                                       seq=state["event_seq"], expires_at=min(now + binding.proactive.ttl_seconds, entry.expires or float("inf")))
         seq = state["event_seq"]
         if seq > max(last_seq, state["read_through"], self.store.judge_through(key)):

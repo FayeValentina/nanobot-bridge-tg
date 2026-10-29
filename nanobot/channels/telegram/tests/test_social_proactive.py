@@ -123,12 +123,15 @@ async def test_opportunity_configuration_and_budget_are_per_conversation(social)
 @pytest.mark.parametrize("kind", ["pending", "topic"])
 async def test_memory_opportunity_is_bounded_by_source_revision(social, kind):
     enable(social)
+    provider = decide(social)
     memory_id = learn(social, kind=kind)
     await tick(social)
     inbound = social.bus.inbound.get_nowait()
     assert view(inbound)["opportunity"]["memory_id"] == memory_id
     assert view(inbound)["opportunity"]["revision"] == 1
-    # IDs in queued snapshots do not cache a second copy of memory content.
+    snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+    assert json.loads(snapshot["opportunity"])["context"] == "稍后继续讨论乌龙茶"
+    # Only a bounded summary accompanies the revision; full memory is still resolved separately.
     assert "content" not in view(inbound)["opportunity"]
     ctx = claim(social, inbound)
     social.store.finish(ctx.turn_id, "completed")
