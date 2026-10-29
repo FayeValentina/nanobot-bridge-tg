@@ -119,6 +119,40 @@ class TelegramSocialWakeConfig(Base):
         return TelegramSocialScopeConfig.validate_wake_senders(values)
 
 
+class TelegramSocialDynamicWaitConfig(Base):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    quiet_seconds: float = Field(default=1.5, ge=0.1, le=10, allow_inf_nan=False)
+    unfinished_seconds: float = Field(default=4, ge=0.1, le=20, allow_inf_nan=False)
+    max_seconds: float = Field(default=12, ge=1, le=60, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> TelegramSocialDynamicWaitConfig:
+        if not self.quiet_seconds <= self.unfinished_seconds <= self.max_seconds:
+            raise ValueError("quietSeconds <= unfinishedSeconds <= maxSeconds is required")
+        return self
+
+
+class TelegramSocialReplyAttentionConfig(Base):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    check_seconds: float = Field(default=30, ge=1, le=300, allow_inf_nan=False)
+    window_seconds: float = Field(default=120, ge=1, le=1800, allow_inf_nan=False)
+    question_window_seconds: float = Field(default=300, ge=1, le=1800, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> TelegramSocialReplyAttentionConfig:
+        if not self.check_seconds <= self.window_seconds <= self.question_window_seconds:
+            raise ValueError("checkSeconds <= windowSeconds <= questionWindowSeconds is required")
+        return self
+
+
+class TelegramSocialSleepObservationConfig(Base):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    window_seconds: float = Field(default=300, ge=1, le=1800, allow_inf_nan=False)
+
+
 class TelegramSocialConfig(Base):
     """Opt-in Telegram text social mode; runtime state is stored outside config."""
 
@@ -133,6 +167,9 @@ class TelegramSocialConfig(Base):
     max_sends_per_hour: int = Field(default=6, ge=1, le=60)
     max_text_chars: int = Field(default=2000, ge=1, le=4000)
     coalesce_seconds: float = Field(default=1.5, ge=0, le=10)
+    dynamic_wait: TelegramSocialDynamicWaitConfig = Field(default_factory=TelegramSocialDynamicWaitConfig)
+    reply_attention: TelegramSocialReplyAttentionConfig = Field(default_factory=TelegramSocialReplyAttentionConfig)
+    sleep_observation: TelegramSocialSleepObservationConfig = Field(default_factory=TelegramSocialSleepObservationConfig)
     cooldown_seconds: float = Field(default=10, ge=0, le=300)
     send_cooldown_seconds: float = Field(default=2, ge=0, le=60)
     max_wait_seconds: int = Field(default=3600, ge=1, le=86400)

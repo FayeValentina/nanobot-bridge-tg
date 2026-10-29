@@ -83,6 +83,15 @@ class UncertainSend(TypedDict):
     status: Literal["unknown"]
 
 
+class DialogueContext(TypedDict):
+    purpose: str
+    quiet: bool
+    quiet_due: float
+    total_due: float
+    source_seq: int
+    after_seq: int
+
+
 class Snapshot(TypedDict):
     view_id: str
     now: float
@@ -94,6 +103,7 @@ class Snapshot(TypedDict):
     mode: str
     wake_reason: str | None
     opportunity: dict[str, object] | None
+    dialogue: DialogueContext | None
 
 
 class ProactiveCandidate(BaseModel):

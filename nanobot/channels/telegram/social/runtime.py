@@ -698,9 +698,10 @@ class TelegramSocialRuntime:
         with self.store.db:
             if delivery_id is None:
                 delivery_id = uuid4().hex
-                self.store.db.execute("INSERT INTO message_deliveries VALUES(?,?,?,?,?,?,?)",
+                self.store.db.execute("INSERT INTO message_deliveries VALUES(?,?,?,?,?,?,?,?)",
                                       (delivery_id, scope.session_key, turn_id, self.now(),
-                                       receipt.status, json.dumps(receipt.message_ids), receipt.detail))
+                                       receipt.status, json.dumps(receipt.message_ids), receipt.detail,
+                                       self.store.state(scope.session_key)["version"]))
             else:
                 self.store.db.execute("UPDATE message_deliveries SET status=?,message_ids=?,detail=? WHERE id=? AND scope=?",
                                       (receipt.status, json.dumps(receipt.message_ids), receipt.detail, delivery_id, scope.session_key))
