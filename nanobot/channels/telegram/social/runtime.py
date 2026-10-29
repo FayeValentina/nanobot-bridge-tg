@@ -303,7 +303,8 @@ class TelegramSocialRuntime:
         assembled = f"{SOCIAL_PROTOCOL}\n\n# Operator persona\n{persona}\n\n# Operator group background\n{binding.background}"
         version = hashlib.sha256(
             SOCIAL_PROTOCOL.encode() + binding.model_dump_json().encode()
-            + self.config.model_dump_json(exclude={"scopes"}).encode()
+            # V3-A installs the judge component without changing V2 message routing.
+            + self.config.model_dump_json(exclude={"scopes", "judge"}).encode()
         ).hexdigest()
         self.store.bind(scope, version)
         if binding.paused:

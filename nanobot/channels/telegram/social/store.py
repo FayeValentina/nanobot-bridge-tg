@@ -10,6 +10,12 @@ from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
+from nanobot.channels.telegram.social.judge_models import (
+    JUDGE_PROMPT_VERSION,
+    JudgeDecision,
+    JudgeRecord,
+    JudgeSnapshot,
+)
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
     DialogueContext,
@@ -38,7 +44,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -235,6 +241,34 @@ class SocialStore:
                 PRAGMA user_version=8;
                 COMMIT;
             """)
+        if version < 9:
+            self.db.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE IF NOT EXISTS judge_state (
+                    scope TEXT PRIMARY KEY REFERENCES scopes(key), assessed_through INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS judge_batches (
+                    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
+                    version TEXT NOT NULL, signature TEXT NOT NULL, input_hash TEXT NOT NULL,
+                    model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+                    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL,
+                    created REAL NOT NULL, expires REAL NOT NULL, due REAL NOT NULL,
+                    status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                    decision TEXT, error_code TEXT, fallback_at REAL,
+                    UNIQUE(scope,version,signature,input_hash)
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS judge_running_scope ON judge_batches(scope) WHERE status='running';
+                CREATE TABLE IF NOT EXISTS judge_attempts (
+                    batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
+                    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL,
+                    error_code TEXT, latency_ms INTEGER, input_tokens INTEGER,
+                    output_tokens INTEGER, total_tokens INTEGER,
+                    PRIMARY KEY(batch_id,attempt)
+                );
+                CREATE INDEX IF NOT EXISTS judge_attempts_started ON judge_attempts(started);
+                PRAGMA user_version=9;
+                COMMIT;
+            """)
         path.chmod(0o600)
 
     def close(self) -> None:
@@ -266,6 +300,9 @@ class SocialStore:
                 (scope.session_key,),
             )
             self._clear_dialogue(scope.session_key)
+            self.db.execute("UPDATE judge_batches SET status='cancelled',error_code='version_changed' "
+                            "WHERE scope=? AND version<>? AND status IN ('pending','running')",
+                            (scope.session_key, version))
             self.db.execute(
                 "UPDATE actions SET status='failed',error='configuration changed' "
                 "WHERE scope=? AND version<>? AND status='queued'", (scope.session_key, version),
@@ -286,6 +323,151 @@ class SocialStore:
             event_seq=int(row["event_seq"]), timeout_through=int(row["timeout_through"]),
             wait_infinite=bool(row["wait_infinite"]),
         )
+
+    def judge_through(self, key: str) -> int:
+        row = self.db.execute("SELECT assessed_through FROM judge_state WHERE scope=?", (key,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def judge_record(self, batch: str) -> JudgeRecord:
+        row = self.db.execute("SELECT * FROM judge_batches WHERE id=?", (batch,)).fetchone()
+        if row is None:
+            raise ValueError("unknown judge batch")
+        body = dict(row)
+        body["decision"] = JudgeDecision.model_validate_json(body["decision"]) if body["decision"] else None
+        return JudgeRecord.model_validate(body)
+
+    def _judge_current(self, snapshot: JudgeSnapshot) -> bool:
+        state = self.state(snapshot.scope)
+        if (state["version"] != snapshot.version or state["mode"] == "paused"
+                or not snapshot.created <= self.now() < snapshot.expires):
+            return False
+        displayed = {message.seq: message for message in snapshot.messages}
+        rows = self.db.execute("SELECT seq,message_id,sender_id,text,is_self FROM messages WHERE scope=? AND seq IN "
+                               "(SELECT value FROM json_each(?))", (snapshot.scope, json.dumps(list(displayed)))).fetchall()
+        if len(rows) != len(displayed) or any(
+            row["message_id"] != displayed[row["seq"]].message_id
+            or row["sender_id"] != displayed[row["seq"]].sender_id
+            or bool(row["is_self"]) != displayed[row["seq"]].is_self
+            or row["text"] != displayed[row["seq"]].text for row in rows
+        ):
+            return False
+        # Do not advance assessment across retained messages absent from the input.
+        return not any(row[0] not in displayed for row in self.db.execute(
+            "SELECT seq FROM messages WHERE scope=? AND seq>? AND seq<=?",
+            (snapshot.scope, snapshot.after_seq, snapshot.through_seq),
+        ))
+
+    def open_judge_batch(self, snapshot: JudgeSnapshot, signature: str, model: str) -> JudgeRecord:
+        if not self._judge_current(snapshot):
+            raise PermissionError("judge snapshot is expired, changed, paused or not retained")
+        with self.db:
+            existing = self.db.execute("SELECT id FROM judge_batches WHERE scope=? AND version=? "
+                                       "AND signature=? AND input_hash=?",
+                                       (snapshot.scope, snapshot.version, signature, snapshot.input_hash())).fetchone()
+            if existing:
+                return self.judge_record(str(existing[0]))
+            if snapshot.after_seq != self.judge_through(snapshot.scope):
+                raise PermissionError("judge batch must start at the assessment watermark")
+            batch = uuid4().hex
+            self.db.execute("INSERT INTO judge_batches(id,scope,version,signature,input_hash,model,prompt_version,"
+                            "after_seq,through_seq,created,expires,due,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending')",
+                            (batch, snapshot.scope, snapshot.version, signature, snapshot.input_hash(), model,
+                             JUDGE_PROMPT_VERSION, snapshot.after_seq, snapshot.through_seq, snapshot.created,
+                             snapshot.expires, self.now()))
+            self.db.execute("DELETE FROM judge_batches WHERE created<? AND status NOT IN ('pending','running')",
+                            (self.now() - 86400,))
+        return self.judge_record(batch)
+
+    def claim_judge_attempt(self, batch: str, snapshot: JudgeSnapshot, *, limit: int,
+                            interval: float, max_attempts: int) -> JudgeRecord:
+        with self.db:
+            record = self.judge_record(batch)
+            if record.input_hash != snapshot.input_hash():
+                raise PermissionError("judge batch input changed")
+            if record.status != "pending":
+                return record
+            if not self._judge_current(snapshot) or snapshot.after_seq != self.judge_through(snapshot.scope):
+                status = "expired" if self.now() >= record.expires else "cancelled"
+                self.db.execute("UPDATE judge_batches SET status=?,error_code='stale_input' WHERE id=?", (status, batch))
+                return self.judge_record(batch)
+            if record.attempts >= max_attempts or record.due > self.now():
+                return record
+            active = self.db.execute("SELECT 1 FROM judge_batches WHERE scope=? AND status='running'", (record.scope,)).fetchone()
+            recent = self.db.execute("SELECT started FROM judge_attempts WHERE started>? ORDER BY started",
+                                     (self.now() - 3600,)).fetchall()
+            last = self.db.execute("SELECT MAX(a.started) FROM judge_attempts a JOIN judge_batches b ON b.id=a.batch_id "
+                                   "WHERE b.scope=?", (record.scope,)).fetchone()[0]
+            due = max(record.due, float(last) + interval if last is not None else self.now())
+            if active:
+                due = max(due, self.now() + 1)
+            if len(recent) >= limit:
+                due = max(due, float(recent[-limit][0]) + 3600)
+            if due > self.now():
+                self.db.execute("UPDATE judge_batches SET due=?,error_code='budget_or_busy' WHERE id=?", (due, batch))
+                return self.judge_record(batch)
+            self.db.execute("UPDATE judge_batches SET status='running',attempts=attempts+1 WHERE id=?", (batch,))
+            self.db.execute("INSERT INTO judge_attempts(batch_id,attempt,started) VALUES(?,?,?)",
+                            (batch, record.attempts + 1, self.now()))
+        return self.judge_record(batch)
+
+    def finish_judge_attempt(self, batch: str, snapshot: JudgeSnapshot, *, attempt: int,
+                             decision: JudgeDecision | None, error_code: str | None,
+                             delay: float, latency_ms: int, input_tokens: int | None,
+                             output_tokens: int | None, total_tokens: int | None) -> JudgeRecord:
+        if decision is not None:
+            decision.validate_for(snapshot)
+        with self.db:
+            record = self.judge_record(batch)
+            if record.input_hash != snapshot.input_hash():
+                raise PermissionError("judge batch input changed")
+            self.db.execute("UPDATE judge_attempts SET finished=?,error_code=?,latency_ms=?,input_tokens=?,"
+                            "output_tokens=?,total_tokens=? WHERE batch_id=? AND attempt=? AND finished IS NULL",
+                            (self.now(), error_code, latency_ms, input_tokens, output_tokens, total_tokens, batch, attempt))
+            if record.status != "running" or record.attempts != attempt:
+                return record  # Keep late usage, but never resurrect a cancelled decision.
+            if not self._judge_current(snapshot) or self.judge_through(snapshot.scope) != snapshot.after_seq:
+                status = "expired" if self.now() >= snapshot.expires else "cancelled"
+                self.db.execute("UPDATE judge_batches SET status=?,error_code='stale_input' WHERE id=?", (status, batch))
+            elif decision is not None:
+                self.db.execute("UPDATE judge_batches SET status='decided',decision=?,error_code=NULL WHERE id=?",
+                                (decision.model_dump_json(), batch))
+                self.db.execute("INSERT INTO judge_state VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET "
+                                "assessed_through=excluded.assessed_through", (snapshot.scope, snapshot.through_seq))
+            else:
+                self.db.execute("UPDATE judge_batches SET status='pending',due=?,error_code=? WHERE id=?",
+                                (self.now() + delay, error_code, batch))
+        return self.judge_record(batch)
+
+    def judge_fallback(self, batch: str, snapshot: JudgeSnapshot, *, limit: int) -> JudgeRecord:
+        """Persist a single handoff intent; V3-A never creates or executes a main wake."""
+        with self.db:
+            record = self.judge_record(batch)
+            if record.status != "pending" or record.input_hash != snapshot.input_hash():
+                return record
+            if not self._judge_current(snapshot) or self.judge_through(snapshot.scope) != snapshot.after_seq:
+                self.db.execute("UPDATE judge_batches SET status=?,error_code='stale_input' WHERE id=?",
+                                ("expired" if self.now() >= snapshot.expires else "cancelled", batch))
+            else:
+                recent = self.db.execute("SELECT fallback_at FROM judge_batches WHERE fallback_at>? ORDER BY fallback_at",
+                                         (self.now() - 3600,)).fetchall()
+                if limit and len(recent) < limit:
+                    self.db.execute("UPDATE judge_batches SET status='fallback',fallback_at=? WHERE id=?", (self.now(), batch))
+                else:
+                    due = float(recent[-limit][0]) + 3600 if limit and recent else record.expires
+                    self.db.execute("UPDATE judge_batches SET due=? WHERE id=?", (due, batch))
+        return self.judge_record(batch)
+
+    def recover_judge_batches(self) -> None:
+        """Explicit single-owner startup recovery; attempts already sent remain charged."""
+        with self.db:
+            now = self.now()
+            self.db.execute("UPDATE judge_attempts SET finished=?,error_code='interrupted' WHERE finished IS NULL", (now,))
+            self.db.execute("UPDATE judge_batches SET status='expired',error_code='expired' "
+                            "WHERE status IN ('pending','running') AND expires<=?", (now,))
+            self.db.execute("UPDATE judge_batches SET status='cancelled',error_code='version_changed' "
+                            "WHERE status IN ('pending','running') AND (created>? OR version<>(SELECT version FROM scopes WHERE key=scope) "
+                            "OR (SELECT mode FROM scopes WHERE key=scope)='paused')", (now,))
+            self.db.execute("UPDATE judge_batches SET status='pending',due=?,error_code='interrupted' WHERE status='running'", (now,))
 
     def observe(self, msg: ObservedMessage, retention: int, *, reason: str | None = None,
                 delay: float = 0, quiet_seconds: float | None = None,

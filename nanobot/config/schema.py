@@ -172,6 +172,32 @@ class TelegramSocialSleepObservationConfig(Base):
     window_seconds: float = Field(default=300, ge=1, le=1800, allow_inf_nan=False)
 
 
+class TelegramSocialJudgeConfig(Base):
+    """V3 intermediary component settings; V3-A does not activate message routing."""
+
+    model_config = ConfigDict(extra="forbid")
+    model: str = Field(default="openai-codex/gpt-6-luna", min_length=1, max_length=160)
+    provider: str = Field(default="openai_codex", min_length=1, max_length=80)
+    reasoning_effort: Literal["low", "medium", "high"] = "low"
+    max_tokens: int = Field(default=512, ge=128, le=2048)
+    timeout_seconds: float = Field(default=15, ge=1, le=60, allow_inf_nan=False)
+    max_retries: int = Field(default=1, ge=0, le=1)
+    retry_delay_seconds: float = Field(default=1, ge=0, le=10, allow_inf_nan=False)
+    min_interval_seconds: float = Field(default=1, ge=0, le=60, allow_inf_nan=False)
+    max_requests_per_hour: int = Field(default=240, ge=1, le=1000)
+    max_fallbacks_per_hour: int = Field(default=6, ge=0, le=60)
+    context_messages: int = Field(default=30, ge=2, le=100)
+    context_chars: int = Field(default=16000, ge=2000, le=32000)
+    batch_ttl_seconds: int = Field(default=120, ge=30, le=600)
+
+    @field_validator("model", "provider")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value != value.strip() or not value:
+            raise ValueError("judge model/provider must be nonempty without surrounding whitespace")
+        return value
+
+
 class TelegramSocialConfig(Base):
     """Opt-in Telegram text social mode; runtime state is stored outside config."""
 
@@ -190,6 +216,7 @@ class TelegramSocialConfig(Base):
     dynamic_wait: TelegramSocialDynamicWaitConfig = Field(default_factory=TelegramSocialDynamicWaitConfig)
     reply_attention: TelegramSocialReplyAttentionConfig = Field(default_factory=TelegramSocialReplyAttentionConfig)
     sleep_observation: TelegramSocialSleepObservationConfig = Field(default_factory=TelegramSocialSleepObservationConfig)
+    judge: TelegramSocialJudgeConfig = Field(default_factory=TelegramSocialJudgeConfig)
     cooldown_seconds: float = Field(default=10, ge=0, le=300)
     send_cooldown_seconds: float = Field(default=2, ge=0, le=60)
     max_wait_seconds: int = Field(default=3600, ge=1, le=86400)
