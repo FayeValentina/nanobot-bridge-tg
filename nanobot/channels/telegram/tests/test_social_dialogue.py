@@ -612,15 +612,18 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
     ctx = expose(dialogue)
     dialogue.store.mark_read(A.session_key, ctx.turn_id, 1)
     root = dialogue.root
-    for table in ("dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
+    for table in ("wake_samples", "dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
         dialogue.store.db.execute(f"DROP TABLE {table}")
+    dialogue.store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
+    dialogue.store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
+    dialogue.store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
     dialogue.store.db.execute("ALTER TABLE message_deliveries DROP COLUMN version")
     dialogue.store.db.execute("PRAGMA user_version=6")
     dialogue.store.db.commit()
     dialogue.close()
     upgraded = SocialStore(root, now=dialogue.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert upgraded.state(A.session_key)["read_through"] == 1
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         upgraded.db.execute("PRAGMA user_version=99")

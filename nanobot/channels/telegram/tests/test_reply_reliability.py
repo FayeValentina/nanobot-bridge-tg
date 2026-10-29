@@ -205,12 +205,15 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
     import sqlite3
     with sqlite3.connect(root / "social.sqlite3") as db:
         db.execute("DROP TABLE message_deliveries")
-        for table in ("dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
+        for table in ("wake_samples", "dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
             db.execute(f"DROP TABLE {table}")
+        db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
+        db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
+        db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
         db.execute("PRAGMA user_version=5")
     upgraded = SocialStore(root, now=social.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert upgraded.state(A.session_key)["next_seq"] == 2
         assert upgraded.db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()[0] == 0
     finally:

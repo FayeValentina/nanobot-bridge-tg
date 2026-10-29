@@ -481,14 +481,17 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
         store.db.execute(f"ALTER TABLE actions DROP COLUMN {column}")
     store.db.execute("UPDATE scopes SET read_through=1,seen_through=1")
     store.db.execute("DROP TABLE message_deliveries")
-    for table in ("dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
+    for table in ("wake_samples", "dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
         store.db.execute(f"DROP TABLE {table}")
+    store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
+    store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
+    store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
     store.db.execute("PRAGMA user_version=2")
     store.db.commit()
     store.close()
     reopened = SocialStore(root)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert reopened.state(A.session_key)["read_through"] == 1
         row = reopened.db.execute("SELECT content,status,message_id,kind FROM actions").fetchone()
         assert tuple(row) == ("old text", "sent", 501, "text")

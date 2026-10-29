@@ -56,6 +56,17 @@ class TelegramSocialQuietHoursConfig(Base):
         return self
 
 
+class TelegramSocialSleepInterruptConfig(Base):
+    """Operator ceiling for ambient conditions allowed to interrupt sleeping."""
+
+    model_config = ConfigDict(extra="forbid")
+    keywords: bool = False
+    senders: bool = False
+    question: bool = False
+    probability: bool = False
+    messages: bool = False
+
+
 class TelegramSocialScopeConfig(Base):
     """Operator-authorized group/topic; observation does not grant administration."""
 
@@ -72,6 +83,10 @@ class TelegramSocialScopeConfig(Base):
     wake_keywords: list[str] = Field(default_factory=list, max_length=20)
     wake_senders: list[str] = Field(default_factory=list, max_length=20)
     wake_on_messages: bool = False
+    wake_on_question: bool = False
+    wake_probability: float = Field(default=0, ge=0, le=1, allow_inf_nan=False)
+    sleep_interrupts: TelegramSocialSleepInterruptConfig = Field(default_factory=TelegramSocialSleepInterruptConfig)
+    coalesce_seconds: float | None = Field(default=None, ge=0, le=60, allow_inf_nan=False)
     allow_ambient_wake: bool = True
     proactive: TelegramSocialProactiveConfig = Field(default_factory=TelegramSocialProactiveConfig)
     quiet_hours: TelegramSocialQuietHoursConfig = Field(default_factory=TelegramSocialQuietHoursConfig)
@@ -105,6 +120,10 @@ class TelegramSocialWakeConfig(Base):
     keywords: list[str] = Field(default_factory=list, max_length=20)
     senders: list[str] = Field(default_factory=list, max_length=20)
     on_messages: bool = False
+    on_question: bool = False
+    probability: float = Field(default=0, ge=0, le=1, allow_inf_nan=False)
+    sleep_interrupts: TelegramSocialSleepInterruptConfig | None = None
+    coalesce_seconds: float | None = Field(default=None, ge=0, le=60, allow_inf_nan=False)
     expires_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     one_shot: bool = True
 
@@ -167,6 +186,7 @@ class TelegramSocialConfig(Base):
     max_sends_per_hour: int = Field(default=6, ge=1, le=60)
     max_text_chars: int = Field(default=2000, ge=1, le=4000)
     coalesce_seconds: float = Field(default=1.5, ge=0, le=10)
+    max_coalesce_seconds: float = Field(default=10, ge=0, le=60, allow_inf_nan=False)
     dynamic_wait: TelegramSocialDynamicWaitConfig = Field(default_factory=TelegramSocialDynamicWaitConfig)
     reply_attention: TelegramSocialReplyAttentionConfig = Field(default_factory=TelegramSocialReplyAttentionConfig)
     sleep_observation: TelegramSocialSleepObservationConfig = Field(default_factory=TelegramSocialSleepObservationConfig)
@@ -185,6 +205,13 @@ class TelegramSocialConfig(Base):
         keys = [(scope.chat_id, scope.thread_id) for scope in self.scopes]
         if len(set(keys)) != len(keys):
             raise ValueError("duplicate social group/topic authorization")
+        limit = min(self.max_coalesce_seconds, self.dynamic_wait.max_seconds) if self.dynamic_wait.enabled else self.max_coalesce_seconds
+        if self.coalesce_seconds > self.max_coalesce_seconds or any(
+            scope.coalesce_seconds is not None and scope.coalesce_seconds > limit for scope in self.scopes
+        ):
+            raise ValueError("coalesceSeconds exceeds the operator coalescing limit")
+        if self.dynamic_wait.enabled and self.dynamic_wait.unfinished_seconds > self.max_coalesce_seconds:
+            raise ValueError("unfinishedSeconds exceeds maxCoalesceSeconds")
         return self
 
 

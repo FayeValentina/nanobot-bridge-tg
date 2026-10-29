@@ -59,6 +59,7 @@ class SocialState(TypedDict):
     wake_config: str
     event_seq: int
     timeout_through: int
+    wait_infinite: bool
 
 
 class SnapshotMessage(TypedDict):
@@ -178,6 +179,8 @@ class ObservedMessage:
     media_refs: tuple[MediaReference, ...] = ()
     reply: QuotedMessage | None = None
     album_id: str | None = None
+    bot_username: str | None = None
+    is_edit: bool = False
 
 
 class SocialDeliveryUnknownError(RuntimeError):

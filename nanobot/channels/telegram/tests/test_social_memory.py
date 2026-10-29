@@ -242,14 +242,17 @@ def test_schema_three_upgrade_preserves_observations_views_and_watermarks(social
         social.store.db.execute(f"DROP TABLE {table}")
     social.store.db.execute("ALTER TABLE wakes DROP COLUMN proactive_source")
     social.store.db.execute("DROP TABLE message_deliveries")
-    for table in ("dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
+    for table in ("wake_samples", "dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
         social.store.db.execute(f"DROP TABLE {table}")
+    social.store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
+    social.store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
+    social.store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
     social.store.db.execute("PRAGMA user_version=3")
     social.store.db.commit()
     social.close()
     store = SocialStore(social.root)
     try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert store.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert store.state(A.session_key)["read_through"] == 1
         assert store.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
