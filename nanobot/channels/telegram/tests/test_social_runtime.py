@@ -53,6 +53,7 @@ def social(tmp_path):
         "coalesceSeconds": 0,
         "cooldownSeconds": 0,
         "sendCooldownSeconds": 0,
+        "judge": {"minIntervalSeconds": 0},
         "scopes": [
             {"chatId": -1001, "threadId": 42, "roleId": "a", "background": "ALPHA BACKGROUND"},
             {"chatId": -1002, "threadId": 42, "roleId": "b"},
@@ -809,7 +810,7 @@ async def test_group_wide_binding_observes_and_replies_in_each_actual_topic(tmp_
     assert sent["chat_id"] == A.chat_id
     assert sent.get("message_thread_id", 0) == thread
     system = str(loop.provider.chat_stream_with_retry.call_args.kwargs["messages"][0]["content"])
-    assert "A directed wake means Telegram verified a mention of or reply to this bot account" in system
+    assert "An intermediary selected this batch using the current conversation" in system
     tg._handle_message.assert_not_awaited()
     if target != A:
         assert social.store.state(A.session_key)["next_seq"] == 1

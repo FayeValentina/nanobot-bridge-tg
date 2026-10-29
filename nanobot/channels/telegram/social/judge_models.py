@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nanobot.channels.telegram.social.models import ConversationScope
 
-JUDGE_PROMPT_VERSION = "social-judge-v1"
+JUDGE_PROMPT_VERSION = "social-judge-v2"
 
 
 class JudgeDTO(BaseModel):
@@ -34,6 +34,7 @@ class JudgeMessage(JudgeDTO):
     mentions_bot: bool = False
     reply: JudgeReply | None = None
     media: tuple[str, ...] = Field(default=(), max_length=8)
+    content_hash: str = Field(default="", max_length=64)
 
 
 class JudgeIntent(JudgeDTO):
@@ -60,9 +61,9 @@ class JudgeSnapshot(JudgeDTO):
     scope: str = Field(min_length=1, max_length=160)
     version: str = Field(min_length=1, max_length=128)
     after_seq: int = Field(ge=0)
-    through_seq: int = Field(gt=0)
-    new_seqs: tuple[int, ...] = Field(min_length=1, max_length=100)
-    messages: tuple[JudgeMessage, ...] = Field(min_length=1, max_length=100)
+    through_seq: int = Field(ge=0)
+    new_seqs: tuple[int, ...] = Field(max_length=100)
+    messages: tuple[JudgeMessage, ...] = Field(max_length=100)
     created: float = Field(ge=0, allow_inf_nan=False)
     expires: float = Field(ge=0, allow_inf_nan=False)
     bot_name: str = Field(min_length=1, max_length=120)
@@ -74,6 +75,9 @@ class JudgeSnapshot(JudgeDTO):
     main_running: bool = False
     intent: JudgeIntent | None = None
     history_truncated: bool = False
+    opportunity: str | None = Field(default=None, max_length=2000)
+    quiet_due: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    total_due: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_batch(self) -> JudgeSnapshot:
@@ -82,11 +86,13 @@ class JudgeSnapshot(JudgeDTO):
         seqs = tuple(message.seq for message in self.messages)
         if seqs != tuple(sorted(set(seqs))) or self.new_seqs != tuple(sorted(set(self.new_seqs))):
             raise ValueError("message and new-message seqs must be sorted and unique")
-        if not self.after_seq < self.through_seq or self.through_seq != self.new_seqs[-1]:
+        if not self.new_seqs and self.opportunity is None:
+            raise ValueError("a message batch needs new messages")
+        if self.new_seqs and (not self.after_seq < self.through_seq or self.through_seq != self.new_seqs[-1]):
             raise ValueError("through_seq must be the last new seq, after after_seq")
         if any(seq not in seqs or not self.after_seq < seq <= self.through_seq for seq in self.new_seqs):
             raise ValueError("new seqs must be displayed inside the batch range")
-        if seqs[-1] > self.through_seq or self.expires <= self.created:
+        if any(message.seq > self.through_seq and not message.is_self for message in self.messages) or self.expires <= self.created or self.through_seq < self.after_seq:
             raise ValueError("future context or invalid batch expiry")
         if any(message.is_self and message.seq in self.new_seqs for message in self.messages):
             raise ValueError("own messages provide context, not new judgement events")
@@ -98,9 +104,10 @@ class JudgeSnapshot(JudgeDTO):
 
 class JudgeDecision(JudgeDTO):
     decision: Literal["wake", "observe"]
-    through_seq: int = Field(gt=0)
+    through_seq: int = Field(ge=0)
     source_seqs: tuple[int, ...] = Field(max_length=100)
     reason: str = Field(min_length=1, max_length=240)
+    fulfills_intent: bool = False
 
     def validate_for(self, snapshot: JudgeSnapshot) -> None:
         if self.through_seq != snapshot.through_seq:
@@ -108,8 +115,10 @@ class JudgeDecision(JudgeDTO):
         displayed = {message.seq for message in snapshot.messages if not message.is_self}
         if tuple(sorted(set(self.source_seqs))) != self.source_seqs or not set(self.source_seqs) <= displayed:
             raise ValueError("decision sources must be unique displayed member seqs")
-        if self.decision == "wake" and not self.source_seqs:
+        if self.decision == "wake" and not self.source_seqs and (snapshot.opportunity is None or displayed):
             raise ValueError("wake requires at least one displayed source")
+        if self.decision == "observe" and self.fulfills_intent:
+            raise ValueError("observing cannot fulfill an explicit wait")
         if self.decision == "observe" and self.source_seqs:
             raise ValueError("observe must not request wake sources")
         if not self.reason.strip():

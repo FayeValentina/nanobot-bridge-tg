@@ -469,6 +469,7 @@ def _run_gateway(
     trigger_store = LocalTriggerStore(config.workspace_path)
 
     from nanobot.agent.tools.telegram_social import TelegramSocialTool
+    from nanobot.channels.telegram.social.judge import make_judge_provider
     from nanobot.channels.telegram.social.runtime import SOCIAL_TOOLS, TelegramSocialRuntime
     from nanobot.config.schema import TelegramSocialConfig
 
@@ -476,8 +477,12 @@ def _run_gateway(
     social_config = TelegramSocialConfig.model_validate(
         cast(dict[str, Any], telegram_section).get("social", {}) if isinstance(telegram_section, dict) else {},
     )
+    if social_config.judge.provider == "openai_codex" and social_config.judge.oauth_storage_dir is None:
+        social_config.judge.oauth_storage_dir = str(Path(config_path).parent / "telegram-social" / "oauth")
+    social_judge_provider, social_judge_version = make_judge_provider(config, social_config.judge)
     telegram_social = TelegramSocialRuntime(
         social_config, Path(config_path).parent / "telegram-social", bus,
+        judge_provider=social_judge_provider, judge_provider_version=social_judge_version,
     )
 
     turn_delivery_factory = TurnDeliveryFactory(
@@ -726,10 +731,16 @@ def _run_gateway(
         agent.refresh_runtime_config()
         from nanobot.config.loader import load_config
 
-        fresh_telegram = load_config().channels.model_dump(by_alias=True).get("telegram", {})
-        telegram_social.configure(TelegramSocialConfig.model_validate(
+        fresh_config = load_config()
+        fresh_telegram = fresh_config.channels.model_dump(by_alias=True).get("telegram", {})
+        fresh_social = TelegramSocialConfig.model_validate(
             cast(dict[str, Any], fresh_telegram).get("social", {}) if isinstance(fresh_telegram, dict) else {},
-        ))
+        )
+        if fresh_social.judge.provider == "openai_codex" and fresh_social.judge.oauth_storage_dir is None:
+            fresh_social.judge.oauth_storage_dir = str(Path(config_path).parent / "telegram-social" / "oauth")
+        telegram_social.configure(fresh_social)
+        fresh_judge, fresh_judge_version = make_judge_provider(fresh_config, telegram_social.config.judge)
+        telegram_social.judging.set_provider(fresh_judge, fresh_judge_version)
 
     def _webui_skill_state_action(disabled_skills: set[str]) -> None:
         config.agents.defaults.disabled_skills = sorted(disabled_skills)

@@ -43,6 +43,7 @@ def social(tmp_path):
     config = TelegramSocialConfig.model_validate({
         "enabled": True,
         "repairUnsentFinal": False,
+        "judge": {"minIntervalSeconds": 0},
         "scopes": [
             {"chatId": A.chat_id, "threadId": A.thread_id, "roleId": "guest"},
             {"chatId": B.chat_id, "threadId": B.thread_id, "roleId": "guest"},
@@ -90,7 +91,7 @@ async def test_short_window_coalesces_direct_addresses_and_includes_plain_messag
     inbound = social.bus.inbound.get_nowait()
     view = json.loads(inbound.content.split("\n", 1)[1])
     assert [m["seq"] for m in view["messages"]] == [1, 2, 3]
-    assert view["wake_reason"] == "directed"
+    assert view["wake_reason"] == "judge"
     await social.run_due()
     assert social.bus.inbound.empty()
     assert social.store.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
@@ -112,7 +113,8 @@ async def test_operator_trigger_conditions(social, kind, text, sender, reason):
     clock(social).advance(2)
     await social.run_due()
     view = json.loads(social.bus.inbound.get_nowait().content.split("\n", 1)[1])
-    assert view["wake_reason"] == reason
+    assert view["wake_reason"] == "judge"
+    assert view["judgement"][0]["decision"]["decision"] == "wake"
 
 
 async def test_directed_trigger_upgrades_keyword_without_another_job(social):
@@ -120,7 +122,11 @@ async def test_directed_trigger_upgrades_keyword_without_another_job(social):
     await social.observe(observed(social, text="topic"), directed=False)
     await social.observe(observed(social, 2), directed=True)
     rows = social.store.db.execute("SELECT * FROM wakes").fetchall()
-    assert len(rows) == 1 and rows[0]["reason"] == "directed" and rows[0]["trigger_seq"] == 2
+    assert rows == []  # Coalescing does not bypass the intermediary.
+    clock(social).advance(2)
+    await social.run_due()
+    rows = social.store.db.execute("SELECT * FROM wakes").fetchall()
+    assert len(rows) == 1 and rows[0]["reason"] == "judge" and rows[0]["trigger_seq"] == 2
 
 
 async def test_plain_messages_and_other_bots_never_create_idle_model_loops(social):
@@ -300,7 +306,8 @@ async def test_busy_trigger_read_by_the_current_model_does_not_run_another_turn(
     clock(social).advance(20)
     await social.run_due()
     assert calls == 2 and social.bus.inbound.empty()
-    assert social.store.db.execute("SELECT COUNT(*) FROM wakes WHERE status='completed'").fetchone()[0] == 2
+    assert social.store.db.execute("SELECT COUNT(*) FROM wakes WHERE status='completed'").fetchone()[0] == 1
+    assert social.store.db.execute("SELECT COUNT(*) FROM judge_batches WHERE handoff_job IS NOT NULL").fetchone()[0] == 2
 
 
 async def test_sleep_discards_an_unseen_ambient_trigger_but_preserves_direct_address(social):
@@ -412,7 +419,7 @@ async def test_restart_after_wait_decision_does_not_replay_the_unfinished_old_tu
 
 
 async def test_observation_dedup_and_wake_creation_commit_together(social):
-    social.store.db.execute("CREATE TRIGGER reject_wake BEFORE INSERT ON wakes "
+    social.store.db.execute("CREATE TRIGGER reject_wake BEFORE UPDATE OF pending_due ON judge_state WHEN NEW.pending_due IS NOT NULL "
                             "BEGIN SELECT RAISE(ABORT,'simulated disk error'); END")
     with pytest.raises(sqlite3.IntegrityError):
         await social.observe(observed(social), directed=True)
@@ -623,7 +630,7 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
     db.close()
     store = SocialStore(root)
     try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 10
         state = store.state(A.session_key)
         assert (state["next_seq"], state["read_through"], state["seen_through"]) == (7, 4, 5)
         assert state["mode"] == "observing"

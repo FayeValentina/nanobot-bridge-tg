@@ -16,6 +16,7 @@ from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.proactive import is_quiet
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
+from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
 from nanobot.channels.telegram.tests.test_social_scheduler import clock, observed, social
 from nanobot.config.schema import (
@@ -89,11 +90,11 @@ async def test_no_candidate_means_no_model_request_and_next_deadline_persisted(s
 
 async def test_recent_unread_is_considered_only_once_without_new_activity(social):
     enable(social)
+    decide(social)
     await social.observe(observed(social), directed=False)
     await tick(social)
     inbound = social.bus.inbound.get_nowait()
-    assert view(inbound)["wake_reason"] == "proactive"
-    assert view(inbound)["opportunity"]["kind"] == "unread"
+    assert view(inbound)["wake_reason"] == "judge"
     ctx = claim(social, inbound)
     social.store.finish(ctx.turn_id, "completed")
     await tick(social)
@@ -181,7 +182,7 @@ async def test_quiet_hours_skip_opportunities_but_direct_mention_and_reply_path_
     await social.observe(observed(social), directed=True)
     await tick(social, 2)
     inbound = social.bus.inbound.get_nowait()
-    assert view(inbound)["wake_reason"] == "directed"
+    assert view(inbound)["wake_reason"] == "judge"
     claim(social, inbound)
 
 
@@ -231,7 +232,7 @@ async def test_memory_changes_cancel_queued_opportunity_before_model_admission(s
 
 async def test_expired_unread_queue_is_revalidated_before_admission(social):
     enable(social)
-    await social.observe(observed(social), directed=False)
+    social.store.observe(observed(social), 500)
     await tick(social)
     inbound = social.bus.inbound.get_nowait()
     clock(social).advance(31)
@@ -245,7 +246,7 @@ async def test_direct_event_wins_when_timer_and_message_are_due_together(social)
     await social.observe(observed(social), directed=True)
     await tick(social, 2)
     assert social.bus.inbound.qsize() == 1
-    assert view(social.bus.inbound.get_nowait())["wake_reason"] == "directed"
+    assert view(social.bus.inbound.get_nowait())["wake_reason"] == "judge"
     assert social.proactive.status(A.session_key)["decision"] == "busy"
 
 
@@ -260,7 +261,7 @@ async def test_new_direct_message_replaces_unclaimed_queued_opportunity(social):
     with pytest.raises(PermissionError):
         claim(social, opportunity)
     direct = social.bus.inbound.get_nowait()
-    assert view(direct)["wake_reason"] == "directed"
+    assert view(direct)["wake_reason"] == "judge"
     assert claim(social, direct)
     assert social.bus.inbound.empty()
 
@@ -353,6 +354,7 @@ async def test_quiet_beginning_cancels_unattempted_proactive_parts(social):
 
 async def test_acknowledging_unread_before_reply_does_not_invalidate_claimed_turn(social):
     enable(social)
+    decide(social)
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
     await social.observe(observed(social), directed=False)
@@ -394,7 +396,7 @@ async def test_expired_unclaimed_restart_refunds_unused_request_slot(social):
         await restored.observe(observed(restored), directed=True)
         current_clock.advance(2)
         await restored.run_due()
-        assert view(restored.bus.inbound.get_nowait())["wake_reason"] == "directed"
+        assert view(restored.bus.inbound.get_nowait())["wake_reason"] == "judge"
     finally:
         await restored.scheduler.stop()
         restored.close()
@@ -509,7 +511,7 @@ def test_schema_four_upgrade_preserves_memory_watermarks_and_history(tmp_path):
     store.close()
     upgraded = SocialStore(root)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 10
         assert upgraded.db.execute("SELECT content FROM memories WHERE id='id'").fetchone()[0] == "remember me"
         assert upgraded.state(A.session_key)["read_through"] == 4
         assert upgraded.state(A.session_key)["seen_through"] == 5
@@ -529,11 +531,12 @@ async def test_group_wide_opportunities_use_discovered_topic_bindings_after_rest
     social.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
+        decide(restored)
         clock(social).advance(60)
         await restored.run_due()
         inbound = bus.inbound.get_nowait()
         assert inbound.session_key == target.session_key
-        assert view(inbound)["wake_reason"] == "proactive"
+        assert view(inbound)["wake_reason"] == "judge"
         job = inbound.metadata["_social_job"]
         await restored.run_due()
         assert restored.store.db.execute("SELECT status FROM wakes WHERE id=?", (job,)).fetchone()[0] == "queued"

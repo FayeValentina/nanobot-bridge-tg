@@ -2050,6 +2050,7 @@ class TelegramChannel(BaseChannel):
                 name=(reply_user.full_name if reply_user else "Unknown")[:120],
                 timestamp=reply.date.timestamp(), text=(reply.text or reply.caption or "")[:1000],
                 is_bot=bool(bot_id and reply_user and reply_user.id == bot_id),
+                is_topic_root=bool(scope.thread_id and reply.message_id == scope.thread_id),
                 media_refs=list(self._social_media_refs(reply)),
             )
         observed = ObservedMessage(

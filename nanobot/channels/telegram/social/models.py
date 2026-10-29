@@ -36,6 +36,7 @@ class QuotedMessage(BaseModel):
     timestamp: float
     text: str = Field(max_length=1000)
     is_bot: bool = False
+    is_topic_root: bool = False
     media_refs: list[MediaReference] = Field(default_factory=list, max_length=4)
 
     def summary(self) -> dict[str, object]:
@@ -105,6 +106,7 @@ class Snapshot(TypedDict):
     wake_reason: str | None
     opportunity: dict[str, object] | None
     dialogue: DialogueContext | None
+    judgement: list[dict[str, object]]
 
 
 class ProactiveCandidate(BaseModel):

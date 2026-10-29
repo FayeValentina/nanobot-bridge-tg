@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-import math
 import sqlite3
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 from uuid import uuid4
 
@@ -44,7 +45,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -269,9 +270,29 @@ class SocialStore:
                 PRAGMA user_version=9;
                 COMMIT;
             """)
+        if version < 10:
+            with self.db:
+                for table, columns in {
+                    "messages": {"judge_facts": "TEXT NOT NULL DEFAULT '{}'"},
+                    "judge_batches": {"input_meta": "TEXT", "handoff_job": "TEXT", "condition_config": "TEXT NOT NULL DEFAULT '{}'"},
+                    "judge_state": {"pending_first": "REAL", "pending_last": "REAL", "pending_seq": "INTEGER NOT NULL DEFAULT 0",
+                                    "pending_due": "REAL", "pending_max": "REAL", "inflight": "INTEGER NOT NULL DEFAULT 0",
+                                    "batch_id": "TEXT", "opportunity": "TEXT"},
+                }.items():
+                    existing = {str(row[1]) for row in self.db.execute(f"PRAGMA table_info({table})")}
+                    for column, definition in columns.items():
+                        if column not in existing:
+                            self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                # Existing messages have no V3 admission facts. Bootstrap assessment,
+                # without changing main seen/read or replaying pre-upgrade history.
+                self.db.execute("INSERT INTO judge_state(scope,assessed_through) SELECT key,next_seq-1 FROM scopes WHERE 1 "
+                                "ON CONFLICT(scope) DO UPDATE SET assessed_through=MAX(assessed_through,excluded.assessed_through)")
+                self.db.execute("PRAGMA user_version=10")
+        self.closed = False
         path.chmod(0o600)
 
     def close(self) -> None:
+        self.closed = True
         self.db.close()
 
     def owns(self, key: str) -> bool:
@@ -303,6 +324,10 @@ class SocialStore:
             self.db.execute("UPDATE judge_batches SET status='cancelled',error_code='version_changed' "
                             "WHERE scope=? AND version<>? AND status IN ('pending','running')",
                             (scope.session_key, version))
+            self.db.execute("INSERT INTO judge_state(scope,assessed_through) SELECT key,next_seq-1 FROM scopes WHERE key=? "
+                            "ON CONFLICT(scope) DO UPDATE SET assessed_through=excluded.assessed_through,"
+                            "pending_due=NULL,pending_first=NULL,pending_last=NULL,pending_max=NULL,batch_id=NULL,"
+                            "inflight=0,opportunity=NULL", (scope.session_key,))
             self.db.execute(
                 "UPDATE actions SET status='failed',error='configuration changed' "
                 "WHERE scope=? AND version<>? AND status='queued'", (scope.session_key, version),
@@ -334,7 +359,7 @@ class SocialStore:
             raise ValueError("unknown judge batch")
         body = dict(row)
         body["decision"] = JudgeDecision.model_validate_json(body["decision"]) if body["decision"] else None
-        return JudgeRecord.model_validate(body)
+        return JudgeRecord.model_validate({key: value for key, value in body.items() if key in JudgeRecord.model_fields})
 
     def _judge_current(self, snapshot: JudgeSnapshot) -> bool:
         state = self.state(snapshot.scope)
@@ -342,13 +367,17 @@ class SocialStore:
                 or not snapshot.created <= self.now() < snapshot.expires):
             return False
         displayed = {message.seq: message for message in snapshot.messages}
-        rows = self.db.execute("SELECT seq,message_id,sender_id,text,is_self FROM messages WHERE scope=? AND seq IN "
+        rows = self.db.execute("SELECT seq,message_id,sender_id,text,is_self,judge_facts FROM messages WHERE scope=? AND seq IN "
                                "(SELECT value FROM json_each(?))", (snapshot.scope, json.dumps(list(displayed)))).fetchall()
         if len(rows) != len(displayed) or any(
             row["message_id"] != displayed[row["seq"]].message_id
             or row["sender_id"] != displayed[row["seq"]].sender_id
             or bool(row["is_self"]) != displayed[row["seq"]].is_self
-            or row["text"] != displayed[row["seq"]].text for row in rows
+            or (displayed[row["seq"]].content_hash and row["seq"] in snapshot.new_seqs
+                and not json.loads(row["judge_facts"]).get("eligible"))
+            or (hashlib.sha256(str(row["text"]).encode()).hexdigest() != displayed[row["seq"]].content_hash
+                if displayed[row["seq"]].content_hash else row["text"] != displayed[row["seq"]].text)
+            or not str(row["text"]).startswith(displayed[row["seq"]].text) for row in rows
         ):
             return False
         # Do not advance assessment across retained messages absent from the input.
@@ -431,8 +460,9 @@ class SocialStore:
             elif decision is not None:
                 self.db.execute("UPDATE judge_batches SET status='decided',decision=?,error_code=NULL WHERE id=?",
                                 (decision.model_dump_json(), batch))
-                self.db.execute("INSERT INTO judge_state VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET "
+                self.db.execute("INSERT INTO judge_state(scope,assessed_through) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET "
                                 "assessed_through=excluded.assessed_through", (snapshot.scope, snapshot.through_seq))
+                self._handoff_judgement(batch, snapshot, decision)
             else:
                 self.db.execute("UPDATE judge_batches SET status='pending',due=?,error_code=? WHERE id=?",
                                 (self.now() + delay, error_code, batch))
@@ -452,6 +482,12 @@ class SocialStore:
                                          (self.now() - 3600,)).fetchall()
                 if limit and len(recent) < limit:
                     self.db.execute("UPDATE judge_batches SET status='fallback',fallback_at=? WHERE id=?", (self.now(), batch))
+                    self._handoff_judgement(batch, snapshot, JudgeDecision(
+                        decision="wake", through_seq=snapshot.through_seq,
+                        source_seqs=(snapshot.new_seqs[-1],) if snapshot.new_seqs else tuple(
+                            message.seq for message in snapshot.messages if not message.is_self
+                        )[-1:], reason="Intermediary unavailable; one bounded main-model assessment.",
+                    ))
                 else:
                     due = float(recent[-limit][0]) + 3600 if limit and recent else record.expires
                     self.db.execute("UPDATE judge_batches SET due=? WHERE id=?", (due, batch))
@@ -468,12 +504,74 @@ class SocialStore:
                             "WHERE status IN ('pending','running') AND (created>? OR version<>(SELECT version FROM scopes WHERE key=scope) "
                             "OR (SELECT mode FROM scopes WHERE key=scope)='paused')", (now,))
             self.db.execute("UPDATE judge_batches SET status='pending',due=?,error_code='interrupted' WHERE status='running'", (now,))
+            self.db.execute("UPDATE judge_state SET inflight=0")
+
+    def queue_judgement(self, key: str, seq: int, *, delay: float, maximum: float,
+                        opportunity: str | None = None) -> None:
+        """Only coalescing/time facts, never a language or probability filter."""
+        with nullcontext() if self.db.in_transaction else self.db:
+            self.db.execute("INSERT INTO judge_state(scope,assessed_through) VALUES(?,0) ON CONFLICT(scope) DO NOTHING", (key,))
+            row = self.db.execute("SELECT * FROM judge_state WHERE scope=?", (key,)).fetchone()
+            if seq <= row["assessed_through"] and opportunity is None:
+                return
+            first = float(row["pending_first"]) if row["pending_first"] is not None else self.now()
+            due = min(self.now() + delay, first + maximum)
+            self.db.execute("UPDATE judge_state SET pending_first=?,pending_last=?,pending_seq=MAX(pending_seq,?),"
+                            "pending_due=?,pending_max=?,opportunity=COALESCE(?,opportunity) WHERE scope=?",
+                            (first, self.now(), seq, due, first + maximum, opportunity, key))
+
+    def freeze_judge_input(self, batch: str, snapshot: JudgeSnapshot) -> None:
+        # Store reconstruction facts and excerpt lengths, not another chat transcript.
+        metadata = snapshot.model_dump(mode="json", exclude={"messages"})
+        metadata["excerpts"] = [{"seq": message.seq, "length": len(message.text),
+                                 "content_hash": message.content_hash,
+                                 "reply_length": len(message.reply.text) if message.reply else 0}
+                                for message in snapshot.messages]
+        with self.db:
+            self.db.execute("UPDATE judge_batches SET input_meta=?,condition_config=? WHERE id=? AND input_meta IS NULL",
+                            (json.dumps(metadata, ensure_ascii=False), self.state(snapshot.scope)["wake_config"], batch))
+
+    def _handoff_judgement(self, batch: str, snapshot: JudgeSnapshot, decision: JudgeDecision) -> None:
+        """Caller owns the same transaction as the decision/cursor, including a single fallback."""
+        row = self.db.execute("SELECT * FROM judge_batches WHERE id=?", (batch,)).fetchone()
+        if row is None or row["input_meta"] is None or row["handoff_job"] is not None or decision.decision != "wake":
+            return  # Standalone V3-A evaluations do not schedule main work.
+        key = snapshot.scope
+        for active in self.db.execute("SELECT id,turn_id FROM wakes WHERE scope=? AND "
+                                      "(status='completed' OR (status='running' AND expires>?)) ORDER BY created DESC LIMIT 32",
+                                      (key, self.now())).fetchall():
+            shown = self._shown_sequences(key, str(active["turn_id"]))
+            if snapshot.new_seqs and set(snapshot.new_seqs) <= shown and set(decision.source_seqs) <= shown:
+                self.db.execute("UPDATE judge_batches SET handoff_job=? WHERE id=?", (active["id"], batch))
+                if decision.fulfills_intent and snapshot.intent and snapshot.intent.one_shot and row["condition_config"] == self.state(key)["wake_config"]:
+                    self.db.execute("UPDATE scopes SET wake_config='{}' WHERE key=?", (key,))
+                return
+        reason = "proactive" if snapshot.opportunity is not None and not snapshot.new_seqs else "judge"
+        self._schedule(key, snapshot.through_seq, reason, 0)
+        wake = self.db.execute("SELECT id,reason FROM wakes WHERE scope=? AND status='scheduled'", (key,)).fetchone()
+        if wake is None:
+            return
+        conditions = row["condition_config"] if decision.fulfills_intent else "{}"
+        expires = snapshot.expires
+        if decision.fulfills_intent and snapshot.intent and snapshot.intent.condition_expires is not None:
+            expires = min(expires, snapshot.intent.condition_expires)
+        self.db.execute("UPDATE wakes SET expires=MIN(expires,?),condition_config=?,proactive_source=? WHERE id=?",
+                        (expires, conditions, snapshot.opportunity if reason == "proactive" else None, wake["id"]))
+        self.db.execute("UPDATE judge_batches SET handoff_job=? WHERE id=?", (wake["id"], batch))
+        if snapshot.quiet_due is not None and snapshot.total_due is not None and reason == "judge":
+            self.db.execute("INSERT OR REPLACE INTO dialogue_jobs(job,purpose,quiet_seconds,quiet_due,total_due,after_seq,source_seq) "
+                            "VALUES(?,?,?,?,?,?,?)", (wake["id"], snapshot.intent.purpose if snapshot.intent and snapshot.intent.purpose else "reply",
+                                                     max(0,snapshot.quiet_due-snapshot.created),snapshot.quiet_due,snapshot.total_due,
+                                                     snapshot.after_seq,snapshot.through_seq))
+        if row["status"] == "fallback":
+            self.db.execute("UPDATE judge_state SET assessed_through=MAX(assessed_through,?) WHERE scope=?",
+                            (snapshot.through_seq, key))
 
     def observe(self, msg: ObservedMessage, retention: int, *, reason: str | None = None,
                 delay: float = 0, quiet_seconds: float | None = None,
                 max_delay: float = 12, fresh: bool = False, wait_relevant: bool = True,
-                probability: float = 0, rng: Callable[[], float] | None = None,
-                condition_expires: float | None = None) -> tuple[int, bool]:
+                judge_event: bool = False, judge_delay: float = 1.5,
+                directed: bool = False) -> tuple[int, bool]:
         key = msg.scope.session_key
         with self.db:
             existing = self.db.execute(
@@ -487,7 +585,7 @@ class SocialStore:
                 self.db.execute("INSERT INTO updates VALUES(?,?)", (msg.scope.channel, msg.update_id))
             if existing is not None:
                 self.db.execute(
-                    "UPDATE messages SET text=?,media=?,media_refs=?,reply_context=?,album_id=? "
+                    "UPDATE messages SET text=?,media=?,media_refs=?,reply_context=?,album_id=?,judge_facts='{}' "
                     "WHERE scope=? AND message_id=?",
                     (msg.text[:4000], json.dumps(msg.media),
                      json.dumps([ref.model_dump() for ref in msg.media_refs]),
@@ -507,8 +605,10 @@ class SocialStore:
                  json.dumps([ref.model_dump() for ref in msg.media_refs]),
                  msg.reply.model_dump_json() if msg.reply else None, msg.album_id),
             )
+            self.db.execute("UPDATE messages SET judge_facts=? WHERE scope=? AND seq=?",
+                            (json.dumps({"eligible": judge_event, "directed": directed, "bot_username": msg.bot_username,
+                                         "received_at": self.now()}), key, seq))
             self.db.execute("DELETE FROM messages WHERE scope=? AND seq<=?", (key, seq - retention))
-            self.db.execute("DELETE FROM wake_samples WHERE scope=? AND seq<=?", (key, seq - retention))
             # Keep update dedup bounded too. Old platform replays below the retained
             # window cannot produce wakes because message timestamps expire them.
             self.db.execute(
@@ -516,37 +616,17 @@ class SocialStore:
                 (msg.scope.channel, msg.update_id - max(10000, retention * 100)),
             )
             if fresh:
-                if reason is None and probability > 0:
-                    if rng is None:
-                        raise ValueError("probability wake requires a random source")
-                    value = rng()
-                    if not math.isfinite(value) or not 0 <= value < 1:
-                        raise ValueError("random source must return a finite value in [0,1)")
-                    selected = value < probability
-                    self.db.execute("INSERT INTO wake_samples VALUES(?,?,?,?,?,?,?)",
-                                    (key, seq, self.state(key)["version"], probability, value, int(selected), self.now()))
-                    if selected:
-                        reason, wait_relevant = "probability", True
                 self.db.execute("INSERT INTO dialogue_state(scope,last_at) VALUES(?,?) "
                                 "ON CONFLICT(scope) DO UPDATE SET last_at=excluded.last_at", (key, self.now()))
                 wait = self.db.execute("SELECT * FROM dialogue_waits WHERE scope=?", (key,)).fetchone()
-                if wait is not None and wait_relevant and seq > wait["after_seq"]:
-                    if wait["purpose"] == "observe":
-                        # Showing the new content requires a model turn; no synthetic goodbye.
-                        reason = reason or "message"
-                    elif reason not in {"directed", "nickname"}:
-                        self.db.execute("UPDATE dialogue_waits SET quiet_due=?,total_due=COALESCE(total_due,?),"
-                                        "source_seq=CASE WHEN purpose='messages' THEN ? ELSE source_seq END WHERE scope=?",
-                                        (self.now() + float(wait["quiet_seconds"]), self.now() + max_delay, seq, key))
-                        reason = None
+                if wait is not None and wait["purpose"] == "reply" and seq > wait["after_seq"]:
+                    # Continue an already requested answer after quiet, with its original total cap.
+                    self.db.execute("UPDATE dialogue_waits SET quiet_due=? WHERE scope=?",
+                                    (self.now()+float(wait["quiet_seconds"]),key))
             if reason is not None:
                 self._schedule(key, seq, reason, delay)
-            if fresh and quiet_seconds is not None:
-                self._debounce(key, seq, quiet_seconds, max_delay)
-            if condition_expires is not None:
-                self.db.execute("UPDATE wakes SET expires=MIN(expires,?) WHERE scope=? AND status='scheduled' "
-                                "AND reason IN ('keyword','sender','message','question','probability')",
-                                (condition_expires, key))
+            if judge_event:
+                self.queue_judgement(key,seq,delay=judge_delay,maximum=max_delay)
             return seq, True
 
     def view(
@@ -611,6 +691,11 @@ class SocialStore:
             "wake_reason": self.db.execute("SELECT reason FROM wakes WHERE id=?", (job_id,)).fetchone()[0] if job_id else None,
             "opportunity": None,
             "dialogue": self.dialogue_job(job_id) if job_id else None,
+            "judgement": [{"id": str(item["id"]), "status": str(item["status"]),
+                           "through_seq": int(item["through_seq"]),
+                           "decision": json.loads(item["decision"]) if item["decision"] else None,
+                           "error_code": item["error_code"]}
+                          for item in self.db.execute("SELECT * FROM judge_batches WHERE handoff_job=? ORDER BY created DESC LIMIT 1", (job_id,))] if job_id else [],
         }
         if job_id:
             source = self.db.execute("SELECT proactive_source FROM wakes WHERE id=?", (job_id,)).fetchone()[0]
@@ -802,8 +887,11 @@ class SocialStore:
                 seen.add(row["scope"])
                 self.db.execute("UPDATE wakes SET status=?,turn_id=NULL WHERE id=?", (status, row["id"]))
                 # A restart must preserve dynamic quiet deadlines and total caps.
-                if not self.db.execute("SELECT 1 FROM dialogue_jobs WHERE job=?", (row["id"],)).fetchone():
+                dialogue = self.db.execute("SELECT quiet_due,total_due FROM dialogue_jobs WHERE job=?", (row["id"],)).fetchone()
+                if dialogue is None:
                     self.db.execute("UPDATE wakes SET due=? WHERE id=?", (self.now(), row["id"]))
+                else:
+                    self.db.execute("UPDATE wakes SET due=? WHERE id=?", (min(dialogue[0],dialogue[1]),row["id"]))
                 if status in ("scheduled", "queued"):
                     result.append(WakeJob(
                         id=str(row["id"]), scope=str(row["scope"]), version=str(row["version"]),
@@ -939,25 +1027,14 @@ class SocialStore:
                             "AND status IN ('scheduled','queued','running')", (key,))
             self.db.execute("UPDATE actions SET status='failed',error='paused' "
                             "WHERE scope=? AND status='queued'", (key,))
+            self.db.execute("UPDATE judge_state SET pending_due=NULL,batch_id=NULL WHERE scope=?", (key,))
+            self.db.execute("UPDATE judge_batches SET status='cancelled',error_code='paused' "
+                            "WHERE scope=? AND status IN ('pending','running')", (key,))
 
     def _clear_dialogue(self, key: str) -> None:
         """Caller owns the configuration/pause transaction."""
         for table in ("dialogue_state", "dialogue_waits", "dialogue_attention"):
             self.db.execute(f"DELETE FROM {table} WHERE scope=?", (key,))
-
-    def _debounce(self, key: str, seq: int, quiet: float, maximum: float) -> None:
-        row = self.db.execute("SELECT * FROM wakes WHERE scope=? AND status='scheduled' "
-                              "AND reason NOT IN ('proactive','timeout','wait_reply','wait_messages')", (key,)).fetchone()
-        if row is None:
-            return
-        now = self.now()
-        self.db.execute("INSERT INTO dialogue_jobs(job,purpose,quiet_seconds,quiet_due,total_due,source_seq) "
-                        "VALUES(?,?,?,?,?,?) ON CONFLICT(job) DO UPDATE SET quiet_seconds=excluded.quiet_seconds,"
-                        "quiet_due=excluded.quiet_due,source_seq=excluded.source_seq",
-                        (row["id"], "reply", quiet, now + quiet, float(row["created"]) + maximum, seq))
-        limits = self.db.execute("SELECT quiet_due,total_due FROM dialogue_jobs WHERE job=?", (row["id"],)).fetchone()
-        self.db.execute("UPDATE wakes SET due=?,expires=MAX(expires,?),trigger_seq=MAX(trigger_seq,?) WHERE id=?",
-                        (min(limits[0], limits[1]), now + 120, seq, row["id"]))
 
     def dialogue_job(self, job: str) -> DialogueContext | None:
         row = self.db.execute("SELECT * FROM dialogue_jobs WHERE job=?", (job,)).fetchone()
@@ -996,7 +1073,7 @@ class SocialStore:
                 return {"deferred": False, "purpose": purpose, "quiet": now >= quiet_due}
         elif purpose == "messages":
             pending = self.db.execute("SELECT MAX(trigger_seq) FROM wakes WHERE scope=? AND status='scheduled' "
-                                      "AND reason IN ('keyword','sender','message','question','probability') AND trigger_seq>?", (key, after)).fetchone()[0]
+                                      "AND reason='judge' AND trigger_seq>?", (key, after)).fetchone()[0]
             candidate = int(pending) if pending is not None else self.state(key)["event_seq"] if not selective else 0
             if candidate > after:
                 source, quiet_due = candidate, last + quiet
@@ -1012,11 +1089,10 @@ class SocialStore:
                             (after, int(seconds is None), key))
             # A newer direct mention always survives the decision to wait.
             self.db.execute("UPDATE wakes SET status='cancelled' WHERE scope=? AND status='scheduled' "
-                            "AND reason NOT IN ('directed','nickname') AND trigger_seq<=?", (key, after))
-            if purpose == "observe" and self.state(key)["event_seq"] > after:
-                # Content arriving after provider exposure but before the wait tool
-                # must receive the same opportunity as content arriving during observation.
-                self._schedule(key, self.state(key)["event_seq"], "message", 0)
+                            "AND reason NOT IN ('directed','nickname','judge') AND trigger_seq<=?", (key, after))
+            if purpose in {"reply", "messages"}:
+                self.db.execute("UPDATE judge_state SET pending_due=MIN(pending_last+?,pending_max,COALESCE(?,pending_max)) "
+                                "WHERE scope=? AND batch_id IS NULL AND pending_due IS NOT NULL", (quiet,total,key))
         return {"deferred": True, "purpose": purpose, "mode": "waiting", "total_due": total,
                 "quiet_due": quiet_due}
 
@@ -1037,49 +1113,6 @@ class SocialStore:
         fully_observed = int(row["observed_seq"]) >= self.state(key)["event_seq"]
         observation_due = observed + window if fully_observed and observed <= now < observed + window else last + window
         return min(observation_due, last + window)
-
-    def confirmed_attention(self, key: str, action: str, turn: str | None, *, window: float,
-                            check: float, enabled: bool, catch_up: bool = True,
-                            delay: float = 0, quiet_seconds: float | None = None, max_delay: float = 12) -> None:
-        """Called only once a complete send/group has a platform confirmation."""
-        now = self.now()
-        shown: set[int] = self._shown_sequences(key, turn) if turn else set()
-        participants = [str(row[0]) for row in self.db.execute(
-            "SELECT DISTINCT sender_id FROM messages WHERE scope=? AND is_self=0 AND seq IN "
-            "(SELECT value FROM json_each(?))", (key, json.dumps(sorted(shown))),
-        )]
-        with self.db:
-            self.db.execute("INSERT INTO dialogue_state(scope,last_sent) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET "
-                            "observed_at=NULL,observed_seq=0,last_sent=excluded.last_sent", (key, now))
-            if enabled and self.state(key)["mode"] not in {"paused", "sleeping", "waiting"}:
-                after = max(shown, default=self.state(key)["event_seq"])
-                self.db.execute("INSERT OR REPLACE INTO dialogue_attention VALUES(?,?,?,?,?,?,?)",
-                                (key, action, after, json.dumps(participants), now, now + window, now + check))
-                pending = self.db.execute("SELECT MAX(seq) FROM messages WHERE scope=? AND is_self=0 AND seq>? "
-                                          "AND seq>? AND sender_id IN (SELECT value FROM json_each(?)) AND at>?",
-                                          (key, after, self.state(key)["read_through"], json.dumps(participants), now - 120)).fetchone()[0]
-                covered = pending is not None and self.db.execute(
-                    "SELECT 1 FROM wakes WHERE scope=? AND status IN ('queued','running') AND trigger_seq>=? "
-                    "AND (turn_id IS NULL OR turn_id<>?)", (key, pending, turn),
-                ).fetchone() is not None
-                if catch_up and pending is not None and not covered:
-                    self._schedule(key, int(pending), "attention", delay)
-                    if quiet_seconds is not None:
-                        self._debounce(key, int(pending), quiet_seconds, max_delay)
-
-    def attention_matches(self, key: str, message: ObservedMessage) -> bool:
-        row = self.db.execute("SELECT * FROM dialogue_attention WHERE scope=? AND created<=? AND expires>?",
-                              (key, self.now(), self.now())).fetchone()
-        if row is None:
-            return False
-        # A follow-up by an observed participant or a reply to our confirmed message
-        # is locally relevant. A random question elsewhere in the group is not.
-        if message.sender_id in json.loads(row["participants"]):
-            return True
-        return message.reply_to is not None and self.db.execute(
-            "SELECT 1 FROM messages WHERE scope=? AND message_id=? AND is_self=1",
-            (key, message.reply_to),
-        ).fetchone() is not None
 
     def consume_dialogue(self) -> None:
         now = self.now()
@@ -1154,7 +1187,7 @@ class SocialStore:
             )
             # A newly arrived direct address must survive a simultaneous wait.
             self.db.execute("UPDATE wakes SET status='cancelled' WHERE scope=? AND status='scheduled' "
-                            "AND reason NOT IN ('directed','nickname') AND (trigger_seq<=? OR ?)",
+                            "AND reason NOT IN ('directed','nickname','judge') AND (trigger_seq<=? OR ?)",
                             (key, max(shown, default=0), int(sleeping)))
 
     def set_wake_config(self, key: str, body: str) -> None:
@@ -1179,7 +1212,7 @@ class SocialStore:
     def _schedule(self, key: str, seq: int, reason: str, delay: float) -> None:
         """Caller owns the transaction, including observation/dedup when applicable."""
         now = self.now()
-        rank = {"proactive": -1, "timeout": 0, "wait_reply": 1, "wait_messages": 1,
+        rank = {"judge": 4, "proactive": -1, "timeout": 0, "wait_reply": 1, "wait_messages": 1,
                 "probability": 0, "attention": 1, "message": 1, "sender": 2, "keyword": 3,
                 "question": 4, "nickname": 5, "directed": 6}
         state = self.state(key)
@@ -1286,16 +1319,19 @@ class SocialStore:
         row = self.db.execute("SELECT * FROM wakes WHERE id=? AND scope=?", (job, key)).fetchone()
         if row is not None and row["condition_config"] != "{}" and row["condition_config"] != self.state(key)["wake_config"]:
             raise PermissionError("temporary wake conditions changed")
-        if row is None or row["reason"] not in {"question", "probability"}:
+        if row is None:
             return
-        source = int(row["source_seq"] or row["trigger_seq"])
-        if not self.db.execute("SELECT 1 FROM messages WHERE scope=? AND seq=?", (key, source)).fetchone():
-            raise PermissionError("wake source is no longer retained")
-        if row["reason"] == "probability" and not self.db.execute(
-            "SELECT 1 FROM wake_samples WHERE scope=? AND seq=? AND version=? AND selected=1",
-            (key, source, row["version"]),
-        ).fetchone():
-            raise PermissionError("probability wake has no valid persisted sample")
+        for batch in self.db.execute("SELECT input_meta,decision FROM judge_batches WHERE handoff_job=?", (job,)):
+            if batch[0] is None:
+                continue
+            metadata = json.loads(batch[0])
+            sources = json.loads(batch[1])["source_seqs"] if batch[1] else metadata["new_seqs"]
+            hashes = {item["seq"]:item["content_hash"] for item in metadata["excerpts"]}
+            for seq in sources:
+                message = self.db.execute("SELECT text,judge_facts FROM messages WHERE scope=? AND seq=?", (key,seq)).fetchone()
+                if (message is None or (hashes.get(seq) and hashlib.sha256(str(message[0]).encode()).hexdigest()!=hashes[seq])
+                        or (seq in metadata["new_seqs"] and not json.loads(message[1]).get("eligible"))):
+                    raise PermissionError("judged source is no longer retained or changed")
 
     def release_pending(self, key: str) -> None:
         with self.db:
@@ -1311,6 +1347,7 @@ class SocialStore:
                               "UNION ALL SELECT MIN(total_due) FROM dialogue_waits "
                               "UNION ALL SELECT MIN(condition_expires) FROM dialogue_waits "
                               "UNION ALL SELECT MIN(CAST(json_extract(wake_config,'$.expires_at') AS REAL)) FROM scopes WHERE wake_config<>'{}' "
+                              "UNION ALL SELECT MIN(pending_due) FROM judge_state WHERE inflight=0 "
                               "UNION ALL SELECT MIN(MIN(COALESCE(check_at,expires),expires)) FROM dialogue_attention)").fetchone()
         return float(row[0]) if row[0] is not None else None
 

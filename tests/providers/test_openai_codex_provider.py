@@ -39,6 +39,29 @@ def _mock_codex_token(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.mark.parametrize("isolated", [False, True])
+async def test_codex_uses_selected_persistent_storage_without_importing_cli(monkeypatch, tmp_path, isolated):
+    from oauth_cli_kit.storage import FileTokenStorage
+
+    calls = []
+
+    def token(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(account_id="acct", access="token")
+
+    async def request(*args, **kwargs):
+        return provider_base.LLMResponse(content="ok")
+
+    monkeypatch.setattr("nanobot.providers.openai_codex_provider.get_codex_token", token)
+    monkeypatch.setattr("nanobot.providers.openai_codex_provider._request_codex", request)
+    provider = OpenAICodexProvider()
+    if isolated:
+        provider.token_storage = FileTokenStorage(data_dir=tmp_path, token_filename="codex.json", import_codex_cli=False)
+    assert (await provider.chat([{"role": "user", "content": "hello"}])).content == "ok"
+    assert len(calls) == 1
+    assert calls[0] == ({"proxy": None, "storage": provider.token_storage} if isolated else {"proxy": None})
+
+
 def test_codex_default_model_matches_curated_flagship() -> None:
     spec = find_by_name("openai_codex")
 

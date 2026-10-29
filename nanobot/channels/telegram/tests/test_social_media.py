@@ -252,7 +252,11 @@ async def test_album_items_keep_identity_and_share_one_wake(social):
         raw = update_with_media(seq=seq).to_dict()
         raw["message"]["media_group_id"] = "album-1"
         await tg._observe_social(Update.de_json(raw, None))
-    assert social.store.db.execute("SELECT COUNT(*) FROM wakes WHERE status='scheduled'").fetchone()[0] == 1
+    assert social.store.db.execute("SELECT COUNT(*) FROM wakes WHERE status='scheduled'").fetchone()[0] == 0
+    assert social.store.db.execute("SELECT COUNT(*) FROM judge_state WHERE pending_due IS NOT NULL").fetchone()[0] == 1
+    await asyncio.sleep(1.05)
+    await social.run_due()
+    assert social.bus.inbound.qsize() == 1
     ctx = context(social)
     view = json.loads(social.read_messages(ctx))
     assert [m["album_id"] for m in view["messages"]] == ["album-1", "album-1"]
@@ -491,7 +495,7 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     store.close()
     reopened = SocialStore(root)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 10
         assert reopened.state(A.session_key)["read_through"] == 1
         row = reopened.db.execute("SELECT content,status,message_id,kind FROM actions").fetchone()
         assert tuple(row) == ("old text", "sent", 501, "text")

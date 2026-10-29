@@ -35,9 +35,12 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_dialogue.py \
       nanobot/channels/telegram/tests/test_social_wake_v2.py \
       nanobot/channels/telegram/tests/test_social_judge.py \
+      nanobot/channels/telegram/tests/test_social_judge_runtime.py \
+      nanobot/channels/telegram/tests/conftest.py \
       nanobot/channels/telegram/tests/test_stream_pacing.py \
       nanobot/cli/gateway_runtime.py nanobot/webui/settings_system.py \
       nanobot/providers/openai_compat_provider.py tests/providers/test_litellm_kwargs.py \
+      nanobot/providers/openai_codex_provider.py tests/providers/test_openai_codex_provider.py \
       tests/agent/test_telegram_social_contracts.py tests/agent/test_dream.py \
       tests/agent/test_task_cancel.py tests/channels/test_channel_setup.py
     .venv/bin/python -m pytest -q tests/deploy nanobot/channels/telegram/tests \
@@ -50,7 +53,8 @@ case "${1:-help}" in
       tests/agent/test_runner_goal_continue.py tests/agent/test_loop_runner_integration.py \
       tests/cli/test_gateway_runtime.py \
       tests/webui/test_settings_system.py tests/triggers/test_local_triggers.py
-    .venv/bin/python -m pytest -q tests/providers/test_litellm_kwargs.py
+    .venv/bin/python -m pytest -q tests/providers/test_litellm_kwargs.py \
+      tests/providers/test_openai_codex_provider.py tests/providers/test_openai_codex_oauth.py
     npm --prefix webui run lint
     npm --prefix webui run test
     npm --prefix webui run build

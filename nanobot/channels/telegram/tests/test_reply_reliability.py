@@ -83,7 +83,7 @@ async def test_conditional_wait_filters_numbers_and_consumes_keyword_once(social
     clock(social).advance(2)
     await social.run_due()
     inbound = social.bus.inbound.get_nowait()
-    assert json.loads(inbound.content.split("\n", 1)[1])["wake_reason"] == "keyword"
+    assert json.loads(inbound.content.split("\n", 1)[1])["wake_reason"] == "judge"
     # A delayed candidate must not consume the condition before model admission.
     assert json.loads(social.store.state(A.session_key)["wake_config"])["keywords"] == ["5", "五"]
     social.admit_request(RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
@@ -213,7 +213,7 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
         db.execute("PRAGMA user_version=5")
     upgraded = SocialStore(root, now=social.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 10
         assert upgraded.state(A.session_key)["next_seq"] == 2
         assert upgraded.db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()[0] == 0
     finally:

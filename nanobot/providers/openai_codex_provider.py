@@ -70,6 +70,7 @@ class OpenAICodexProvider(LLMProvider):
         self._extra_body = dict(extra_body or {})
         self._native_compaction_available = True
         self._ssl_contexts: dict[bool, ssl.SSLContext] = {}
+        self.token_storage: FileTokenStorage | None = None
 
     def _ssl_context(self, *, verify: bool) -> ssl.SSLContext:
         """Reuse synchronous TLS setup across requests on the shared event loop."""
@@ -144,7 +145,10 @@ class OpenAICodexProvider(LLMProvider):
         native_compaction_applied = False
         native_compaction_state: ProviderConversationState | None = None
         try:
-            token = await asyncio.to_thread(get_codex_token, proxy=self.proxy)
+            if self.token_storage is None:
+                token = await asyncio.to_thread(get_codex_token, proxy=self.proxy)
+            else:
+                token = await asyncio.to_thread(get_codex_token, proxy=self.proxy, storage=self.token_storage)
             headers = _build_headers(
                 cast(str, token.account_id),
                 token.access,

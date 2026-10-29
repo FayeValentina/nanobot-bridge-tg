@@ -189,6 +189,7 @@ class TelegramSocialJudgeConfig(Base):
     context_messages: int = Field(default=30, ge=2, le=100)
     context_chars: int = Field(default=16000, ge=2000, le=32000)
     batch_ttl_seconds: int = Field(default=120, ge=30, le=600)
+    oauth_storage_dir: str | None = Field(default=None, min_length=1, max_length=1024)
 
     @field_validator("model", "provider")
     @classmethod

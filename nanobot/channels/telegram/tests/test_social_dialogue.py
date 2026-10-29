@@ -13,6 +13,7 @@ from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.social.models import SocialDeliveryUnknownError
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
+from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
 from nanobot.channels.telegram.tests.test_social_scheduler import (
     clock,
@@ -62,7 +63,7 @@ async def test_split_sentence_waits_for_last_arrival_and_answers_once(dialogue):
     await dialogue.observe(observed(dialogue, text="@bot 我明天去台湾"), directed=True)
     clock(dialogue).advance(1)
     await dialogue.observe(observed(dialogue, 2, text="但是"), directed=False)
-    clock(dialogue).advance(2)
+    clock(dialogue).advance(1)
     await dialogue.run_due()
     assert dialogue.bus.inbound.empty()
     await dialogue.observe(observed(dialogue, 3, text="护照找不到了"), directed=False)
@@ -97,12 +98,12 @@ async def test_finishing_another_turn_does_not_shorten_quiet_deadline(dialogue):
     assert dialogue.bus.inbound.qsize() == 1
 
 
-async def test_urgent_request_uses_short_path_and_duplicate_update_does_not_delay(dialogue):
+async def test_duplicate_update_does_not_extend_the_fixed_coalescing_window(dialogue):
     msg = observed(dialogue, text="@bot 马上回答")
     await dialogue.observe(msg, directed=True)
     clock(dialogue).advance(0.4)
     await dialogue.observe(msg, directed=True)
-    clock(dialogue).advance(0.2)
+    clock(dialogue).advance(1.2)
     await dialogue.run_due()
     assert dialogue.bus.inbound.qsize() == 1
 
@@ -150,7 +151,7 @@ async def test_messages_wait_has_distinct_quiet_and_total_timeouts(dialogue):
     clock(dialogue).advance(1)
     await dialogue.run_due()
     _, view = take(dialogue)
-    assert view["wake_reason"] == "wait_messages" and view["dialogue"]["quiet"]
+    assert view["wake_reason"] == "judge" and view["dialogue"]["quiet"]
 
 
 async def test_messages_arriving_between_model_input_and_wait_tool_are_not_lost(dialogue):
@@ -158,10 +159,10 @@ async def test_messages_arriving_between_model_input_and_wait_tool_are_not_lost(
     await dialogue.observe(observed(dialogue, 2, text="下午三点"), directed=False)
     dialogue.wait(ctx, 60, purpose="messages", quiet_seconds=1)
     finish(dialogue, ctx)
-    clock(dialogue).advance(1)
+    clock(dialogue).advance(2)
     await dialogue.run_due()
     _, view = take(dialogue)
-    assert view["wake_reason"] == "wait_messages"
+    assert view["wake_reason"] in {"judge", "wait_reply"}
     assert any(m["seq"] == 2 for m in view["messages"])
 
 
@@ -219,10 +220,11 @@ async def test_wait_deadline_and_new_mention_merge_into_one_directed_turn(dialog
     finish(dialogue, ctx)
     clock(dialogue).advance(3)
     await dialogue.observe(observed(dialogue, 2, text="@bot 马上回答"), directed=True)
+    clock(dialogue).advance(3)
     await dialogue.run_due()
     assert dialogue.bus.inbound.qsize() == 1
     _, view = take(dialogue)
-    assert view["wake_reason"] == "directed"
+    assert view["wake_reason"] in {"judge", "wait_reply"}
 
 
 async def test_messages_timeout_cannot_rearm_without_new_human_content(dialogue):
@@ -280,7 +282,8 @@ async def test_removed_source_cannot_create_a_contextless_reply(dialogue, queued
         assert dialogue.bus.inbound.empty()
 
 
-async def test_attention_catches_plain_answer_after_check_without_idle_model_calls(dialogue):
+async def test_judge_catches_plain_answer_without_idle_model_calls(dialogue):
+    provider = decide(dialogue)
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
     await dialogue.send(ctx, "你什么时候出发？", None)
@@ -288,18 +291,20 @@ async def test_attention_catches_plain_answer_after_check_without_idle_model_cal
     clock(dialogue).advance(30)
     await dialogue.run_due()
     assert dialogue.bus.inbound.empty()
-    focus = dialogue.store.dialogue_status(A.session_key)["attention"]
-    assert focus["check_at"] is None
+    provider.chat.assert_not_awaited()
     await dialogue.observe(observed(dialogue, 2, text="下午三点"), directed=False)
     clock(dialogue).advance(4)
     await dialogue.run_due()
     msg, view = take(dialogue)
-    assert view["wake_reason"] == "attention"
+    assert view["wake_reason"] == "judge"
+    snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+    assert any(message["is_self"] and message["text"] == "你什么时候出发？" for message in snapshot["messages"])
     ctx2 = admit(dialogue, msg)
     finish(dialogue, ctx2)
     clock(dialogue).advance(600)
     await dialogue.run_due()
     assert dialogue.bus.inbound.empty()
+    provider.chat.assert_awaited_once()
 
 
 async def test_attention_preserves_selective_conditions_and_topic_scope(dialogue):
@@ -316,6 +321,7 @@ async def test_attention_preserves_selective_conditions_and_topic_scope(dialogue
 
 
 async def test_reply_arriving_during_platform_send_is_not_lost(dialogue):
+    provider = decide(dialogue)
     ctx = expose(dialogue)
     async def sender(scope, text, reply_to):
         await dialogue.observe(observed(dialogue, 2, text="下午三点"), directed=False)
@@ -326,11 +332,14 @@ async def test_reply_arriving_during_platform_send_is_not_lost(dialogue):
     clock(dialogue).advance(2)
     await dialogue.run_due()
     _, view = take(dialogue)
-    assert view["wake_reason"] == "attention"
+    assert view["wake_reason"] == "judge"
     assert any(m["text"] == "下午三点" for m in view["messages"])
+    snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+    assert any(message["is_self"] and message["text"] == "你什么时候出发？" for message in snapshot["messages"])
 
 
-async def test_unrelated_participant_does_not_trigger_attention(dialogue):
+async def test_judge_observes_unrelated_participant_then_accepts_reply(dialogue):
+    provider = decide(dialogue, "observe")
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
     await dialogue.send(ctx, "你什么时候出发？", None)
@@ -339,13 +348,17 @@ async def test_unrelated_participant_does_not_trigger_attention(dialogue):
     clock(dialogue).advance(35)
     await dialogue.run_due()
     assert dialogue.bus.inbound.empty()
+    provider.chat.assert_awaited_once()
+    provider = decide(dialogue)
     await dialogue.observe(replace(observed(dialogue, 3, text="下午三点", reply_to=800), sender_id="456"), directed=False)
     clock(dialogue).advance(4)
     await dialogue.run_due()
     assert dialogue.bus.inbound.qsize() == 1
+    snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+    assert snapshot["messages"][-1]["reply"]["kind"] == "bot"
 
 
-async def test_attention_survives_restart_and_does_not_repeat_idle_checks(dialogue):
+async def test_confirmed_context_survives_restart_without_idle_model_calls(dialogue):
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
     await dialogue.send(ctx, "什么时候出发？", None)
@@ -354,14 +367,18 @@ async def test_attention_survives_restart_and_does_not_repeat_idle_checks(dialog
     dialogue.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
+        provider = decide(restored)
         restored.store.recovery_jobs()
         now.advance(31)
         await restored.run_due()
         assert bus.inbound.empty()
+        provider.chat.assert_not_awaited()
         await restored.observe(observed(restored, 2, text="下午三点"), directed=False)
         now.advance(4)
         await restored.run_due()
         assert bus.inbound.qsize() == 1
+        snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+        assert any(message["is_self"] and message["text"] == "什么时候出发？" for message in snapshot["messages"])
     finally:
         restored.close()
 
@@ -399,18 +416,21 @@ async def test_only_confirmed_sends_establish_attention(dialogue, kind):
     assert dialogue.store.dialogue_status(A.session_key)["attention"] is None
 
 
-def test_ordinary_message_receipt_establishes_attention_once(dialogue):
+def test_ordinary_message_receipt_records_confirmed_context_once(dialogue):
     ctx = expose(dialogue)
     delivery = dialogue.record_message_receipt(A, DeliveryReceipt(status="queued"), ctx.turn_id, [])
     receipt = DeliveryReceipt(status="sent", message_ids=(800,))
     dialogue.record_message_receipt(A, receipt, ctx.turn_id, [(800, "何时出发？")], delivery)
-    expires = dialogue.store.dialogue_status(A.session_key)["attention"]["expires"]
+    sent = dialogue.store.db.execute("SELECT last_sent FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()[0]
+    assert sent is not None
     clock(dialogue).advance(3)
     dialogue.record_message_receipt(A, receipt, ctx.turn_id, [(800, "何时出发？")], delivery)
-    assert dialogue.store.dialogue_status(A.session_key)["attention"]["expires"] == expires
+    assert dialogue.store.db.execute("SELECT last_sent FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()[0] == sent
+    assert dialogue.store.db.execute("SELECT COUNT(*) FROM messages WHERE message_id=800 AND is_self=1").fetchone()[0] == 1
+    assert dialogue.store.dialogue_status(A.session_key)["attention"] is None
 
 
-async def test_paced_group_establishes_one_attention_after_last_child(dialogue):
+async def test_paced_group_records_confirmed_context_after_last_child(dialogue):
     ctx = expose(dialogue)
     dialogue.config.send_cooldown_seconds = 2
     dialogue.configure(dialogue.config)
@@ -423,9 +443,9 @@ async def test_paced_group_establishes_one_attention_after_last_child(dialogue):
     for _ in range(2):
         clock(dialogue).advance(2)
         await dialogue.run_due()
-    focus = dialogue.store.dialogue_status(A.session_key)["attention"]
-    assert focus is not None, [dict(row) for row in dialogue.store.db.execute("SELECT ordinal,status,error,due FROM actions")]
-    assert dialogue.store.db.execute("SELECT ordinal FROM actions WHERE id=?", (focus["action_id"],)).fetchone()[0] == 2
+    assert dialogue.store.dialogue_status(A.session_key)["attention"] is None
+    assert dialogue.store.db.execute("SELECT COUNT(*) FROM actions WHERE status='sent'").fetchone()[0] == 3
+    assert dialogue.store.db.execute("SELECT last_sent FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()[0] == dialogue.now()
 
 
 async def test_sleep_observation_transfers_to_sleep_locally_and_mark_read_stays_pure(dialogue):
@@ -460,10 +480,12 @@ async def test_sleep_observation_new_content_is_shown_before_sleep(dialogue):
 
 
 async def test_unseen_arrival_before_sleep_tool_gets_a_fresh_snapshot(dialogue):
+    decide(dialogue)
     ctx = expose(dialogue)
     await dialogue.observe(observed(dialogue, 2, text="还没说完"), directed=False)
     dialogue.wait(ctx, 600, sleeping=True)
     finish(dialogue, ctx)
+    clock(dialogue).advance(2)
     await dialogue.run_due()
     _, view = take(dialogue)
     assert any(m["seq"] == 2 for m in view["messages"])
@@ -623,7 +645,7 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
     dialogue.close()
     upgraded = SocialStore(root, now=dialogue.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 10
         assert upgraded.state(A.session_key)["read_through"] == 1
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         upgraded.db.execute("PRAGMA user_version=99")

@@ -1,4 +1,7 @@
-"""One bounded intermediary request; V3-B will connect it to message scheduling."""
+"""Bounded intermediary requests with durable, atomic scheduling handoffs."""
+
+# oauth-cli-kit has typed Python sources but does not publish type stubs.
+# pyright: reportMissingTypeStubs=false
 
 from __future__ import annotations
 
@@ -6,7 +9,10 @@ import asyncio
 import hashlib
 import json
 import time
+from pathlib import Path
 
+from oauth_cli_kit.providers import OPENAI_CODEX_PROVIDER
+from oauth_cli_kit.storage import FileTokenStorage
 from pydantic import ValidationError
 
 from nanobot.channels.telegram.social.judge_models import (
@@ -39,11 +45,22 @@ def make_judge_provider(config: Config, settings: TelegramSocialJudgeConfig) -> 
             **(provider_config.extra_body or {}),
             "text": {"verbosity": "low", "format": {
                 "type": "json_schema", "name": "social_judge", "strict": True,
-                "schema": JudgeDecision.model_json_schema(),
+                "schema": {**JudgeDecision.model_json_schema(),
+                           "required": list(JudgeDecision.model_fields)},
             }},
         }
     signature = hashlib.sha256(repr(provider_signature(isolated, preset=preset)).encode()).hexdigest()
-    return make_provider(isolated, preset=preset), signature
+    provider = make_provider(isolated, preset=preset)
+    if settings.oauth_storage_dir is not None:
+        from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+
+        if not isinstance(provider, OpenAICodexProvider):
+            raise ValueError("judge oauthStorageDir requires the Codex OAuth provider")
+        provider.token_storage = FileTokenStorage(
+            data_dir=Path(settings.oauth_storage_dir).expanduser(),
+            token_filename=OPENAI_CODEX_PROVIDER.token_filename, import_codex_cli=False,
+        )
+    return provider, signature
 
 
 class SocialJudge:
@@ -67,7 +84,7 @@ class SocialJudge:
         return cls(store, settings, provider, provider_version=version)
 
     async def assess(self, snapshot: JudgeSnapshot) -> JudgeRecord:
-        """Never read/mark main views, publish messages or create main wake jobs.
+        """Never mark main views or publish messages; persist decisions with their handoff.
 
         Pending records expose a persisted due time. The owning scheduler (V3-B)
         may submit the same still-valid snapshot after that time; it must not poll.
@@ -117,12 +134,13 @@ class SocialJudge:
                 candidate.validate_for(snapshot)
                 decision = candidate
         except asyncio.CancelledError:
-            self.store.finish_judge_attempt(
-                record.id, snapshot, attempt=record.attempts, decision=None,
-                error_code="interrupted", delay=0,
-                latency_ms=int((time.monotonic() - started) * 1000),
-                input_tokens=None, output_tokens=None, total_tokens=None,
-            )
+            if not self.store.closed:
+                self.store.finish_judge_attempt(
+                    record.id, snapshot, attempt=record.attempts, decision=None,
+                    error_code="interrupted", delay=0,
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                    input_tokens=None, output_tokens=None, total_tokens=None,
+                )
             raise
         except TimeoutError:
             error = "timeout"

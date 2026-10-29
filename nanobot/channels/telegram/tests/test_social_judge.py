@@ -103,6 +103,14 @@ def test_provider_reuses_oauth_without_main_fallback_or_config_mutation():
     assert config.model_dump() == before
 
 
+def test_judge_provider_uses_independent_persistent_oauth(tmp_path):
+    provider, _ = make_judge_provider(Config(), TelegramSocialJudgeConfig(oauth_storage_dir=str(tmp_path)))
+    assert isinstance(provider, OpenAICodexProvider)
+    assert provider.token_storage is not None
+    assert provider.token_storage._import_codex_cli is False
+    assert provider.token_storage.get_token_path() == tmp_path / "auth" / "codex.json"
+
+
 @pytest.mark.parametrize("values", [
     {"scope": "telegram:123"}, {"scope": "slack:-1001"},
     {"new_seqs": (3, 1)}, {"new_seqs": (1, 1, 3)}, {"new_seqs": (4,)},
@@ -287,7 +295,7 @@ async def test_late_results_do_not_revive_invalid_snapshots(case, change):
 
     provider.chat.side_effect = invalidate
     assert (await judge.assess(snapshot)).status in {"cancelled", "expired"}
-    assert store.judge_through(A.session_key) == 0
+    assert store.state(A.session_key)["read_through"] == 0
 
 
 async def test_missing_context_cannot_advance_past_retained_unshown_messages(case):
@@ -377,10 +385,11 @@ def test_schema_eight_upgrade_preserves_main_data(case, tmp_path):
     store.close()
     upgraded = SocialStore(tmp_path)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 10
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert upgraded.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 3
-        assert upgraded.state(A.session_key)["read_through"] == upgraded.judge_through(A.session_key) == 0
+        assert upgraded.state(A.session_key)["read_through"] == 0
+        assert upgraded.judge_through(A.session_key) == 3
     finally:
         upgraded.close()
 
@@ -495,7 +504,7 @@ async def test_forged_self_identity_is_rejected_before_calling(case):
     provider.chat.assert_not_called()
 
 
-def test_v3a_component_settings_do_not_change_active_v2_scope_version(tmp_path):
+def test_v3b_judge_settings_change_invalidates_the_active_scope_version(tmp_path):
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
     from nanobot.config.schema import TelegramSocialScopeConfig
@@ -510,8 +519,8 @@ def test_v3a_component_settings_do_not_change_active_v2_scope_version(tmp_path):
         changed = config.model_copy(deep=True)
         changed.judge.model = "openai-codex/gpt-6.1-sol"
         runtime.configure(changed)
-        assert runtime.store.state(A.session_key)["version"] == before
-        assert runtime.store.state(A.session_key)["mode"] == "waiting"
-        assert runtime.store.state(A.session_key)["wake_config"] == '{"keywords":["ready"]}'
+        assert runtime.store.state(A.session_key)["version"] != before
+        assert runtime.store.state(A.session_key)["mode"] == "observing"
+        assert runtime.store.state(A.session_key)["wake_config"] == '{}'
     finally:
         runtime.close()
