@@ -3,9 +3,11 @@
 > 2026-10-30，状态：**V3-A/B/C 已实现、验收并发布；下一批 V2-C，再按 V3 适配 V2-D。**
 > 用户决定：真正替换现有代码中的语义唤醒规则，由中间模型根据消息池上下文决定是否让主模型介入。
 > **V3-C 已完成，V2-C/D 剩余范围已核对；M5 继续暂缓。** 见 [V3-C 记录](V3C_IMPLEMENTATION.md)，不恢复已退役的语义触发设计。
-> 当前实际镜像为 V3-C `e9669e5d`、social schema 10、`social-judge-v3`；消息语义判断统一使用独立 OAuth / `gpt-6-luna`。
+> 当前实际镜像为去哈希版本 `6ae4ada0`、social schema 11、`social-judge-v4`；消息语义判断统一使用独立 OAuth / `gpt-6-luna`。
 > [V3-A 记录](V3A_IMPLEMENTATION.md)保留组件基线；[V3-B 记录](V3B_IMPLEMENTATION.md)包含统一入口、旧规则退役、OAuth 刷新、真实模型样例与本机启用结果。
 > **V3C-01 已修复**：普通参与偏好与显式等待分开；直接纠正/偏好要求及时交主模型，21 个合成语境及安装镜像 4 例通过，详见 [V3-C 记录](V3C_IMPLEMENTATION.md)。
+
+> 后续已完成 [迁移自建哈希清理](NO_HASH_IMPLEMENTATION.md)，改用 ID/修订号和直接比较。
 
 ## 1. 问题与目标
 

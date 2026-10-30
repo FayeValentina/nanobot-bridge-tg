@@ -22,7 +22,16 @@ GitHub Actions 工作流和社区 Issue 模板已移除，所有测试、构建�
 
 ## 当前生产状态
 
-2026-10-30 当前实际实例为 V3-C `e9669e5da367fb7ad1a1accc4dce38b34011181c`，schema 10，`social-judge-v3`。
+2026-10-30 当前实际实例为去哈希版本 `6ae4ada01853cc04444dc5fa60abcb7e66230368`，schema 11，`social-judge-v4`。
+迁移新增的消息/输入摘要、配置/人格签名、记忆/媒体哈希和自建发布校验和均已移除，
+改用原生消息/批次 ID、显式修订号和原值直接比较；模型只接收对话事实。
+21 个合成语境真实调用全通过，同组样例输入 Token 比 V3-C 再减少 6.4%；安装 wheel 内 4 例通过。
+完整发布通过后端 1080 项、provider/OAuth 155 项、前端 1553 项及 lint/build；严格类型零错误/警告。
+实际库升级、完整性、外键和原值比较通过；配置、角色、消息、水位、记忆与证据保留。
+容器 healthy、Telegram 已连接。上一镜像 `e9669e5d`，备份 `backups/1793351059291313428/`。
+详见 [哈希清理记录](NO_HASH_IMPLEMENTATION.md)。下一批仍为 V2-C，M5 暂缓。
+
+此前 V3-C 实际实例为 `e9669e5da367fb7ad1a1accc4dce38b34011181c`，schema 10，`social-judge-v3`。
 修复普通观察被伪造成选择性等待、区分参与偏好与显式意图；直接纠正/停止发言等交主模型执行。
 消息哈希保留本地校验、不再送模型；相同 25 批历史的本地估算输入减少 17.9%，实际成本继续记录。
 后端 1074 项、provider/OAuth 155 项、前端 96 文件/1553 项及 lint/build 通过；严格类型零错误/警告。
@@ -266,4 +275,4 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 - 独立测试实例已验证真实升级、手动回滚，以及通过预检后故意失败的升级能自动恢复旧容器和数据。
 - 模型与 Telegram 的最终业务体验由管理员发送测试消息确认，管线不会向真实群自动发送测试消息。
 
-本机开发发布基础设施、M0–M3 首批、完整 M4、V2-A/B 和 V3-A/B 已完成，验收随 `test` 执行；详见 [M0](M0_CONTRACTS.md)、[M1](M1_IMPLEMENTATION.md)、[M2](M2_IMPLEMENTATION.md)、[M3](M3_IMPLEMENTATION.md)、[M4a](M4A_IMPLEMENTATION.md)、[M4b](M4B_IMPLEMENTATION.md)、[V2-A](V2A_IMPLEMENTATION.md)、[V2-B](V2B_IMPLEMENTATION.md) 与 [V3-B](V3B_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色、SQLite、独立 OAuth 与有界媒体缓存，随整实例备份保存，不替换 JSONL 会话。当前实际库 schema 10；旧程序不接受新版本，降级需同时恢复对应数据备份。软件默认关闭仿真；本人实际实例已启用整群仿真、主动机会及 V3 统一判断，quietHours 仍关闭，M5 暂缓。实际部署版本以实例 `state.json` 和上方发布记录为准。
+本机开发发布基础设施、M0–M3 首批、完整 M4、V2-A/B 和 V3-A/B 已完成，验收随 `test` 执行；详见 [M0](M0_CONTRACTS.md)、[M1](M1_IMPLEMENTATION.md)、[M2](M2_IMPLEMENTATION.md)、[M3](M3_IMPLEMENTATION.md)、[M4a](M4A_IMPLEMENTATION.md)、[M4b](M4B_IMPLEMENTATION.md)、[V2-A](V2A_IMPLEMENTATION.md)、[V2-B](V2B_IMPLEMENTATION.md) 与 [V3-B](V3B_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色、SQLite、独立 OAuth 与有界媒体缓存，随整实例备份保存，不替换 JSONL 会话。当前实际库 schema 11；旧程序不接受新版本，降级需同时恢复对应数据备份。软件默认关闭仿真；本人实际实例已启用整群仿真、主动机会及 V3 统一判断，quietHours 仍关闭，M5 暂缓。实际部署版本以实例 `state.json` 和上方发布记录为准。
