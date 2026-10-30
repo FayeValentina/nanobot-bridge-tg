@@ -10,6 +10,12 @@ This file provides guidance to AI coding agents working with this repository.
 - Documentation-only changes, including recording this preference, do not need a runtime rebuild or deployment. Do not remove application permissions or data isolation merely to simplify the release workflow.
 - Current deployment instructions: [`docs/LOCAL_PIPELINE.md`](docs/LOCAL_PIPELINE.md). This owner-confirmed workflow supersedes older requirements in migration or deployment records to validate in a separate instance/group first.
 
+## Owner's no-hash migration preference (confirmed 2026-10-30)
+
+- The owner explicitly rejects using hashes or fingerprints in this migration's implementation and acceptance checks. Do not introduce hash-based content comparisons, deduplication, configuration versions, input signatures, or validation reports.
+- Prefer existing message/record IDs, explicit revision numbers, and direct comparison of the relevant source values. Do not add hash layers as a default correctness measure.
+- V3-C removed message hashes from intermediary model inputs only. Existing local message/input hashes, provider/configuration signatures, memory/media hashes, and release fingerprint checks still exist; do not report them as removed without actually cleaning up their complete paths.
+
 ## Owner's shared-tool behavior (confirmed 2026-10-28)
 
 - The owner explicitly requests identical tool permissions in social and ordinary assistant modes. Do not add a social-only tool allowlist, role editing prohibition, MCP/skill restriction, or ban on ordinary cross-chat/background delivery.
