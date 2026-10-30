@@ -1,5 +1,12 @@
 This file provides guidance to AI coding agents working with this repository.
 
+## Owner's migration priority (confirmed 2026-10-30)
+
+- The next implementation priority is [V4: restore qq-bridge proactive conversation](docs/MIGRATION_V4_PLAN.md). Do not start V2-C as a separate batch first.
+- V4 covers idle autonomous wakes without new messages or unconsumed memories, proactive conversation prompts, pending questions/thoughts with motivation, pacing, reply continuity and at most two proactive attempts per matter.
+- Bring the necessary V2-C statistics/scheduling and V2-E follow-up memory fields into V4; defer unrelated V2 scope and M5. V3 remains the semantic entry for incoming messages; the planned V4 idle timer event goes directly to the existing main-agent execution path as documented.
+- The 2026-10-30 V4 planning task is documentation only. Record implementation and deployment status separately when later implementation is requested; do not treat planned behavior as already implemented.
+
 ## Owner's local workflow (confirmed 2026-10-28)
 
 - This migration is a personal project. The actual local Docker instance is used only by the owner, not a commercial production environment. Prioritize quick feedback from that instance.

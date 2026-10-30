@@ -29,7 +29,7 @@ GitHub Actions 工作流和社区 Issue 模板已移除，所有测试、构建�
 完整发布通过后端 1080 项、provider/OAuth 155 项、前端 1553 项及 lint/build；严格类型零错误/警告。
 实际库升级、完整性、外键和原值比较通过；配置、角色、消息、水位、记忆与证据保留。
 容器 healthy、Telegram 已连接。上一镜像 `e9669e5d`，备份 `backups/1793351059291313428/`。
-详见 [哈希清理记录](NO_HASH_IMPLEMENTATION.md)。下一批仍为 V2-C，M5 暂缓。
+详见 [哈希清理记录](NO_HASH_IMPLEMENTATION.md)。2026-10-30 最新决定：下一步优先 [V4 主动交流还原](MIGRATION_V4_PLAN.md)，不先实施 V2-C；V4 当前仅计划，实际运行版本及配置未因计划更新而改变，M5 暂缓。
 
 此前 V3-C 实际实例为 `e9669e5da367fb7ad1a1accc4dce38b34011181c`，schema 10，`social-judge-v3`。
 修复普通观察被伪造成选择性等待、区分参与偏好与显式意图；直接纠正/停止发言等交主模型执行。
