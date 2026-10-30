@@ -1,6 +1,7 @@
 # V4-B：未完成交流、事项计数与答后接话
 
-2026-10-30，源码已实现 [V4 计划](MIGRATION_V4_PLAN.md) 的 B 批次，正在完成检查和本机发布。
+2026-10-30，已完成 [V4 计划](MIGRATION_V4_PLAN.md) 的 B 批次并发布到本人实际实例。
+实际镜像为 `9e75871d5e0559ae96eb36f8784b9e1f7a744b0a`，schema 13，social-judge-v5。
 V4-A 的随机冷场周期及本人预设保留；完整体验收敛仍属 V4-C。
 
 ## 记忆与事项契约
@@ -62,7 +63,9 @@ SQLite schema **12→13**，在原 owner 中添加 memory_followups（一对一�
 
 新增确定性用例覆盖来源、生命周期、倍率、两次上限、改写/重启、失败/未知/部分成功、两组分条、
 普通 message、失效队列、短回复、无回复零调用、多话题、停止联系及迁移回滚。
-修改模块严格类型零错误/警告；完整 release 与安装产物结果在发布后补充。
+26 项新增定向用例通过。完整原 release 通过后端 1121 项、provider/OAuth 155 项、
+前端 96 文件 / 1553 项、Ruff、WebUI lint/build、wheel/镜像冒烟与健康检查。
+修改运行模块严格类型 0 errors / 0 warnings。
 
 实际主模型 deepseek-flash，temperature=0.1、reasoning_effort=null，合成验证 max_tokens=4096。
 5 项实际模型样例通过：自身问题/动机、待说想法/动机、关联事项主动追问、短回复后正常接话、两次无人接后结束。
@@ -71,5 +74,23 @@ SQLite schema **12→13**，在原 owner 中添加 memory_followups（一对一�
 保存意图的两例均未公开发言；结束例只确认“好，你先忙，回头聊。”，没有第三次追问。
 验证命令：`python -m nanobot.channels.telegram.tests.evaluate_social_followups --config <配置路径> --output <报告路径>`。
 输入为非私有合成对话，输出发送使用替身，不启动 Telegram 接收者、不向真实群发探测消息。
+
+安装包内另验证主动追问与短回复两例，均通过，导入路径为 `/opt/venv/lib/python3.11/site-packages/`。
+每例主模型调用 2 次，分别使用 9,660 / 10,172 tokens，主模型阶段耗时约 3.66 / 2.67 秒。
+短回复还经过实际 openai-codex/gpt-6-luna（low）一次调用，1,486 tokens / 2.56 秒，
+明确判定“下午三点，跟朋友一起”为待续对话并唤醒主模型；随后主模型标记回应，普通接话未增加旧事项主动计数。
+该安装轮合计 4 次主模型 + 1 次中间模型调用、21,318 tokens。
+验证入口按 gateway_runtime 规则推导独立 OAuth 目录，沿用原凭据；未修改配置或重新登录。
+测试脚本的目录推导/有限重试驱动修正随验收记录提交，不改变已安装运行模块。
+
+实际库 12→13、quick_check / foreign_key_check 和源值核对通过：发布备份中的 119 条消息、
+5 条记忆、6 条证据及主 seen/read/next 水位保留；7 份角色/工作区 Markdown 与 16 份 JSONL 对话源保留。
+config.json 与发布备份原始字节相同，模型、OAuth 设置、角色、群范围、额度和 V4-A 预设均保持原值。
+运行 epoch/context/归档位置、WebUI 派生索引和 dream/heartbeat 系统任务登记仍按既有启动逻辑刷新，
+不能将这些运行元数据宣称为逐字不变；原始对话正文仍在。
+
+容器 healthy，Telegram 已连接，网页/健康端口仍为 8765 / 18790。
+上一镜像为 `af33a0c6226a276c935e85171948b6f9f0dd685c`，整实例备份为
+`backups/1793364494923407510/`。回滚使用原管线恢复该镜像和匹配数据/配置。
 
 这些样例检验事项关联和连续性，不保证每次措辞都自然；V4-C 的扩大语义样例、有限搜索、成本/体验收敛仍未实施。
