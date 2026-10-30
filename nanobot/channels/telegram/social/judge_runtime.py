@@ -18,6 +18,7 @@ from nanobot.channels.telegram.social.judge import (
     make_judge_provider,
 )
 from nanobot.channels.telegram.social.judge_models import (
+    JudgeFollowup,
     JudgeIntent,
     JudgeMessage,
     JudgeParticipation,
@@ -204,6 +205,7 @@ class JudgeCoordinator:
                     role_summary=persona.split("# Operator persona\n",1)[-1][:600], background=binding.background[:1000],
                     mode=state["mode"] if state["mode"] in {"waiting","sleeping"} else "observing",
                     main_running=state["mode"]=="active", intent=self.intent(scope), opportunity=pending["opportunity"],
+                    followups=tuple(JudgeFollowup.model_validate(item) for item in self.store.followups.summary(key)),
                     participation=JudgeParticipation(keywords=tuple(binding.wake_keywords), senders=tuple(binding.wake_senders),
                                                      on_messages=binding.wake_on_messages, on_question=binding.wake_on_question),
                     quiet_due=max(arrival_times)+self.coalesce_delay(scope) if arrival_times else now,
@@ -216,6 +218,9 @@ class JudgeCoordinator:
             truncated = True
             if history:
                 history.pop(0)
+            elif base["followups"]:
+                followups = snapshot.followups
+                base["followups"] = followups[:-1]
             elif confirmed_after and len(new)==1 and len(new[0].text)<=64:
                 confirmed_after.pop(0)
             elif len(new) > 1:

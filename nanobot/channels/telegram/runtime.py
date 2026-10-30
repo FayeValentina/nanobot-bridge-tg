@@ -1154,6 +1154,8 @@ class TelegramChannel(BaseChannel):
             receipt = DeliveryReceipt("sent", tuple(message_ids))
         except (BadRequest, RetryAfter) as exc:
             receipt = DeliveryReceipt("failed", tuple(message_ids), f"{type(exc).__name__}; request rejected, do not repeat the confirmed prefix.")
+        except PermissionError as exc:
+            receipt = DeliveryReceipt("failed", tuple(message_ids), str(exc))
         except (TimedOut, NetworkError, asyncio.TimeoutError):
             receipt = DeliveryReceipt("unknown", tuple(message_ids), "Platform outcome unknown; do not resend. IDs listed are the confirmed prefix.")
         except asyncio.CancelledError:
@@ -1162,6 +1164,11 @@ class TelegramChannel(BaseChannel):
         except Exception as exc:
             receipt = DeliveryReceipt("failed", tuple(message_ids), f"{type(exc).__name__}; do not repeat the confirmed prefix.")
         self._record_message_receipt(scope, metadata, receipt, sent_texts, delivery_id)
+        followup_id = metadata.get("_social_followup_id")
+        if self.social is not None and isinstance(followup_id, str) and self.social.binding(scope) is not None:
+            info = self.social.store.followups.describe(followup_id)
+            receipt = DeliveryReceipt(receipt.status, receipt.message_ids,
+                                      f"{receipt.detail or ''} remaining_attempts={info.remaining_attempts}; unresolved_send={info.unresolved_send}")
         return receipt
 
     def _record_message_receipt(self, scope: ConversationScope, metadata: dict[str, Any],
@@ -1170,8 +1177,11 @@ class TelegramChannel(BaseChannel):
         self.logger.info("Message delivery {} to {}: {}", receipt.status, scope.session_key, receipt.message_ids)
         if self.social is not None:
             try:
-                return self.social.record_message_receipt(scope, receipt, metadata.get("_delivery_turn_id"), texts, delivery_id)
+                return self.social.record_message_receipt(scope, receipt, metadata.get("_delivery_turn_id"), texts, delivery_id,
+                                                          followup_id=metadata.get("_social_followup_id"))
             except Exception:
+                if receipt.status == "queued" and metadata.get("_social_followup_id") is not None:
+                    raise
                 # A journal failure must never turn an accepted send into an invitation to resend.
                 self.logger.exception("Failed to journal ordinary Telegram delivery; platform status is {}", receipt.status)
         return None

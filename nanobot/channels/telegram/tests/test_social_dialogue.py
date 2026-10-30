@@ -647,7 +647,7 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
     dialogue.close()
     upgraded = SocialStore(root, now=dialogue.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert upgraded.state(A.session_key)["read_through"] == 1
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         upgraded.db.execute("PRAGMA user_version=99")

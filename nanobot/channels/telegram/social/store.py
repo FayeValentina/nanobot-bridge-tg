@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from uuid import uuid4
 
+from nanobot.channels.telegram.social.followups import SocialFollowups
 from nanobot.channels.telegram.social.judge_models import (
     JUDGE_PROMPT_VERSION,
     JudgeDecision,
@@ -45,7 +46,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -303,6 +304,31 @@ class SocialStore:
                     self.db.execute(f"ALTER TABLE proactive_state ADD COLUMN {column} {definition}")
                 self.db.execute("UPDATE proactive_state SET tracked_since=?,next_check=NULL", (self.now(),))
                 self.db.execute("PRAGMA user_version=12")
+        if version < 13:
+            with self.db:
+                self.db.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE memory_followups (
+                    memory_id TEXT PRIMARY KEY REFERENCES memories(id), origin_turn TEXT NOT NULL,
+                    own_intent INTEGER NOT NULL DEFAULT 0, pending_question TEXT NOT NULL DEFAULT '',
+                    pending_thought TEXT NOT NULL DEFAULT '', motivation TEXT NOT NULL DEFAULT '',
+                    mentioned_at REAL NOT NULL, followup_at REAL, followup_state TEXT NOT NULL DEFAULT 'active',
+                    state_reason TEXT NOT NULL DEFAULT '', responded_at REAL
+                );
+                CREATE TABLE followup_attempts (
+                    id TEXT PRIMARY KEY, memory_id TEXT NOT NULL REFERENCES memories(id),
+                    scope TEXT NOT NULL REFERENCES scopes(key), turn_id TEXT NOT NULL, wake_id TEXT,
+                    revision INTEGER NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL,
+                    UNIQUE(memory_id,turn_id)
+                );
+                CREATE TABLE followup_sends (
+                    delivery_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES followup_attempts(id),
+                    revision INTEGER NOT NULL, status TEXT NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0
+                );
+                PRAGMA user_version=13;
+                COMMIT;
+                """)
+        self.followups = SocialFollowups(self)
         self.closed = False
         path.chmod(0o600)
 
@@ -430,6 +456,7 @@ class SocialStore:
                 "UPDATE actions SET status='failed',error='configuration changed' "
                 "WHERE scope=? AND version<>? AND status='queued'", (scope.session_key, version),
             )
+            self.followups.sync_receipts(scope.session_key)
 
     def state(self, key: str) -> SocialState:
         row = self.db.execute("SELECT * FROM scopes WHERE key=?", (key,)).fetchone()
@@ -1009,6 +1036,7 @@ class SocialStore:
                         due=float(row["due"]), reason=str(row["reason"]),
                     ))
             self.db.execute("UPDATE scopes SET mode='observing' WHERE mode='active'")
+            self.followups.sync_receipts()
             return result
 
     def _refund_unclaimed_opportunity(self, row: sqlite3.Row) -> None:
@@ -1026,9 +1054,10 @@ class SocialStore:
         self.db.execute("UPDATE wakes SET status='cancelled' WHERE id=?", (job,))
         self.db.execute("UPDATE actions SET status='failed',error=? WHERE scope=? AND status='queued' "
                         "AND turn_id=?", (f"opportunity skipped: {reason}", row["scope"], row["turn_id"]))
+        self.followups.sync_receipts(str(row["scope"]))
 
     def reserve_send(self, key: str, version: str, text: str, limit: int, *, turn: str | None = None,
-                     sticker: MediaReference | None = None) -> str:
+                     sticker: MediaReference | None = None, followup_id: str | None = None) -> str:
         with self.db:
             if self.state(key)["version"] != version:
                 raise PermissionError("conversation configuration changed")
@@ -1049,6 +1078,10 @@ class SocialStore:
                 action, key, version, text, "sending", self.now(), turn,
                 "sticker" if sticker else "text", sticker.model_dump_json() if sticker else None,
             ))
+            if followup_id is not None:
+                if turn is None:
+                    raise ValueError("a proactive follow-up requires a source turn")
+                self.followups.reserve(key, followup_id, turn, action)
             self.db.execute("DELETE FROM actions WHERE scope=? AND created<?", (key, self.now() - 604800))
             self.db.execute("INSERT INTO send_attempts VALUES(?,?)", (key, self.now()))
             self.db.execute("DELETE FROM send_attempts WHERE at<=?", (self.now() - 3600,))
@@ -1073,10 +1106,13 @@ class SocialStore:
                 "UPDATE actions SET status=?,message_id=?,error=?,due=? WHERE id=?",
                 (status, message_id, error[:200] if error else None, self.now(), action),
             )
+            self.followups.receipt(action, status)
             if status in ("failed", "unknown"):
                 self.db.execute("UPDATE actions SET status='failed',error='earlier part was not confirmed' "
                                 "WHERE status='queued' AND group_id=(SELECT group_id FROM actions WHERE id=?) "
                                 "AND ordinal>(SELECT ordinal FROM actions WHERE id=?)", (action, action))
+                for child in self.db.execute("SELECT id FROM actions WHERE group_id=(SELECT group_id FROM actions WHERE id=?) AND status='failed'", (action,)):
+                    self.followups.receipt(str(child[0]), "failed")
 
     def has_message(self, key: str, message_id: int) -> bool:
         return self.db.execute(
@@ -1135,6 +1171,7 @@ class SocialStore:
                             "AND status IN ('scheduled','queued','running')", (key,))
             self.db.execute("UPDATE actions SET status='failed',error='paused' "
                             "WHERE scope=? AND status='queued'", (key,))
+            self.followups.sync_receipts(key)
             self.db.execute("UPDATE judge_state SET pending_due=NULL,batch_id=NULL WHERE scope=?", (key,))
             self.db.execute("UPDATE judge_batches SET status='cancelled',error_code='paused' "
                             "WHERE scope=? AND status IN ('pending','running')", (key,))
@@ -1480,7 +1517,7 @@ class SocialStore:
                                "ORDER BY created,ordinal", (self.now(), self.now())).fetchall()
 
     def enqueue_parts(self, key: str, version: str, turn: str, texts: list[str],
-                      reply_to: int | None, limit: int) -> list[sqlite3.Row]:
+                      reply_to: int | None, limit: int, *, followup_id: str | None = None) -> list[sqlite3.Row]:
         group = uuid4().hex
         now = self.now()
         with self.db:
@@ -1496,9 +1533,12 @@ class SocialStore:
                 if self.db.execute("SELECT 1 FROM actions WHERE scope=? AND version=? AND status='unknown' "
                                     "AND trim(content)=trim(?) AND created>?", (key, version, text, now - 86400)).fetchone():
                     raise PermissionError("delivery is unknown; do not blindly repeat a part")
+                action = uuid4().hex
                 self.db.execute("INSERT INTO actions(id,scope,version,content,status,created,due,expires,reply_to,"
                                 "attempts,turn_id,group_id,ordinal) VALUES(?,?,?,?,'queued',?,?,?,?,0,?,?,?)",
-                                (uuid4().hex, key, version, text, now, now, expires, reply_to, turn, group, index))
+                                (action, key, version, text, now, now, expires, reply_to, turn, group, index))
+                if followup_id is not None:
+                    self.followups.reserve(key, followup_id, turn, action)
         return self.db.execute("SELECT * FROM actions WHERE group_id=? ORDER BY ordinal", (group,)).fetchall()
 
     def send_predecessor(self, action: str) -> sqlite3.Row | None:

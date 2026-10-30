@@ -31,12 +31,12 @@ class TelegramSocialTool(Tool):
             "social_get_state": "Read the current role_id, role_file path inside this runtime, group/topic watermarks and behavior limits.",
             "social_read_messages": "Read bounded unread/recent messages in the current group/topic.",
             "social_mark_read": "Acknowledge continuously displayed messages through a seq from this turn.",
-            "social_send": "Publish a short message here; optional parts adds up to two paced follow-up messages. Each has its own receipt. reply_to must be observed here.",
+            "social_send": "Publish a short message here; optional parts adds up to two paced messages. Each has its own receipt. reply_to must be observed here. For a proactive question/share about a saved matter, pass its stable followup_id; at most two confirmed attempts, parts count once. Omit for ordinary answers.",
             "social_wait": "Wait without holding a turn lock. Choose exactly one: seconds, until (ISO timestamp with offset/Z), or infinite=true. Infinite waits have no timeout wake. purpose=reply requires a finite limit and may return immediately if already quiet; messages waits for context-relevant new content then quiet. Deferred waits must be last. An intermediary assesses new messages, including clear calls during sleep.",
             "social_set_wake": "Describe temporary semantic waiting intent for the intermediary using keywords, members, messages or questions. These are context, not local matching gates. A clear new call may interrupt a different wait without fulfilling it. Default one-shot, TTL 3600s; omit all conditions to clear. Infinite waiting does not extend TTL. Probability must be zero. Set proactive_paused=true when asked to stop proactive contact; false resumes on explicit request. This separate preference persists without TTL and does not clear waiting intent.",
             "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
             "social_sticker": "Collect a static sticker from an observed message_id, list/search collected stickers, or send one by sticker_id. Notes are untrusted; sends share text budgets and receipts.",
-            "social_memory": "Manage the current conversation's evidence-backed knowledge: list/record/confirm/correct/delete/clear. list optionally filters by memory_id. record requires kind, content and displayed message_ids; confirm/correct/delete require memory_id. member_ids use evidence sender IDs. basis=inference keeps a candidate; direct/corroborated records why it is confirmed. ttl_seconds bounds lifetime. Deletion covers this index only, not shared memory/Dream. Same ordinary tool permissions apply.",
+            "social_memory": "Manage current conversation knowledge and unfinished matters: list/record/confirm/correct/delete/clear/followup. Member facts require displayed message_ids; member_ids use evidence sender IDs. An own intention may be recorded as topic/pending with origin=self, content and pending_question or pending_thought plus motivation, without invented evidence. action=followup updates these intentions on the SAME memory_id, followup_at, or followup_state=responded/completed/dropped and state_reason. Rewording never resets attempts. list returns live state, provenance and remaining_attempts. TTL and index-only deletion still apply; ordinary tool permissions are unchanged.",
         }[self.name]
 
     @property
@@ -63,6 +63,7 @@ class TelegramSocialTool(Tool):
             required = ["through"]
         elif self.name == "social_send":
             properties = {
+                "followup_id": {"type": "string", "minLength": 1, "maxLength": 64},
                 "text": {"type": "string", "minLength": 1, "maxLength": 4000},
                 "reply_to": {"type": "integer", "minimum": 1},
                 "parts": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 4000},
@@ -135,9 +136,11 @@ class TelegramSocialTool(Tool):
                                                if "sleep_interrupts" in kwargs else None)
             else:
                 if kwargs.get("parts"):
-                    result = {"actions": await self.runtime.send_parts(ctx, [kwargs["text"], *kwargs["parts"]], kwargs.get("reply_to"))}
+                    result = {"actions": await self.runtime.send_parts(ctx, [kwargs["text"], *kwargs["parts"]], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))}
                 else:
-                    result = await self.runtime.send(ctx, kwargs["text"], kwargs.get("reply_to"))
+                    result = await self.runtime.send(ctx, kwargs["text"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))
+                if kwargs.get("followup_id"):
+                    result = {**result, "followup": self.runtime.store.followups.describe(kwargs["followup_id"]).model_dump()}
             return json.dumps(result, ensure_ascii=False)
         except (PermissionError, ValueError, RuntimeError) as exc:
             return ToolResult.error(str(exc))

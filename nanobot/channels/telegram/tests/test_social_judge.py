@@ -408,7 +408,7 @@ def test_schema_eight_upgrade_preserves_main_data(case, tmp_path):
     store.close()
     upgraded = SocialStore(tmp_path)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert upgraded.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 3
         assert upgraded.state(A.session_key)["read_through"] == 0

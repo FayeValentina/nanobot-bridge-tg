@@ -70,7 +70,7 @@ def test_schema_ten_upgrade_removes_keys_and_preserves_journals(case, tmp_path):
 
     restored = SocialStore(tmp_path, now=lambda: now[0])
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert restored.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
         assert [tuple(row)[:-1] for row in restored.db.execute("SELECT * FROM messages ORDER BY seq")] == messages

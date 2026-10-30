@@ -1,5 +1,6 @@
 """Owner-requested common permissions, with social observation/delivery unchanged."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,7 +9,14 @@ import pytest
 
 from nanobot.agent.tools.base import Tool
 from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.channels.telegram.tests.test_social_runtime import A, agent, channel, social, wake
+from nanobot.channels.telegram.tests.test_social_runtime import (
+    A,
+    agent,
+    channel,
+    message,
+    social,
+    wake,
+)
 from nanobot.config.schema import ToolsConfig
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 from nanobot.session.manager import ISOLATED_CONTEXT_KEY
@@ -38,6 +46,7 @@ async def test_private_and_social_turns_have_identical_tools_and_global_switches
 
 
 async def test_real_file_and_shell_tools_can_edit_role_and_confirm_before_next_turn(tmp_path, social):
+    social.config.dynamic_wait.quiet_seconds = 0.1
     role = social.roles / "a.md"
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
@@ -58,7 +67,10 @@ async def test_real_file_and_shell_tools_can_edit_role_and_confirm_before_next_t
     results = {m["tool_call_id"]: m["content"] for m in calls[1].kwargs["messages"] if m["role"] == "tool"}
     assert "PERSONA ALPHA" in str(results["read"])
     assert "shared-command" in str(results["shell"])
-    await loop._dispatch(await wake(social, seq=2, text="use your updated role"))
+    await social.observe(message(seq=2, text="use your updated role"), directed=True)
+    await asyncio.sleep(0.15)
+    await social.run_due()
+    await loop._dispatch(await asyncio.wait_for(social.bus.consume_inbound(), 1))
     system = loop.provider.chat_stream_with_retry.call_args.kwargs["messages"][0]["content"]
     assert "UPDATED GROUP PERSONA" in system and "PERSONA ALPHA" not in system
     assert social.bus.outbound.empty()

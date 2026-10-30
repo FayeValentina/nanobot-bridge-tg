@@ -170,10 +170,10 @@ class SocialProactive:
         elif self.db.execute("SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_requests_per_hour:
             decision = "request_budget"
         else:
-            # V4-B adds pendingThought/motivation and its attempt eligibility. Legacy
-            # pending content alone is not proof of an unspoken, still eligible thought.
-            metrics["pending_thought_available"] = False
+            metrics["pending_thought_available"] = self.store.followups.has_pending_thought(key)
             probability = policy.probability
+            if metrics["pending_thought_available"]:
+                probability = min(1, probability * policy.pending_thought_multiplier)
             last = metrics["last_confirmed_send"]
             if isinstance(last, (float, int)) and now - last < policy.recent_send_seconds:
                 probability *= policy.recent_send_multiplier

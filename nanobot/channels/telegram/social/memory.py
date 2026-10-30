@@ -15,15 +15,17 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from nanobot.channels.telegram.social.followups import FollowupFields, FollowupUpdate
 from nanobot.channels.telegram.social.store import SocialStore
 
 MemoryKind = Literal["topic", "pending", "preference", "experience", "slang"]
 MemoryBasis = Literal["inference", "direct", "corroborated"]
 
 
-class MemoryRequest(BaseModel):
+class MemoryRequest(FollowupUpdate):
     model_config = ConfigDict(extra="forbid", strict=True)
-    action: Literal["list", "record", "confirm", "correct", "delete", "clear"]
+    action: Literal["list", "record", "confirm", "correct", "delete", "clear", "followup"]
+    origin: Literal["evidence", "self"] = "evidence"
     memory_id: str | None = Field(default=None, min_length=1, max_length=64)
     kind: MemoryKind | None = None
     content: str | None = Field(default=None, min_length=1, max_length=800)
@@ -48,9 +50,16 @@ class MemoryRequest(BaseModel):
             raise ValueError("record requires kind")
         if self.action == "record" and self.memory_id is not None:
             raise ValueError("record creates/deduplicates an entry; use correct for an existing memory_id")
-        if self.action in {"confirm", "correct", "delete"} and self.memory_id is None:
-            raise ValueError("confirm/correct/delete requires memory_id")
-        if self.action in {"record", "confirm", "correct"} and not self.message_ids:
+        if self.action in {"confirm", "correct", "delete", "followup"} and self.memory_id is None:
+            raise ValueError("confirm/correct/delete/followup requires memory_id")
+        own = self.action == "record" and self.origin == "self" and self.kind in {"topic", "pending"}
+        if self.origin == "self" and self.action == "record" and not own:
+            raise ValueError("own intentions must use topic or pending, not member facts")
+        if own and not (self.pending_question or self.pending_thought):
+            raise ValueError("own intention requires pending_question or pending_thought")
+        if self.action == "record" and self.pending_thought and not self.motivation:
+            raise ValueError("pending_thought requires motivation")
+        if self.action in {"record", "confirm", "correct"} and not self.message_ids and not own:
             raise ValueError("learning requires message_ids displayed in this turn")
         if self.action == "confirm" and self.basis == "inference":
             raise ValueError("confirmation requires direct or corroborated evidence")
@@ -65,7 +74,7 @@ class MemoryEvidence(BaseModel):
     excerpt: str
 
 
-class MemoryEntry(BaseModel):
+class MemoryEntry(FollowupFields):
     id: str
     scope: str
     kind: MemoryKind
@@ -105,6 +114,7 @@ class SocialMemory:
             "SELECT * FROM memory_evidence WHERE memory_id=? ORDER BY seq", (row["id"],),
         )]
         return MemoryEntry.model_validate({
+            **self.store.followups.describe(str(row["id"])).model_dump(),
             "id": row["id"], "scope": row["scope"], "kind": row["kind"], "content": row["content"],
             "member_ids": json.loads(row["members"]), "status": row["status"], "basis": row["basis"],
             "revision": row["revision"], "created": row["created"], "updated": row["updated"],
@@ -206,6 +216,16 @@ class SocialMemory:
                         "deletion_scope": "M4 index only; original messages/shared memory/Dream are unchanged"}
             if entry is not None and entry.status in {"deleted", "expired"}:
                 raise ValueError("this entry is inactive; record a new fact with fresh evidence")
+            if request.action == "followup":
+                assert entry is not None
+                if entry.kind not in {"topic", "pending"}:
+                    raise ValueError("follow-up intentions belong to topic or pending memories")
+                self.store.followups.update(entry.id, turn_id, request)
+                current = self.store.followups.describe(entry.id)
+                if current.pending_thought and not current.motivation:
+                    raise ValueError("pending_thought requires motivation")
+                self.db.execute("UPDATE memories SET revision=revision+1,updated=? WHERE id=?", (self.store.now(), entry.id))
+                return {"memory": self._get(scope, entry.id).model_dump()}
             evidence = self._evidence(scope, turn_id, request.message_ids)
             members = sorted(set(request.member_ids if "member_ids" in request.model_fields_set and request.action != "confirm"
                                  else (entry.member_ids if entry else [])))
@@ -229,7 +249,7 @@ class SocialMemory:
                                            "AND members=? AND status IN ('candidate','confirmed')",
                                            (scope, kind, json.dumps(members))):
                     existing = self._entry(row)
-                    if self._normalize(existing.content) == self._normalize(content):
+                    if existing.origin == request.origin and self._normalize(existing.content) == self._normalize(content):
                         entry = existing
                         evidence = list({item.message_id: item for item in [*existing.evidence, *evidence]}.values())
                         break
@@ -266,6 +286,10 @@ class SocialMemory:
                                 "revision=revision+1,updated=?,expires=? WHERE id=?",
                                 (kind, content, json.dumps(members), status, basis, now, expires, memory_id))
             self._save_evidence(memory_id, evidence)
+            if request.origin == "self" or set(FollowupUpdate.model_fields) & request.model_fields_set:
+                if kind not in {"topic", "pending"}:
+                    raise ValueError("follow-up intentions belong to topic or pending memories")
+                self.store.followups.update(memory_id, turn_id, request, own_intent=request.origin == "self")
             return {"memory": self._get(scope, memory_id).model_dump()}
 
     def _delete(self, entry: MemoryEntry) -> None:
@@ -275,6 +299,8 @@ class SocialMemory:
         self.db.execute("DELETE FROM memory_evidence WHERE memory_id=?", (entry.id,))
         self.db.execute("UPDATE memories SET content='',members='[]',status='deleted',basis='inference',"
                         "revision=revision+1,updated=?,expires=NULL WHERE id=?", (self.store.now(), entry.id))
+        self.db.execute("UPDATE memory_followups SET pending_question='',pending_thought='',motivation='',"
+                        "followup_state='dropped',state_reason='deleted' WHERE memory_id=?", (entry.id,))
 
     def list(self, scope: str, request: MemoryRequest, *, all_rows: bool = False) -> list[MemoryEntry]:
         self._expire(scope)
@@ -286,6 +312,8 @@ class SocialMemory:
             if request.memory_id is not None and item.id != request.memory_id:
                 continue
             if not request.include_inactive and item.status in {"deleted", "expired"}:
+                continue
+            if not request.include_inactive and item.origin == "self" and item.followup_state != "active":
                 continue
             if request.kind is not None and item.kind != request.kind:
                 continue
@@ -313,11 +341,15 @@ class SocialMemory:
             overlap += sum(word in item.content for word in set(chinese))
             score = (8 if set(item.member_ids) & authors else 0) + min(overlap, 6)
             score += 2 if item.kind in {"topic", "pending"} else 0
+            score += 12 if item.followup_state == "active" else 0
             return score, item.updated
         ranked = sorted((item for item in items if rank(item)[0] > 0), key=rank, reverse=True)
         records: list[dict[str, object]] = []
         for item in ranked:
-            record = item.model_dump(exclude={"evidence"})
+            record = item.model_dump(exclude={"evidence"}, exclude_defaults=True)
+            if item.followup_state != "active":
+                for field in ("pending_question", "pending_thought", "motivation"):
+                    record[field] = ""
             record["source_message_ids"] = [e.message_id for e in item.evidence]
             if len(json.dumps([*records, record], ensure_ascii=False)) > self.CONTEXT_CHARS - 500:
                 continue

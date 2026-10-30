@@ -220,7 +220,7 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
         db.execute("PRAGMA user_version=5")
     upgraded = SocialStore(root, now=social.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert upgraded.state(A.session_key)["next_seq"] == 2
         assert upgraded.db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()[0] == 0
     finally:

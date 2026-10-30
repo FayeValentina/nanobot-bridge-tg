@@ -506,7 +506,7 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     store.close()
     reopened = SocialStore(root)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert reopened.state(A.session_key)["read_through"] == 1
         row = reopened.db.execute("SELECT content,status,message_id,kind FROM actions").fetchone()
         assert tuple(row) == ("old text", "sent", 501, "text")

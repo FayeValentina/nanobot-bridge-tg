@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nanobot.channels.telegram.social.models import ConversationScope
 
-JUDGE_PROMPT_VERSION = "social-judge-v4"
+JUDGE_PROMPT_VERSION = "social-judge-v5"
 
 
 class JudgeDTO(BaseModel):
@@ -66,6 +66,17 @@ class JudgeParticipation(JudgeDTO):
     on_question: bool = False
 
 
+class JudgeFollowup(JudgeDTO):
+    id: str
+    content: str = Field(max_length=120)
+    pending_question: str = Field(max_length=160)
+    pending_thought: str = Field(max_length=160)
+    motivation: str = Field(max_length=80)
+    followup_state: Literal["active", "responded"]
+    confirmed_attempts: int = Field(ge=0, le=2)
+    responded_at: float | None = None
+
+
 class JudgeSnapshot(JudgeDTO):
     batch_id: str = Field(default_factory=lambda: uuid4().hex, min_length=1, max_length=64)
     scope: str = Field(min_length=1, max_length=160)
@@ -87,6 +98,7 @@ class JudgeSnapshot(JudgeDTO):
     participation: JudgeParticipation = Field(default_factory=JudgeParticipation)
     history_truncated: bool = False
     opportunity: str | None = Field(default=None, max_length=2000)
+    followups: tuple[JudgeFollowup, ...] = Field(default=(), max_length=4)
     quiet_due: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     total_due: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 

@@ -275,7 +275,7 @@ def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
     v2b.close()
     upgraded = SocialStore(root, now=v2b.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         state = upgraded.state(A.session_key)
         assert state["mode"] == "waiting" and not state["wait_infinite"]

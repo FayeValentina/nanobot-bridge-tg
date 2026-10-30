@@ -60,6 +60,10 @@ def capture_message_deliveries() -> Generator[set[tuple[str, str]], None, None]:
                 "Use artifact paths returned by generate_image here when delivering generated images."
             ),
         ),
+        followup_id=StringSchema(
+            "Optional stable social memory ID for a proactive follow-up question/share. "
+            "Parts in this delivery count once toward its two confirmed attempts. Omit for ordinary answers."
+        ),
         buttons=ArraySchema(
             ArraySchema(StringSchema("Button label")),
             description="Optional: inline keyboard buttons as list of rows, each row is list of button labels.",
@@ -160,6 +164,7 @@ class MessageTool(Tool):
         chat_id: str | None = None,
         message_id: str | None = None,
         media: list[str] | None = None,
+        followup_id: str | None = None,
         buttons: Any = None,
         **kwargs: Any,
     ) -> str:  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -238,6 +243,8 @@ class MessageTool(Tool):
             metadata["message_id"] = message_id
         if request_ctx is not None and request_ctx.turn_id is not None:
             metadata["_delivery_turn_id"] = request_ctx.turn_id
+        if followup_id is not None:
+            metadata["_social_followup_id"] = followup_id
         if media:
             metadata["_record_channel_delivery"] = True
 

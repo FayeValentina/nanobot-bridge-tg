@@ -1,6 +1,6 @@
 # Telegram 仿真群友迁移计划 V4：还原 qq-bridge 的主动交流机制
 
-> 2026-10-30，状态：**V4-A 已实现并发布，V4-B/C 尚未实施。实际行为与发布结果见 [V4-A 记录](V4A_IMPLEMENTATION.md)。**
+> 2026-10-30，状态：**V4-A 已发布，V4-B 已实现并进入检查/发布，V4-C 尚未实施。见 [V4-A](V4A_IMPLEMENTATION.md) 与 [V4-B](V4B_IMPLEMENTATION.md) 记录。**
 > 用户明确：下一步不进行 V2-C，优先还原 qq-bridge 的主动机制。**V4 是后续实施的最高优先级。**
 > V2-C 暂停作为独立批次推进；其主动调度/必要参与统计，以及 V2-E 中待追问/想法动机的必要部分并入 V4。
 > V3-A/B/C 和去哈希清理已经完成。制定计划时源码 HEAD 为 `ad1f75c1`，实际镜像 `6ae4ada0`、schema 11、`social-judge-v4`。
