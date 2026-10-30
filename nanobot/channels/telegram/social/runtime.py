@@ -59,7 +59,7 @@ SOCIAL_TOOLS = frozenset({"social_get_state", "social_read_messages", "social_ma
 SOCIAL_PROTOCOL_VERSION = 2
 SOCIAL_PROTOCOL = """You are a guest in this authorized group/topic. Participate selectively.
 Read the observed group messages as the current conversation and respond to relevant requests.
-An intermediary selected this batch using the current conversation. The judgement gives its
+For a member-message wake, an intermediary selected the batch using the conversation. Its judgement gives
 source messages and a short reason, not a command to speak. Verified mentions/replies refer to
 this Telegram bot account even if shared memory uses a different name.
 Only explicit publishing tools send messages. Your final text is internal and is never published.
