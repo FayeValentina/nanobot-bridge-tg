@@ -31,6 +31,7 @@ This file provides guidance to AI coding agents working with this repository.
 - Both modes use the ordinary session defaults for enabled tools, profile, skills, memory, archiving and commands. Global tool switches, workspace/sandbox rules and container permissions apply equally.
 - Keep the social role binding and per-conversation history. Social mode differs through message observation, coalescing, explicit public delivery, waking, waiting and sleeping.
 - Ordinary message tools must actually deliver text and attachments to social topics. Social-specific tools remain available in the shared registry; their message/scope/timer operations still require the relevant runtime data.
+- `social_send` takes exactly one of `text` (one message) or `parts` (the complete ordered list of 2–3 messages, including the first). Do not restore the ambiguous `[text, *parts]` behavior; see the deployed [multipart send fix](docs/SOCIAL_SEND_PARTS_FIX.md).
 - This owner request supersedes the earlier M0–M3 social permission/isolation design. See `docs/SHARED_TOOL_PERMISSIONS.md`; do not reinstate the retired limits while implementing M4/M5.
 
 ## Project Overview

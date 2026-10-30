@@ -40,4 +40,20 @@ parts 是完整的 2–3 条有序消息，包含首条；text 与 parts 互斥�
 单条 text 发送。均通过，每项两个模型调用，共 17,234 tokens；使用临时 SQLite 与替身发送，不向真实群发消息。
 验收脚本匹配 provider 的 reasoning_content 历史回传要求；该驱动修正不改变运行时 provider。
 
-完整发布及安装包验证在本批发布后补记。
+## 发布与安装包验证
+
+实际实例已更新到 `310011ce124368b46c4b5f520a7dfc965651fdf7`，schema 13，social-judge-v6。
+完整 release 通过后端 1147 项、provider/OAuth 155 项、前端 96 文件 / 1553 项、Ruff、
+WebUI lint/build 和 wheel/镜像冒烟、健康检查。
+
+安装包内重新执行以上三项实际模型验收，均通过；正常分条和错误纠正各只确认两次替身发送，
+单条只确认一次发送，每条均有独立原生 action/平台消息 ID。
+导入路径为 `/opt/venv/lib/python3.11/site-packages/`，无源码覆盖；共 6 次主模型调用、17,187 tokens。
+脚本与源端/安装报告保存在实例 `verification/social-send-parts/`，没有向真实群发探测消息。
+
+config.json 与发布前备份原始字节相同；131 条旧消息、5 条记忆、6 条证据、3 个 scope 的既有水位、
+8 份 Markdown 与 18 份 JSONL 对话正文按源值核对保留，SQLite 完整性和外键检查正常。
+运行 epoch/context、归档元数据、派生索引及 dream/heartbeat 登记仍按原启动逻辑刷新。
+容器 healthy，Telegram 已连接，端口仍为 8765 / 18790。
+上一镜像为 `2ceb736339f1a90b6f9aa420c15b0678966a96c8`，发布前整实例备份为
+`backups/1793371526866276960/`，回滚沿用原管线恢复配套镜像和数据/配置。
