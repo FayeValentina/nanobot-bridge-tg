@@ -112,11 +112,11 @@ def context(social, scope=A, *, turn="test-turn"):
     return ctx
 
 
-def telegram_update(*, chat=-1001, thread=42, seq=1, text="hello", reply=False, edited=False, user=123):
+def telegram_update(*, chat=-1001, thread=42, seq=1, text="hello", reply=False, edited=False, user=123, is_bot=False, timestamp=None):
     msg = {
-        "message_id": seq, "date": int(time.time()), "message_thread_id": thread,
+        "message_id": seq, "date": int(time.time() if timestamp is None else timestamp), "message_thread_id": thread,
         "chat": {"id": chat, "type": "supergroup", "title": "Group"},
-        "from": {"id": user, "is_bot": False, "first_name": "Member"}, "text": text,
+        "from": {"id": user, "is_bot": is_bot, "first_name": "Member"}, "text": text,
     }
     if reply:
         msg["reply_to_message"] = {

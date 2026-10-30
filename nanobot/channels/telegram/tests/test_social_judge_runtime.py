@@ -106,9 +106,39 @@ async def test_no_new_model_call_for_ineligible_events(social,excluded):
     else:
         social.config.scopes[0].paused=True
         social.configure(social.config)
-    await social.observe(message,directed=True)
+    await social.observe(message,directed=excluded!="bot")
     await due(social)
     provider.chat.assert_not_awaited()
+
+
+@pytest.mark.parametrize("text,reply,expected", [
+    ("早，@bot 今天吃什么？", False, True),
+    ("我觉得可以拿 token 拌饭。", True, True),
+    ("早，其他人今天吃什么？", False, False),
+])
+async def test_peer_bot_explicit_address_uses_existing_judge(social, text, reply, expected):
+    provider = decide(social)
+    tg = channel(social)
+    update = telegram_update(text=text, reply=reply, is_bot=True, user=456, timestamp=social.now())
+    assert await tg._observe_social(update)
+    await due(social)
+    if expected:
+        provider.chat.assert_awaited_once()
+        assert sent_snapshot(provider).messages[-1].mentions_bot
+        assert social.bus.inbound.qsize() == 1
+    else:
+        provider.chat.assert_not_awaited()
+        assert social.bus.inbound.empty()
+
+
+async def test_successive_explicit_peer_bot_calls_have_no_extra_gate(social):
+    provider = decide(social, "observe")
+    tg = channel(social)
+    for seq in (1, 2):
+        await tg._observe_social(telegram_update(seq=seq, text="@bot 你怎么看？", is_bot=True, user=456, timestamp=social.now()))
+        await due(social)
+    assert provider.chat.await_count == 2
+    assert social.bus.inbound.empty()  # V3 still decides; address never forces a public reply.
 
 
 async def test_continuous_messages_are_batched_with_a_fixed_total_cap(social):

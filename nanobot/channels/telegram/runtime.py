@@ -2095,7 +2095,7 @@ class TelegramChannel(BaseChannel):
             album_id=message.media_group_id,
             bot_username=bot_username, is_edit=update.edited_message is not None,
         )
-        await social.observe(observed, directed=bool(directed and not user.is_bot and update.edited_message is None))
+        await social.observe(observed, directed=bool(directed and update.edited_message is None))
         return True
 
     async def _ensure_bot_identity(self) -> tuple[int | None, str | None]:

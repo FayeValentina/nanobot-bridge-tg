@@ -477,7 +477,8 @@ class TelegramSocialRuntime:
         if "*" not in binding.observe_from and message.sender_id not in binding.observe_from:
             return
         self._persona(message.scope)
-        eligible = not (message.is_self or message.is_bot or message.is_edit or binding.paused) and 0 <= self.now() - message.timestamp < 120
+        eligible = not (message.is_self or message.is_edit or binding.paused
+                        or (message.is_bot and not directed)) and 0 <= self.now() - message.timestamp < 120
         _, new = self.store.observe(message, self.config.retention_messages,
                                       fresh=eligible, wait_relevant=False,
                                       judge_event=eligible, directed=directed,

@@ -146,7 +146,7 @@ async def test_directed_trigger_upgrades_keyword_without_another_job(social):
 
 async def test_plain_messages_and_other_bots_never_create_idle_model_loops(social):
     social.config.scopes[0].wake_on_messages = True
-    await social.observe(replace(observed(social), is_bot=True), directed=True)
+    await social.observe(replace(observed(social), is_bot=True), directed=False)
     social.config.scopes[0].wake_on_messages = False
     await social.observe(observed(social, 2), directed=False)
     for _ in range(3):
