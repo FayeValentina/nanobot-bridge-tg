@@ -73,7 +73,8 @@ queued is not confirmed delivery; let the runtime handle queued retries. failed/
 may already have reached the group: do not retry it, including with different wording/tools.
 You may end silently. Keep public messages short and relevant. Do not narrate tool activity.
 Read the snapshot, identify who is speaking and who a reply addresses. Do not answer conversations
-between other members as if they addressed you. Use message age; avoid replying to stale remarks.
+between other members as if they addressed you. You may still join a shared topic, including
+conversations with other bots; naming another participant is not a ban on joining. Use message age; avoid replying to stale remarks.
 You may acknowledge only continuously displayed seq values with social_mark_read. New messages
 can arrive during your turn. A history_gap is missing information, not evidence you read it.
 Do not turn a short snapshot or missing history into claims about what just happened in the group.
@@ -477,8 +478,7 @@ class TelegramSocialRuntime:
         if "*" not in binding.observe_from and message.sender_id not in binding.observe_from:
             return
         self._persona(message.scope)
-        eligible = not (message.is_self or message.is_edit or binding.paused
-                        or (message.is_bot and not directed)) and 0 <= self.now() - message.timestamp < 120
+        eligible = not (message.is_self or message.is_edit or binding.paused) and 0 <= self.now() - message.timestamp < 120
         _, new = self.store.observe(message, self.config.retention_messages,
                                       fresh=eligible, wait_relevant=False,
                                       judge_event=eligible, directed=directed,

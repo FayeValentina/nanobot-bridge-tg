@@ -45,7 +45,7 @@ CASES = (
     "idle_empty", "idle_pending_question", "idle_pending_thought", "old_story",
     "ordinary_statement", "short_reply", "no_reply", "two_unanswered", "explicit_end",
     "silence", "interest_search", "search_failed", "search_disabled", "restart_pending", "compacted_pending",
-    "chat_invitation", "unanswered_invitation", "peer_bot_call",
+    "chat_invitation", "unanswered_invitation", "peer_bot_call", "peer_bot_shared",
 )
 SCOPE = ConversationScope("telegram", -10001, 53)
 
@@ -160,6 +160,7 @@ def seed_attempt(runtime: TelegramSocialRuntime, memory_id: str, index: int) -> 
 
 async def evaluate_case(name: str, args: argparse.Namespace, config: Config, provider: MeasuredProvider) -> dict[str, Any]:
     case_started = time.monotonic()
+    peer_bot = name in {"peer_bot_call", "peer_bot_shared"}
     settings = TelegramSocialConfig.model_validate(json.loads(args.config.read_text())["channels"]["telegram"]["social"]).judge
     if settings.oauth_storage_dir is None and settings.provider == "openai_codex":
         settings.oauth_storage_dir = str(args.config.parent / "telegram-social/oauth")
@@ -210,6 +211,10 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                 input_text = "肥鱼，我想安静一会儿，这条也别回复了。"
             elif name == "peer_bot_call":
                 input_text = "早～@Deep_Fat_Fish_bot，今天白饭配什么？我怀疑你平时都是拿 token 拌饭的。"
+            elif name == "peer_bot_shared":
+                seed_message(runtime, "你们两个聊聊早餐吧。")
+                seed_message(runtime, "我选脆边荷包蛋，白龙你怎么看？", own=True)
+                input_text = "脆边必须有，流心也不能少，本龙再加片黄油吐司。你这白饭派可别拿显卡灰当椒盐。"
             elif name in {"chat_invitation", "unanswered_invitation"}:
                 seed_message(runtime, "我明天准备去郊游。")
                 seed_message(runtime, "带点水，出发前看一下交通。", own=True)
@@ -312,8 +317,8 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
             else:
                 if input_text is not None:
                     await runtime.observe(ObservedMessage(SCOPE, 11, 11,
-                        "peer-bot" if name == "peer_bot_call" else "123", "群友机器人" if name == "peer_bot_call" else "林林",
-                        clock(), input_text, is_bot=name == "peer_bot_call", bot_username="Deep_Fat_Fish_bot"),
+                        "peer-bot" if peer_bot else "123", "群友机器人" if peer_bot else "林林",
+                        clock(), input_text, is_bot=peer_bot, bot_username="Deep_Fat_Fish_bot"),
                         directed=name == "peer_bot_call")
                     clock.value += 2
                 else:
@@ -329,7 +334,7 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                 "no_exact_repeat": not any(text in publications[:index] for index, text in enumerate(publications))}
             if name in {"idle_pending_question", "ordinary_statement", "old_story"}:
                 checks["public_question"] = bool(publications) and question
-            elif name in {"chat_invitation", "unanswered_invitation", "peer_bot_call"}:
+            elif name in {"chat_invitation", "unanswered_invitation", "peer_bot_call", "peer_bot_shared"}:
                 checks["responded_to_chat_invitation"] = bool(publications)
             elif name in {"idle_pending_thought", "restart_pending", "compacted_pending"}:
                 checks["published_thought"] = bool(publications)

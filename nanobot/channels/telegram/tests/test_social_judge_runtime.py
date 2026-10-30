@@ -85,7 +85,7 @@ async def test_even_explicit_addresses_have_no_parallel_local_wake_path(social,d
     assert social.store.state(A.session_key)["read_through"]==0
 
 
-@pytest.mark.parametrize("excluded",["duplicate","edit","self","bot","old","future","paused"])
+@pytest.mark.parametrize("excluded",["duplicate","edit","self","old","future","paused"])
 async def test_no_new_model_call_for_ineligible_events(social,excluded):
     provider=decide(social,"observe")
     message=observed(social)
@@ -97,8 +97,6 @@ async def test_no_new_model_call_for_ineligible_events(social,excluded):
         message=replace(message,is_edit=True)
     elif excluded=="self":
         message=replace(message,is_self=True)
-    elif excluded=="bot":
-        message=replace(message,is_bot=True)
     elif excluded=="old":
         message=replace(message,timestamp=social.now()-121)
     elif excluded=="future":
@@ -106,29 +104,34 @@ async def test_no_new_model_call_for_ineligible_events(social,excluded):
     else:
         social.config.scopes[0].paused=True
         social.configure(social.config)
-    await social.observe(message,directed=excluded!="bot")
+    await social.observe(message,directed=True)
     await due(social)
     provider.chat.assert_not_awaited()
 
 
-@pytest.mark.parametrize("text,reply,expected", [
+@pytest.mark.parametrize("text,reply,directed", [
     ("早，@bot 今天吃什么？", False, True),
     ("我觉得可以拿 token 拌饭。", True, True),
     ("早，其他人今天吃什么？", False, False),
 ])
-async def test_peer_bot_explicit_address_uses_existing_judge(social, text, reply, expected):
+async def test_peer_bot_messages_use_existing_judge_without_address_gate(social, text, reply, directed):
     provider = decide(social)
     tg = channel(social)
     update = telegram_update(text=text, reply=reply, is_bot=True, user=456, timestamp=social.now())
     assert await tg._observe_social(update)
     await due(social)
-    if expected:
-        provider.chat.assert_awaited_once()
-        assert sent_snapshot(provider).messages[-1].mentions_bot
-        assert social.bus.inbound.qsize() == 1
-    else:
-        provider.chat.assert_not_awaited()
-        assert social.bus.inbound.empty()
+    provider.chat.assert_awaited_once()
+    assert sent_snapshot(provider).messages[-1].mentions_bot is directed
+    assert social.bus.inbound.qsize() == 1
+
+
+async def test_unaddressed_peer_bot_can_be_observed_without_forcing_a_reply(social):
+    provider = decide(social, "observe")
+    tg = channel(social)
+    await tg._observe_social(telegram_update(text="这个表情存个档，不用接话。", is_bot=True, user=456, timestamp=social.now()))
+    await due(social)
+    provider.chat.assert_awaited_once()
+    assert social.bus.inbound.empty()
 
 
 async def test_successive_explicit_peer_bot_calls_have_no_extra_gate(social):

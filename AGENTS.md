@@ -19,6 +19,12 @@ This file provides guidance to AI coding agents working with this repository.
 - Documentation-only changes, including recording this preference, do not need a runtime rebuild or deployment. Do not remove application permissions or data isolation merely to simplify the release workflow.
 - Current deployment instructions: [`docs/LOCAL_PIPELINE.md`](docs/LOCAL_PIPELINE.md). This owner-confirmed workflow supersedes older requirements in migration or deployment records to validate in a separate instance/group first.
 
+## Owner's bot conversation preference (confirmed 2026-10-31)
+
+- Other bots are group participants, including without an @mention. Send their authorized fresh messages through the same V3 semantic assessment as human messages; do not add a bot-only mention gate or special mutual-chat cap/cooldown.
+- Correct account identity is needed to understand the conversation, not to prohibit joining it. Naming another participant is not an automatic refusal when the target can naturally join an ongoing shared exchange or members invite bots to chat together. Still distinguish closed questions to other members from tasks addressed to this bot.
+- Keep V3 wake/observe, voluntary silence, self-message/duplicate/stale protections and existing publishing limits. See `docs/BOT_CONVERSATION_PARTICIPATION.md`; this supersedes the earlier explicit-address-only peer-bot stage.
+
 ## Owner's no-hash migration preference (confirmed 2026-10-30)
 
 - The owner explicitly rejects using hashes or fingerprints in this migration's implementation and acceptance checks. Do not introduce hash-based content comparisons, deduplication, configuration versions, input signatures, or validation reports.

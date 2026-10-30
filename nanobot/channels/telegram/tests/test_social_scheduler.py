@@ -145,6 +145,9 @@ async def test_directed_trigger_upgrades_keyword_without_another_job(social):
 
 
 async def test_plain_messages_and_other_bots_never_create_idle_model_loops(social):
+    from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
+
+    provider = decide(social, "observe")
     social.config.scopes[0].wake_on_messages = True
     await social.observe(replace(observed(social), is_bot=True), directed=False)
     social.config.scopes[0].wake_on_messages = False
@@ -154,6 +157,7 @@ async def test_plain_messages_and_other_bots_never_create_idle_model_loops(socia
         await social.run_due()
     assert social.bus.inbound.empty()
     assert social.store.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 0
+    provider.chat.assert_awaited_once()
 
 
 async def test_wait_tool_ends_agent_turn_without_an_extra_model_request(tmp_path, social):
@@ -212,7 +216,7 @@ async def test_wait_and_sleep_deadlines_are_one_shot(social, sleeping, on_timeou
     assert social.bus.inbound.qsize() == int(on_timeout)
 
 
-async def test_rearming_timeout_without_new_human_messages_does_not_poll_model(social):
+async def test_rearming_timeout_without_new_external_messages_does_not_poll_model(social):
     ctx = context(social)
     social.wait(ctx, 30, on_timeout=True)
     finish(social, ctx)
@@ -225,7 +229,7 @@ async def test_rearming_timeout_without_new_human_messages_does_not_poll_model(s
     social.admit_request(followup)
     social.wait(followup, 30, on_timeout=True)
     finish(social, followup)
-    await social.observe(replace(observed(social), is_bot=True), directed=False)
+    await social.observe(replace(observed(social), is_self=True, is_bot=True), directed=False)
     clock(social).advance(31)
     await social.run_due()
     assert social.bus.inbound.empty()
