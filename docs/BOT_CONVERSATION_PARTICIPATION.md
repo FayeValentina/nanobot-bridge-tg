@@ -40,3 +40,11 @@
 ## 部署
 
 需要构建/重启源码镜像，不需要手动同步 config、SOUL、USER、MEMORY 或 groupmate。沿用原构建、备份、健康检查和失败回滚。历史消息不重新伪造成新输入，已确认或 unknown 的发送不重试。本批未重复前端全量测试，因为没有 UI/前端接口变更。部署和安装包检查完成后追加。
+
+### 已完成发布
+
+- 运行源码版本 `6355b7b25520910241fc4323c9f18e3ae1e32b70`，原 build/deploy 和冒烟通过；容器 healthy，Telegram connected，检查时 ERROR=0。
+- 安装 wheel 中用原生 Telegram Update 验证：@当前 bot、@另一 bot、没有 @、直接回复都能进入 V3；V3 observe 时保持沉默。自身消息仍不触发，没有真实群发送。
+- 安装包内使用实例 provider 配置、持久 OAuth，再回放合成的 Luna target 场景，未被新消息 @仍返回 wake。真实账号仍是肥鱼；该测试不启动另一 Telegram 账号或修改实际角色。
+- 143 条消息、6 条记忆、7 条证据逐行保留，config/profile/角色文件原始字节与发布备份一致，数据库完整性和外键检查通过。
+- 验证输入与报告位于私有目录 `/home/ubuntu/.local/share/nanobot-bridge-tg-deploy/verification/bot-participation-20261031/`；包含首轮旧预期不匹配及修订后的反例结果。文档后续提交不需要重建运行代码。
