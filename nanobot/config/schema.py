@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from warnings import warn
 
 from pydantic import AliasChoices, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,10 +26,41 @@ class TelegramSocialProactiveConfig(Base):
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
-    interval_seconds: int = Field(default=1800, ge=60, le=86400)
+    interval_seconds: int | None = Field(default=None, ge=60, le=86400, exclude=True,
+                                       deprecated="Ignored since V4; use minIntervalSeconds/maxIntervalSeconds")
+    min_interval_seconds: int = Field(default=1800, ge=60, le=86400)
+    max_interval_seconds: int = Field(default=5400, ge=60, le=86400)
+    idle_seconds: int = Field(default=900, ge=0, le=86400)
+    probability: float = Field(default=0.3, ge=0, le=1, allow_inf_nan=False)
+    timezone: str = "UTC"
+    pending_thought_multiplier: float = Field(default=1.4, ge=0, le=10, allow_inf_nan=False)
+    recent_send_seconds: int = Field(default=1800, ge=0, le=86400)
+    recent_send_multiplier: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False)
+    night_multiplier: float = Field(default=0.3, ge=0, le=1, allow_inf_nan=False)
+    hourly_send_threshold: int = Field(default=5, ge=1, le=1000)
+    frequent_send_multiplier: float = Field(default=0.3, ge=0, le=1, allow_inf_nan=False)
     ttl_seconds: int = Field(default=120, ge=30, le=600)
     context_max_age_seconds: int = Field(default=1800, ge=60, le=86400)
     require_context: bool = True
+
+    @field_validator("interval_seconds")
+    @classmethod
+    def retire_fixed_interval(cls, value: int | None) -> None:
+        if value is not None:
+            warn("proactive.intervalSeconds is ignored since V4; use minIntervalSeconds/maxIntervalSeconds",
+                 FutureWarning, stacklevel=2)
+        return None
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        return TelegramSocialQuietHoursConfig.validate_timezone(value)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> TelegramSocialProactiveConfig:
+        if self.min_interval_seconds > self.max_interval_seconds:
+            raise ValueError("minIntervalSeconds <= maxIntervalSeconds is required")
+        return self
 
 
 class TelegramSocialQuietHoursConfig(Base):

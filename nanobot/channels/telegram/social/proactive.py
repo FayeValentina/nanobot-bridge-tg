@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import random
+from collections.abc import Callable
 from datetime import datetime
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import TypeAdapter
-
-from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
+from nanobot.channels.telegram.social.memory import SocialMemory
 from nanobot.channels.telegram.social.models import ConversationScope, ProactiveCandidate
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import TelegramSocialConfig, TelegramSocialScopeConfig
@@ -25,54 +26,76 @@ def is_quiet(binding: TelegramSocialScopeConfig, now: float) -> bool:
 
 
 class SocialProactive:
-    def __init__(self, store: SocialStore, memory: SocialMemory) -> None:
+    def __init__(self, store: SocialStore, memory: SocialMemory, *,
+                 random_value: Callable[[], float] = random.random) -> None:
         self.store = store
         self.memory = memory
         self.db = store.db
+        self.random_value = random_value
+
+    def _next_check(self, binding: TelegramSocialScopeConfig) -> float:
+        policy = binding.proactive
+        return self.store.now() + policy.min_interval_seconds + self.random_value() * (
+            policy.max_interval_seconds - policy.min_interval_seconds)
 
     def sync(self, scope: ConversationScope, binding: TelegramSocialScopeConfig | None) -> None:
         key = scope.session_key
         version = self.store.state(key)["version"]
         enabled = binding is not None and binding.proactive.enabled and not binding.paused
         row = self.db.execute("SELECT * FROM proactive_state WHERE scope=?", (key,)).fetchone()
-        due = self.store.now() + binding.proactive.interval_seconds if enabled and binding is not None else None
         if row is not None and row["version"] == version and (row["next_check"] is not None) == enabled:
             return
+        due = self._next_check(binding) if enabled and binding is not None else None
         with self.db:
-            self.db.execute("INSERT INTO proactive_state(scope,version,next_check,decision) VALUES(?,?,?,?) "
+            self.db.execute("INSERT INTO proactive_state(scope,version,next_check,decision,tracked_since) VALUES(?,?,?,?,?) "
                             "ON CONFLICT(scope) DO UPDATE SET version=excluded.version,next_check=excluded.next_check,"
-                            "decision=excluded.decision", (key, version, due, "waiting" if enabled else "disabled"))
+                            "decision=excluded.decision", (key, version, due, "waiting" if enabled else "disabled", self.store.now()))
 
     def status(self, key: str) -> dict[str, object]:
-        row = self.db.execute("SELECT next_check,last_check,decision FROM proactive_state WHERE scope=?", (key,)).fetchone()
-        return dict(row) if row is not None else {"next_check": None, "last_check": None, "decision": "disabled"}
+        row = self.db.execute("SELECT next_check,last_check,decision,opportunity_seq,probability,sample,selected,metrics,stopped "
+                              "FROM proactive_state WHERE scope=?", (key,)).fetchone()
+        result: dict[str, object] = dict(row) if row is not None else {"next_check": None, "last_check": None, "decision": "disabled"}
+        if row is not None:
+            result["metrics"] = json.loads(row["metrics"])
+            result["retired_config"] = ["intervalSeconds"]
+            result["requireContext_applies_to"] = "legacy source candidates only"
+            wake = self.db.execute("SELECT id,status,turn_id,proactive_source FROM wakes WHERE scope=? AND reason='proactive' "
+                                   "ORDER BY created DESC LIMIT 1", (key,)).fetchone()
+            if wake is not None:
+                result["last_opportunity"] = {
+                    "wake_id": wake["id"], "main_status": wake["status"], "turn_id": wake["turn_id"],
+                    "source": json.loads(wake["proactive_source"]),
+                    "sends": [dict(item) for item in self.db.execute(
+                        "SELECT id,status,message_id FROM actions WHERE scope=? AND turn_id=?", (key, wake["turn_id"]))],
+                    "message_deliveries": [dict(item) for item in self.db.execute(
+                        "SELECT id,status,message_ids FROM message_deliveries WHERE scope=? AND turn_id=?", (key, wake["turn_id"]))],
+                }
+        return result
 
-    def _candidate(self, key: str, binding: TelegramSocialScopeConfig, versions: dict[str, int], last_seq: int) -> ProactiveCandidate | None:
-        now = self.store.now()
+    def _deferred(self, key: str) -> bool:
         state = self.store.state(key)
-        with self.db:
-            memories = self.memory.list(key, MemoryRequest(action="list"), all_rows=True)
-        active = {entry.id for entry in memories}
-        for memory_id in list(versions):
-            if memory_id not in active:
-                del versions[memory_id]
-        ideas = sorted((entry for entry in memories if entry.kind in {"pending", "topic"}
-                        and versions.get(entry.id, 0) < entry.revision),
-                       key=lambda entry: (entry.kind == "pending", entry.updated), reverse=True)
-        if ideas:
-            entry = ideas[0]
-            return ProactiveCandidate(kind="memory", memory_id=entry.id, revision=entry.revision,
-                                      context=entry.content[:1000],
-                                      seq=state["event_seq"], expires_at=min(now + binding.proactive.ttl_seconds, entry.expires or float("inf")))
-        seq = state["event_seq"]
-        if seq > max(last_seq, state["read_through"], self.store.judge_through(key)):
-            row = self.db.execute("SELECT at FROM messages WHERE scope=? AND seq=?", (key, seq)).fetchone()
-            if row is not None and 0 <= now - float(row[0]) < binding.proactive.context_max_age_seconds:
-                return ProactiveCandidate(kind="unread", seq=seq, expires_at=min(
-                    now + binding.proactive.ttl_seconds, float(row[0]) + binding.proactive.context_max_age_seconds))
-        if not binding.proactive.require_context:
-            return ProactiveCandidate(kind="configured", seq=seq, expires_at=now + binding.proactive.ttl_seconds)
-        return None
+        return (state["mode"] in {"waiting", "paused"}
+                or self.db.execute("SELECT 1 FROM dialogue_waits WHERE scope=? AND purpose<>'sleep'", (key,)).fetchone() is not None
+                or (state["wake_config"] != "{}" and state["mode"] == "sleeping"))
+
+    def _participation(self, key: str) -> dict[str, object]:
+        """Only confirmed public message IDs count, including the ordinary message tool."""
+        now = self.store.now()
+        rows = self.db.execute("SELECT m.message_id,MAX(m.at) AS at,COALESCE(a.group_id,d.id,CAST(m.message_id AS TEXT)) AS send_group "
+                              "FROM messages m LEFT JOIN actions a ON a.scope=m.scope AND a.message_id=m.message_id AND a.status='sent' "
+                              "LEFT JOIN message_deliveries d ON d.scope=m.scope AND d.status='sent' "
+                              "AND m.message_id IN (SELECT value FROM json_each(d.message_ids)) "
+                              "WHERE m.scope=? AND m.is_self=1 GROUP BY m.message_id", (key,)).fetchall()
+        recent = [row for row in rows if now - 3600 < float(row["at"]) <= now]
+        tracked = self.db.execute("SELECT tracked_since FROM proactive_state WHERE scope=?", (key,)).fetchone()[0]
+        first = self.db.execute("SELECT seq,at FROM messages WHERE scope=? ORDER BY seq LIMIT 1", (key,)).fetchone()
+        coverage = float(tracked)
+        if first is not None and first["seq"] > 1:
+            coverage = max(coverage, float(first["at"]))
+        last = max((float(row["at"]) for row in rows), default=None)
+        return {"confirmed_messages_hour": len(recent), "confirmed_groups_hour": len({row["send_group"] for row in recent}),
+                "last_confirmed_send": last, "history_complete": coverage <= now - 3600,
+                "coverage_since": coverage}
 
     def valid(self, key: str, binding: TelegramSocialScopeConfig | None, candidate: ProactiveCandidate,
               *, for_send: bool = False) -> str | None:
@@ -81,8 +104,9 @@ class SocialProactive:
             return "disabled"
         if is_quiet(binding, now):
             return "quiet_hours"
-        mode = self.store.state(key)["mode"]
-        if mode == "paused" or (not for_send and mode in {"sleeping", "waiting"}):
+        if self.db.execute("SELECT stopped FROM proactive_state WHERE scope=?", (key,)).fetchone()[0]:
+            return "stopped"
+        if self.store.state(key)["mode"] == "paused" or (not for_send and self._deferred(key)):
             return "deferred"
         if candidate.expires_at <= now:
             return "expired"
@@ -96,6 +120,13 @@ class SocialProactive:
             row = self.db.execute("SELECT at FROM messages WHERE scope=? AND seq=?", (key, candidate.seq)).fetchone()
             if row is None or (not for_send and state["read_through"] >= candidate.seq) or not 0 <= now - float(row[0]) < binding.proactive.context_max_age_seconds:
                 return "context_expired"
+        elif candidate.kind == "idle":
+            if not for_send:
+                state = self.db.execute("SELECT last_member_at FROM scopes WHERE key=?", (key,)).fetchone()
+                if state[0] is not None and now - float(state[0]) < binding.proactive.idle_seconds:
+                    return "member_active"
+                if self.db.execute("SELECT 1 FROM judge_state WHERE scope=? AND (pending_due IS NOT NULL OR inflight=1)", (key,)).fetchone():
+                    return "conversation_arrived"
         elif binding.proactive.require_context:
             return "context_required"
         return None
@@ -105,38 +136,68 @@ class SocialProactive:
         row = self.db.execute("SELECT * FROM proactive_state WHERE scope=?", (key,)).fetchone()
         if row is None or row["next_check"] is None or float(row["next_check"]) > now:
             return
-        decision = "no_context"
-        versions = TypeAdapter(dict[str, int]).validate_json(row["memory_versions"])
+        decision = "probability_miss"
         candidate: ProactiveCandidate | None = None
+        policy = binding.proactive
+        probability: float | None = None
+        sample: float | None = None
+        metrics = self._participation(key)
+        hourly = metrics["confirmed_messages_hour"]
+        member_at = self.db.execute("SELECT last_member_at FROM scopes WHERE key=?", (key,)).fetchone()[0]
+        idle = now - float(member_at if member_at is not None else row["tracked_since"])
+        metrics.update({"last_member_at": member_at, "idle_seconds": idle, "base_probability": policy.probability})
         if now >= float(row["next_check"]) + binding.proactive.ttl_seconds:
             decision = "missed"
+        elif row["stopped"]:
+            decision = "stopped"
+        elif binding.paused or not policy.enabled:
+            decision = "disabled"
         elif is_quiet(binding, now):
             decision = "quiet_hours"
-        elif self.store.state(key)["mode"] in {"waiting", "sleeping", "paused"}:
+        elif self._deferred(key):
             decision = "deferred"
         elif self.db.execute("SELECT 1 FROM wakes WHERE scope=? AND status IN ('scheduled','queued','running') AND expires>?", (key, now)).fetchone():
             decision = "busy"
         elif self.db.execute("SELECT 1 FROM judge_state WHERE scope=? AND (pending_due IS NOT NULL OR inflight=1)", (key,)).fetchone():
             decision = "busy"
-        elif self.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_sends_per_hour:
+        elif self.store.state(key)["mode"] == "active":
+            decision = "busy"
+        elif idle < policy.idle_seconds:
+            decision = "member_active"
+        elif (self.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_sends_per_hour
+              or (isinstance(hourly, int) and hourly >= config.max_sends_per_hour)):
             decision = "send_budget"
         elif self.db.execute("SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_requests_per_hour:
             decision = "request_budget"
         else:
-            candidate = self._candidate(key, binding, versions, int(row["last_seq"]))
-            if candidate is not None:
+            # V4-B adds pendingThought/motivation and its attempt eligibility. Legacy
+            # pending content alone is not proof of an unspoken, still eligible thought.
+            metrics["pending_thought_available"] = False
+            probability = policy.probability
+            last = metrics["last_confirmed_send"]
+            if isinstance(last, (float, int)) and now - last < policy.recent_send_seconds:
+                probability *= policy.recent_send_multiplier
+            local = datetime.fromtimestamp(now, ZoneInfo(policy.timezone))
+            if local.hour >= 23 or local.hour < 8:
+                probability *= policy.night_multiplier
+            if isinstance(hourly, int) and hourly >= policy.hourly_send_threshold:
+                probability *= policy.frequent_send_multiplier
+            sample = self.random_value()
+            if sample < probability:
                 decision = "scheduled"
+                candidate = ProactiveCandidate(kind="idle", seq=0, expires_at=now + policy.ttl_seconds,
+                                               opportunity_id=int(row["opportunity_seq"]) + 1)
         with self.db:
+            self.db.execute("UPDATE proactive_state SET next_check=?,last_check=?,decision=?,opportunity_seq=opportunity_seq+1,"
+                            "probability=?,sample=?,selected=?,metrics=? WHERE scope=?",
+                            (self._next_check(binding), now, decision, probability, sample,
+                             int(candidate is not None) if sample is not None else None, json.dumps(metrics), key))
             if candidate is not None:
-                if candidate.memory_id is not None and candidate.revision is not None:
-                    versions[candidate.memory_id] = candidate.revision
-            self.db.execute("UPDATE proactive_state SET next_check=?,last_check=?,decision=?,last_seq=?,memory_versions=? WHERE scope=?",
-                            (now + binding.proactive.interval_seconds, now, decision,
-                             max(int(row["last_seq"]), self.store.state(key)["event_seq"]) if candidate is not None else int(row["last_seq"]),
-                             json.dumps(versions), key))
-            if candidate is not None:
-                self.store.queue_judgement(key, candidate.seq, delay=0, maximum=config.dynamic_wait.max_seconds,
-                                           opportunity=candidate.model_dump_json())
+                # A configured timer event has no source member message or read credit.
+                self.db.execute("INSERT INTO wakes(id,scope,version,trigger_seq,source_seq,status,created,expires,due,reason,proactive_source) "
+                                "VALUES(?,?,?,0,0,'scheduled',?,?,?,'proactive',?)",
+                                (uuid4().hex, key, self.store.state(key)["version"], now, candidate.expires_at,
+                                 now, candidate.model_dump_json()))
 
     def cancel_invalid(self, bindings: dict[str, TelegramSocialScopeConfig]) -> None:
         for row in self.db.execute("SELECT id,scope,proactive_source,status FROM wakes WHERE reason='proactive' "

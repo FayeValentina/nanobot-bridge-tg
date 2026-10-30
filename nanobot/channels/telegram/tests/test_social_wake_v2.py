@@ -22,6 +22,7 @@ from nanobot.channels.telegram.tests.test_social_scheduler import (
     context,
     finish,
     observed,
+    remove_v4_columns,
     social,
 )
 from nanobot.config.schema import TelegramSocialConfig, TelegramSocialSleepInterruptConfig
@@ -256,6 +257,7 @@ def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
     db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
     db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
     db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
+    remove_v4_columns(db)
     db.executescript("""
         CREATE TABLE dialogue_waits_v7 (
             scope TEXT PRIMARY KEY REFERENCES scopes(key), purpose TEXT NOT NULL,
@@ -273,7 +275,7 @@ def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
     v2b.close()
     upgraded = SocialStore(root, now=v2b.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 12
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         state = upgraded.state(A.session_key)
         assert state["mode"] == "waiting" and not state["wait_infinite"]

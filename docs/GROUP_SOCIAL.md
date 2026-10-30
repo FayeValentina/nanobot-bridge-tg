@@ -12,7 +12,7 @@
   "roleId": "groupmate",
   "enabled": true,
   "nicknames": ["肥鱼", "肥魚"],
-  "proactive": {"enabled": true, "intervalSeconds": 1800},
+  "proactive": {"enabled": true, "minIntervalSeconds": 1800, "maxIntervalSeconds": 5400, "idleSeconds": 900, "probability": 0.3, "timezone": "Asia/Tokyo"},
   "quietHours": {"enabled": false}
 }
 ```

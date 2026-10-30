@@ -45,7 +45,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -289,6 +289,20 @@ class SocialStore:
                 self.db.execute("PRAGMA user_version=10")
         if version < 11:
             self._upgrade_without_hashes()
+        if version < 12:
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                self.db.execute("ALTER TABLE scopes ADD COLUMN last_member_at REAL")
+                self.db.execute("UPDATE scopes SET last_member_at=(SELECT last_at FROM dialogue_state WHERE scope=scopes.key)")
+                for column, definition in {
+                    "opportunity_seq": "INTEGER NOT NULL DEFAULT 0",
+                    "probability": "REAL", "sample": "REAL", "selected": "INTEGER",
+                    "metrics": "TEXT NOT NULL DEFAULT '{}'",
+                    "tracked_since": "REAL", "stopped": "INTEGER NOT NULL DEFAULT 0",
+                }.items():
+                    self.db.execute(f"ALTER TABLE proactive_state ADD COLUMN {column} {definition}")
+                self.db.execute("UPDATE proactive_state SET tracked_since=?,next_check=NULL", (self.now(),))
+                self.db.execute("PRAGMA user_version=12")
         self.closed = False
         path.chmod(0o600)
 
@@ -683,6 +697,9 @@ class SocialStore:
             self.db.execute("UPDATE scopes SET next_seq=next_seq+1 WHERE key=?", (key,))
             if not msg.is_self and not msg.is_bot:
                 self.db.execute("UPDATE scopes SET event_seq=? WHERE key=?", (seq, key))
+                if not msg.is_edit and 0 <= self.now() - msg.timestamp < 120:
+                    self.db.execute("UPDATE scopes SET last_member_at=MAX(COALESCE(last_member_at,?),?) WHERE key=?",
+                                    (msg.timestamp, msg.timestamp, key))
             self.db.execute(
                 "INSERT INTO messages(scope,seq,update_id,message_id,sender_id,display_name,at,text,"
                 "reply_to,media,is_self,media_refs,reply_context,album_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -947,6 +964,10 @@ class SocialStore:
             # no model claimed these reservations before the restart.
             for opportunity in self.db.execute("SELECT * FROM wakes WHERE reason='proactive' AND status='queued'").fetchall():
                 self._refund_unclaimed_opportunity(opportunity)
+            # An idle opportunity already claimed by the main model is consumed.
+            # Recover only unclaimed events, never ask again after a silent/interrupted run.
+            self.db.execute("UPDATE wakes SET status='cancelled' WHERE reason='proactive' AND status='running' "
+                            "AND json_extract(proactive_source,'$.kind')='idle'")
             # A durable wait decision is already the end of that run, even if
             # shutdown happened before the runner's completion hook.
             self.db.execute("UPDATE wakes SET status='completed' WHERE status='running' AND scope IN "

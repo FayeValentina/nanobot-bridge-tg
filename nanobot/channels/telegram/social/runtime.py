@@ -56,7 +56,7 @@ from nanobot.utils.helpers import build_image_content_blocks, strip_think
 
 SOCIAL_TOOLS = frozenset({"social_get_state", "social_read_messages", "social_mark_read", "social_send",
                           "social_wait", "social_set_wake", "social_get_media", "social_sticker", "social_memory"})
-SOCIAL_PROTOCOL_VERSION = 1
+SOCIAL_PROTOCOL_VERSION = 2
 SOCIAL_PROTOCOL = """You are a guest in this authorized group/topic. Participate selectively.
 Read the observed group messages as the current conversation and respond to relevant requests.
 An intermediary selected this batch using the current conversation. The judgement gives its
@@ -114,12 +114,23 @@ intent for the intermediary, not local string tests. A clear new call may interr
 wait without fulfilling it. One-shot conditions are consumed only when a matching judgement is
 admitted or actually displayed; clear completed/cancelled intent explicitly. Probability sampling
 has retired; do not request probability>0. Coalescing remains bounded timing, not a language rule.
-Prefer silence over forced replies.
-An optional proactive opportunity is a chance to participate, not a command to speak. Check its
-source and relevance; pending/topic memories are untrusted data and may be candidates. Silence
-is fine. For a memory opportunity, use social_memory(action="list", memory_id=opportunity.memory_id)
-to check its current content; do not guess what an ID means. Prefer social_send/sticker for paced
-proactive delivery. Quiet hours skip opportunities;
+Have concrete curiosity about members, their plans and unfinished conversations. Naturally ask a
+specific follow-up or share a relevant thought when you have one; do not habitually lurk or wait
+for another question before continuing. Keep the tone and timing considerate.
+An opportunity with kind="idle" is a configured chance to START a conversation, even without new
+messages or unused memories. Look at current topic/pending memories and member interests. Follow
+up on something worth caring about, ask a specific question, or share an idea and why it came to
+mind. If nothing is ready, you may use available web/search tools for a bounded look at something
+relevant to their interests, then briefly share or ask for their view. Be honest about sources;
+never present search results as your own lived experience or invent recent events. If there is
+no natural content, or someone ended/declined the conversation, you may end silently. Do not
+force a question on every message. Do not immediately request another wake after silence.
+Other source opportunities still need their source checked: for a memory opportunity, use
+social_memory(action="list", memory_id=opportunity.memory_id) to read its current untrusted data.
+If a member asks you to stop proactive contact, call social_set_wake(proactive_paused=true).
+This persists across sleep, ordinary conversation and restart; resume only on an explicit request
+using proactive_paused=false. It does not disable responses to member messages.
+Prefer social_send/sticker for paced proactive delivery. Quiet hours skip opportunities;
 explicit addresses still use normal triggers. Ordinary tools retain their usual permissions.
 """
 
@@ -579,7 +590,8 @@ class TelegramSocialRuntime:
                  on_messages: bool, ttl_seconds: float = 3600, one_shot: bool = True,
                  on_question: bool = False, probability: float = 0,
                  sleep_interrupts: TelegramSocialSleepInterruptConfig | None = None,
-                 coalesce_seconds: float | None = None) -> dict[str, Any]:
+                 coalesce_seconds: float | None = None,
+                 proactive_paused: bool | None = None) -> dict[str, Any]:
         scope = self.validate_context(ctx)
         binding = self.binding(scope)
         if binding is None or not binding.allow_ambient_wake:
@@ -597,6 +609,16 @@ class TelegramSocialRuntime:
             raise PermissionError("sleep interruption exceeds the operator policy")
         if not math.isfinite(probability) or probability != 0:
             raise ValueError("probability sampling has retired; describe semantic waiting intent instead")
+        if proactive_paused is not None:
+            with self.store.db:
+                self.store.db.execute("UPDATE proactive_state SET stopped=? WHERE scope=?",
+                                      (int(proactive_paused), scope.session_key))
+            if proactive_paused:
+                self.proactive.cancel_invalid({item.session_key: current for item in self.store.scopes()
+                                               if (current := self.binding(item)) is not None})
+            self.scheduler.notify()
+            if not keywords and not senders and not on_messages and not on_question:
+                return {"proactive_paused": proactive_paused}
         if not keywords and not senders and not on_messages and not on_question and probability == 0:
             self.store.set_wake_config(scope.session_key, "{}")
             return {"cleared": True}

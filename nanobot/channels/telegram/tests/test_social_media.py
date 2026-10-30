@@ -31,6 +31,7 @@ from nanobot.channels.telegram.tests.test_social_runtime import (
     social,
     telegram_update,
 )
+from nanobot.channels.telegram.tests.test_social_scheduler import remove_v4_columns
 from nanobot.config.schema import TelegramSocialConfig
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
@@ -499,12 +500,13 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
     store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
     store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
+    remove_v4_columns(store.db)
     store.db.execute("PRAGMA user_version=2")
     store.db.commit()
     store.close()
     reopened = SocialStore(root)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 12
         assert reopened.state(A.session_key)["read_through"] == 1
         row = reopened.db.execute("SELECT content,status,message_id,kind FROM actions").fetchone()
         assert tuple(row) == ("old text", "sent", 501, "text")

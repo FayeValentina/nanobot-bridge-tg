@@ -14,7 +14,13 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, channel, message
-from nanobot.channels.telegram.tests.test_social_scheduler import clock, context, observed, social
+from nanobot.channels.telegram.tests.test_social_scheduler import (
+    clock,
+    context,
+    observed,
+    remove_v4_columns,
+    social,
+)
 from nanobot.config.schema import ToolsConfig
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
@@ -210,10 +216,11 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
         db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
         db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
         db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
+        remove_v4_columns(db)
         db.execute("PRAGMA user_version=5")
     upgraded = SocialStore(root, now=social.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 12
         assert upgraded.state(A.session_key)["next_seq"] == 2
         assert upgraded.db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()[0] == 0
     finally:

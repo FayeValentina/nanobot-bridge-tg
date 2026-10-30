@@ -111,12 +111,13 @@ class Snapshot(TypedDict):
 
 class ProactiveCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    kind: Literal["memory", "unread", "configured"]
+    kind: Literal["memory", "unread", "configured", "idle"]
     seq: int = Field(ge=0)
     expires_at: float
     memory_id: str | None = None
     revision: int | None = None
     context: str = Field(default="", max_length=1000)
+    opportunity_id: int | None = None
 
 
 class WakeJob(TypedDict):

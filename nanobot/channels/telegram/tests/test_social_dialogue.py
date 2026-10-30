@@ -20,6 +20,7 @@ from nanobot.channels.telegram.tests.test_social_scheduler import (
     context,
     finish,
     observed,
+    remove_v4_columns,
     social,
 )
 from nanobot.config.schema import TelegramSocialConfig
@@ -640,12 +641,13 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
     dialogue.store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
     dialogue.store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
     dialogue.store.db.execute("ALTER TABLE message_deliveries DROP COLUMN version")
+    remove_v4_columns(dialogue.store.db)
     dialogue.store.db.execute("PRAGMA user_version=6")
     dialogue.store.db.commit()
     dialogue.close()
     upgraded = SocialStore(root, now=dialogue.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 12
         assert upgraded.state(A.session_key)["read_through"] == 1
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         upgraded.db.execute("PRAGMA user_version=99")

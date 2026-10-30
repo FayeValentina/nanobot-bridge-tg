@@ -1,6 +1,7 @@
-"""M4b local opportunities, quiet hours and single-queue recovery acceptance."""
+"""V4-A idle opportunities, quiet hours and single-queue recovery acceptance."""
 
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import datetime
 from unittest.mock import AsyncMock
@@ -9,16 +10,22 @@ import pytest
 from pydantic import ValidationError
 
 from nanobot.agent.tools.context import RequestContext
+from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.manifest import SETUP_SPEC
 from nanobot.channels.telegram.runtime import TelegramConfig
 from nanobot.channels.telegram.social.memory import MemoryRequest
-from nanobot.channels.telegram.social.models import ConversationScope
+from nanobot.channels.telegram.social.models import ConversationScope, ProactiveCandidate
 from nanobot.channels.telegram.social.proactive import is_quiet
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
-from nanobot.channels.telegram.tests.test_social_scheduler import clock, observed, social
+from nanobot.channels.telegram.tests.test_social_scheduler import (
+    clock,
+    observed,
+    remove_v4_columns,
+    social,
+)
 from nanobot.config.schema import (
     TelegramSocialConfig,
     TelegramSocialProactiveConfig,
@@ -29,14 +36,158 @@ from nanobot.providers.base import LLMResponse, ToolCallRequest
 __all__ = ["social"]
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_schema_eleven_upgrade_preserves_source_values_and_rolls_back(social, monkeypatch, fail):
+    social.store.observe(observed(social), 500, fresh=True)
+    db = social.store.db
+    remove_v4_columns(db)
+    db.execute("PRAGMA user_version=11")
+    db.commit()
+    messages = [tuple(row) for row in db.execute("SELECT * FROM messages")]
+    scopes = [tuple(row) for row in db.execute("SELECT * FROM scopes")]
+    social.close()
+    if fail:
+        connect = sqlite3.connect
+
+        class InterruptedMigration(sqlite3.Connection):
+            def execute(self, sql, parameters=()):
+                if "ADD COLUMN sample" in sql:
+                    raise sqlite3.OperationalError("synthetic migration failure")
+                return super().execute(sql, parameters)
+
+        monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: connect(*args, **kwargs, factory=InterruptedMigration))
+        with pytest.raises(sqlite3.OperationalError, match="synthetic"):
+            SocialStore(social.root, now=social.now)
+        monkeypatch.setattr(sqlite3, "connect", connect)
+        with connect(social.root / "social.sqlite3") as original:
+            assert original.execute("PRAGMA user_version").fetchone()[0] == 11
+            assert "last_member_at" not in {row[1] for row in original.execute("PRAGMA table_info(scopes)")}
+            assert [tuple(row) for row in original.execute("SELECT * FROM scopes")] == scopes
+    restored = SocialStore(social.root, now=social.now)
+    try:
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert [tuple(row) for row in restored.db.execute("SELECT * FROM messages")] == messages
+        assert [tuple(row)[:-1] for row in restored.db.execute("SELECT * FROM scopes")] == scopes
+        assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        restored.close()
+
+
+@pytest.mark.parametrize("sample,interval", [(0, 1800), (1, 5400), (0.5, 3600)])
+def test_default_random_interval_boundaries_and_restart_preserves_deadline(social, sample, interval):
+    social.proactive.random_value = lambda: sample
+    binding = social.config.scopes[0]
+    binding.proactive.enabled = True
+    social.configure(social.config)
+    due = social.proactive.status(A.session_key)["next_check"]
+    assert due == social.now() + interval
+    social.close()
+    restored = TelegramSocialRuntime(social.config, social.root, social.bus, now=social.now)
+    try:
+        restored.proactive.random_value = lambda: pytest.fail("restart must not resample")
+        restored.configure(social.config)
+        assert restored.proactive.status(A.session_key)["next_check"] == due
+    finally:
+        restored.close()
+
+
+@pytest.mark.parametrize("elapsed,decision", [(899, "member_active"), (900, "scheduled")])
+async def test_idle_boundary_ignores_edits_duplicates_and_bot_sends(social, elapsed, decision):
+    binding = enable(social)
+    binding.proactive.idle_seconds = 900
+    social.configure(social.config)
+    original = observed(social)
+    social.store.observe(original, 500)
+    started = social.now()
+    clock(social).advance(600)
+    social.store.observe(replace(original, update_id=200, is_edit=True, timestamp=social.now(), text="edit"), 500)
+    social.store.observe(original, 500)
+    social.store.observe(observed(social, 2, is_self=True), 500)
+    assert social.store.db.execute("SELECT last_member_at FROM scopes WHERE key=?", (A.session_key,)).fetchone()[0] == started
+    social.store.db.execute("UPDATE proactive_state SET next_check=? WHERE scope=?", (started + elapsed, A.session_key))
+    social.store.db.commit()
+    await tick(social, elapsed - 600)
+    assert social.proactive.status(A.session_key)["decision"] == decision
+
+
+async def test_probability_modifiers_and_confirmed_message_groups(social):
+    binding = enable(social)
+    binding.proactive.probability = 0.3
+    # Noon UTC is midnight in this explicitly selected zone.
+    binding.proactive.timezone = "Etc/GMT-12"
+    social.configure(social.config)
+    receipt = DeliveryReceipt("sent", (501, 502, 503))
+    social.record_message_receipt(A, receipt, "ordinary", [(i, "confirmed") for i in receipt.message_ids])
+    for i in (601, 602):
+        action = social.store.reserve_send(A.session_key, social.store.state(A.session_key)["version"], f"part {i}", 60)
+        social.store.db.execute("UPDATE actions SET group_id='burst' WHERE id=?", (action,))
+        social.store.delivery(action, "sent", message_id=i)
+        social.store.observe(replace(observed(social, i, is_self=True), message_id=i), 500)
+    for status in ("queued", "failed", "unknown"):
+        social.record_message_receipt(A, DeliveryReceipt(status), "ordinary", [])
+    social.proactive.random_value = lambda: 0.02
+    await tick(social)
+    result = social.proactive.status(A.session_key)
+    assert result["probability"] == pytest.approx(0.3 * 0.5 * 0.3 * 0.3)
+    assert result["decision"] == "probability_miss"
+    assert result["metrics"]["confirmed_messages_hour"] == 5
+    assert result["metrics"]["confirmed_groups_hour"] == 2
+    assert result["metrics"]["history_complete"] is False
+    assert social.bus.inbound.empty()
+
+
+async def test_stop_proactive_contact_survives_sleep_clear_and_restart(social):
+    enable(social)
+    ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
+                         turn_id="ordinary", metadata={"message_thread_id": A.thread_id})
+    social.set_wake(ctx, keywords=[], senders=[], on_messages=False, proactive_paused=True)
+    social.store.set_wake_config(A.session_key, "{}")
+    social.store.db.execute("UPDATE scopes SET mode='sleeping' WHERE key=?", (A.session_key,))
+    social.store.db.commit()
+    await tick(social)
+    assert social.proactive.status(A.session_key)["decision"] == "stopped"
+    social.close()
+    restored = TelegramSocialRuntime(social.config, social.root, social.bus, now=social.now)
+    restored.proactive.random_value = lambda: 0
+    try:
+        assert restored.proactive.status(A.session_key)["stopped"] == 1
+        restored.set_wake(ctx, keywords=[], senders=[], on_messages=False, proactive_paused=False)
+        await tick(restored)
+        assert view(restored.bus.inbound.get_nowait())["wake_reason"] == "proactive"
+    finally:
+        restored.close()
+
+
+async def test_claimed_idle_is_consumed_after_restart(social):
+    enable(social)
+    await tick(social)
+    claim(social, social.bus.inbound.get_nowait())
+    old = social.proactive.status(A.session_key)
+    social.close()
+    restored = TelegramSocialRuntime(social.config, social.root, social.bus, now=social.now)
+    try:
+        await restored.recover()
+        assert restored.bus.inbound.empty()
+        assert restored.proactive.status(A.session_key)["next_check"] == old["next_check"]
+        assert restored.proactive.status(A.session_key)["sample"] == old["sample"]
+    finally:
+        await restored.scheduler.stop()
+        restored.close()
+
+
 def enable(social, *, require_context=True, quiet=None):
     clock(social).value = datetime.fromisoformat("2026-10-28T12:00:00+00:00").timestamp()
     binding = social.config.scopes[0]
-    binding.proactive = TelegramSocialProactiveConfig(enabled=True, interval_seconds=60, ttl_seconds=30,
+    binding.proactive = TelegramSocialProactiveConfig(enabled=True, ttl_seconds=30,
+                                                     min_interval_seconds=60, max_interval_seconds=60,
+                                                     idle_seconds=0, probability=1,
                                                      context_max_age_seconds=300, require_context=require_context)
+    social.proactive.random_value = lambda: 0
     if quiet is not None:
         binding.quiet_hours = TelegramSocialQuietHoursConfig.model_validate(quiet)
     social.configure(social.config)
+    social.store.db.execute("UPDATE proactive_state SET tracked_since=?", (social.now(),))
+    social.store.db.commit()
     return binding
 
 
@@ -77,18 +228,22 @@ async def test_upgrade_defaults_keep_ordinary_observation_zero_calls(social):
     assert not social.config.scopes[0].proactive.enabled
 
 
-async def test_no_candidate_means_no_model_request_and_next_deadline_persisted(social):
-    enable(social)
+async def test_probability_miss_means_zero_requests_and_next_deadline_persisted(social):
+    binding = enable(social)
+    binding.proactive.probability = 0
+    social.configure(social.config)
     await tick(social)
     assert social.bus.inbound.empty()
     status = social.proactive.status(A.session_key)
-    assert status["decision"] == "no_context"
+    assert status["decision"] == "probability_miss"
+    assert status["sample"] == 0
+    assert status["selected"] == 0
     assert status["next_check"] == social.now() + 60
     assert social.store.next_due() == status["next_check"]
     assert social.store.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 0
 
 
-async def test_recent_unread_is_considered_only_once_without_new_activity(social):
+async def test_consumed_messages_do_not_block_later_idle_opportunity(social):
     enable(social)
     decide(social)
     await social.observe(observed(social), directed=False)
@@ -98,16 +253,18 @@ async def test_recent_unread_is_considered_only_once_without_new_activity(social
     ctx = claim(social, inbound)
     social.store.finish(ctx.turn_id, "completed")
     await tick(social)
-    assert social.bus.inbound.empty()
-    assert social.proactive.status(A.session_key)["decision"] == "no_context"
+    assert view(social.bus.inbound.get_nowait())["opportunity"]["kind"] == "idle"
+    assert social.store.state(A.session_key)["read_through"] == 0
 
 
-async def test_explicit_context_free_opportunity_is_opt_in(social):
-    enable(social, require_context=False)
+async def test_context_free_opportunity_ignores_legacy_require_context(social):
+    enable(social)
     await tick(social)
     inbound = social.bus.inbound.get_nowait()
     assert view(inbound)["messages"] == []
-    assert view(inbound)["opportunity"]["kind"] == "configured"
+    assert view(inbound)["opportunity"]["kind"] == "idle"
+    assert view(inbound)["opportunity"]["seq"] == 0
+    assert view(inbound)["judgement"] == []
     assert social.store.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
 
 
@@ -121,43 +278,40 @@ async def test_opportunity_configuration_and_budget_are_per_conversation(social)
 
 
 @pytest.mark.parametrize("kind", ["pending", "topic"])
-async def test_memory_opportunity_is_bounded_by_source_revision(social, kind):
+async def test_idle_is_independent_of_memory_revision_and_middle_model(social, kind):
     enable(social)
     provider = decide(social)
-    memory_id = learn(social, kind=kind)
+    learn(social, kind=kind)
     await tick(social)
     inbound = social.bus.inbound.get_nowait()
-    assert view(inbound)["opportunity"]["memory_id"] == memory_id
-    assert view(inbound)["opportunity"]["revision"] == 1
-    snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
-    assert json.loads(snapshot["opportunity"])["context"] == "稍后继续讨论乌龙茶"
-    # Only a bounded summary accompanies the revision; full memory is still resolved separately.
-    assert "content" not in view(inbound)["opportunity"]
+    assert view(inbound)["opportunity"]["kind"] == "idle"
+    provider.chat.assert_not_awaited()
     ctx = claim(social, inbound)
     social.store.finish(ctx.turn_id, "completed")
     await tick(social)
-    assert social.bus.inbound.empty()
-    assert social.proactive.status(A.session_key)["decision"] == "no_context"
+    assert view(social.bus.inbound.get_nowait())["opportunity"]["opportunity_id"] == 2
 
 
-async def test_pending_has_priority_and_preference_is_not_an_idle_topic(social):
+async def test_legacy_pending_is_not_mistaken_for_eligible_pending_thought(social):
     enable(social)
     learn(social, kind="topic", content="旧话题")
-    pending = learn(social, kind="pending", content="待说想法", seq=2)
+    learn(social, kind="pending", content="待说想法", seq=2)
     await tick(social)
-    assert view(social.bus.inbound.get_nowait())["opportunity"]["memory_id"] == pending
+    assert view(social.bus.inbound.get_nowait())["opportunity"]["kind"] == "idle"
+    assert social.proactive.status(A.session_key)["metrics"]["pending_thought_available"] is False
 
 
-async def test_stale_or_read_context_does_not_create_an_opportunity(social):
+async def test_stale_and_read_context_do_not_prevent_idle_opportunity(social):
     enable(social)
     await social.observe(replace(observed(social), timestamp=social.now() - 301), directed=False)
     await tick(social)
-    assert social.bus.inbound.empty()
-    await social.observe(observed(social, 2), directed=False)
+    ctx = claim(social, social.bus.inbound.get_nowait())
+    social.store.finish(ctx.turn_id, "completed")
+    social.store.observe(observed(social, 2), 500)
     with social.store.db:
         social.store.db.execute("UPDATE scopes SET read_through=2 WHERE key=?", (A.session_key,))
     await tick(social)
-    assert social.bus.inbound.empty()
+    assert view(social.bus.inbound.get_nowait())["opportunity"]["kind"] == "idle"
 
 
 @pytest.mark.parametrize("instant,quiet", [
@@ -200,13 +354,13 @@ async def test_quiet_ending_does_not_burst_replay_missed_slots(social):
 
 
 @pytest.mark.parametrize("mode", ["waiting", "sleeping"])
-async def test_wait_and_sleep_are_not_interrupted_by_opportunities(social, mode):
+async def test_explicit_wait_is_deferred_but_ordinary_sleep_allows_idle(social, mode):
     enable(social, require_context=False)
     with social.store.db:
         social.store.db.execute("UPDATE scopes SET mode=?,wake_at=? WHERE key=?", (mode, social.now() + 300, A.session_key))
     await tick(social)
-    assert social.bus.inbound.empty()
-    assert social.proactive.status(A.session_key)["decision"] == "deferred"
+    assert social.bus.inbound.empty() is (mode == "waiting")
+    assert social.proactive.status(A.session_key)["decision"] == ("deferred" if mode == "waiting" else "scheduled")
 
 
 @pytest.mark.parametrize("change", ["delete", "clear", "correct", "expire"])
@@ -215,6 +369,11 @@ async def test_memory_changes_cancel_queued_opportunity_before_model_admission(s
     memory_id = learn(social)
     await tick(social)
     inbound = social.bus.inbound.get_nowait()
+    # Legacy memory-sourced events retain their source revision checks.
+    source = ProactiveCandidate(kind="memory", seq=1, memory_id=memory_id, revision=1,
+                                expires_at=social.now() + 30)
+    social.store.db.execute("UPDATE wakes SET proactive_source=? WHERE id=?", (source.model_dump_json(), inbound.metadata["_social_job"]))
+    social.store.db.commit()
     if change == "delete":
         social.memory.apply(A.session_key, "learning", MemoryRequest(action="delete", memory_id=memory_id))
     elif change == "clear":
@@ -282,12 +441,16 @@ async def test_busy_turn_does_not_get_a_second_proactive_run(social):
     assert social.proactive.status(A.session_key)["decision"] == "busy"
 
 
-@pytest.mark.parametrize("budget", ["requests", "send_attempts"])
+@pytest.mark.parametrize("budget", ["requests", "send_attempts", "confirmed"])
 async def test_known_budget_exhaustion_skips_model_calls(social, budget):
     enable(social, require_context=False)
     limit = social.config.max_requests_per_hour if budget == "requests" else social.config.max_sends_per_hour
-    with social.store.db:
-        social.store.db.executemany(f"INSERT INTO {budget} VALUES(?,?)", [(A.session_key, social.now())] * limit)
+    if budget == "confirmed":
+        ids = tuple(range(501, 501 + limit))
+        social.record_message_receipt(A, DeliveryReceipt("sent", ids), "ordinary", [(i, "sent") for i in ids])
+    else:
+        with social.store.db:
+            social.store.db.executemany(f"INSERT INTO {budget} VALUES(?,?)", [(A.session_key, social.now())] * limit)
     await tick(social)
     assert social.bus.inbound.empty()
     assert social.proactive.status(A.session_key)["decision"] == ("request_budget" if budget == "requests" else "send_budget")
@@ -405,7 +568,7 @@ async def test_expired_unclaimed_restart_refunds_unused_request_slot(social):
         restored.close()
 
 
-async def test_restart_does_not_replay_missed_slots_or_repeat_consumed_memory(social):
+async def test_restart_skips_missed_slots_then_allows_new_idle_without_new_memory(social):
     enable(social)
     learn(social)
     await tick(social)
@@ -415,14 +578,14 @@ async def test_restart_does_not_replay_missed_slots_or_repeat_consumed_memory(so
     social.close()
     current_clock.advance(3600)
     restored = TelegramSocialRuntime(social.config, social.root, social.bus, now=current_clock)
+    restored.proactive.random_value = lambda: 0
     try:
         await restored.recover()
         assert restored.bus.inbound.empty()
         assert restored.proactive.status(A.session_key)["decision"] == "missed"
         current_clock.advance(60)
         await restored.run_due()
-        assert restored.bus.inbound.empty()
-        assert restored.proactive.status(A.session_key)["decision"] == "no_context"
+        assert view(restored.bus.inbound.get_nowait())["opportunity"]["kind"] == "idle"
     finally:
         await restored.scheduler.stop()
         restored.close()
@@ -480,13 +643,19 @@ def test_scope_config_and_settings_json_contract_round_trip():
     }]}})
     public = config.model_dump(by_alias=True)
     assert TelegramConfig.model_validate(public) == config
-    assert public["social"]["scopes"][0]["proactive"]["intervalSeconds"] == 900
+    proactive = public["social"]["scopes"][0]["proactive"]
+    assert "intervalSeconds" not in proactive
+    assert proactive["minIntervalSeconds"] == 1800
+    assert proactive["maxIntervalSeconds"] == 5400
     assert TelegramSocialConfig.model_validate(SETUP_SPEC.fields["social"].default) == TelegramSocialConfig()
     assert SETUP_SPEC.fields["social"].kind == "json"
 
 
 @pytest.mark.parametrize("section", [
     {"proactive": {"intervalSeconds": 0}}, {"proactive": {"ttlSeconds": 1000}},
+    {"proactive": {"minIntervalSeconds": 5400, "maxIntervalSeconds": 1800}},
+    {"proactive": {"probability": -0.1}}, {"proactive": {"probability": 1.1}},
+    {"proactive": {"timezone": "Mars/Base"}},
     {"proactive": {"unknown": True}}, {"quietHours": {"timezone": "Mars/Base"}},
     {"quietHours": {"start": "24:00"}}, {"quietHours": {"start": "23:00", "end": "23:00"}},
 ])
@@ -509,12 +678,13 @@ def test_schema_four_upgrade_preserves_memory_watermarks_and_history(tmp_path):
     store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
     store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
     store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
+    remove_v4_columns(store.db)
     store.db.execute("PRAGMA user_version=4")
     store.db.commit()
     store.close()
     upgraded = SocialStore(root)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 12
         assert upgraded.db.execute("SELECT content FROM memories WHERE id='id'").fetchone()[0] == "remember me"
         assert upgraded.state(A.session_key)["read_through"] == 4
         assert upgraded.state(A.session_key)["seen_through"] == 5
@@ -537,8 +707,9 @@ async def test_group_wide_opportunities_use_discovered_topic_bindings_after_rest
         decide(restored)
         clock(social).advance(60)
         await restored.run_due()
-        inbound = bus.inbound.get_nowait()
-        assert inbound.session_key == target.session_key
+        inbounds = [bus.inbound.get_nowait() for _ in range(bus.inbound.qsize())]
+        assert {item.session_key for item in inbounds} == {A.session_key, target.session_key}
+        inbound = next(item for item in inbounds if item.session_key == target.session_key)
         assert view(inbound)["wake_reason"] == "judge"
         job = inbound.metadata["_social_job"]
         await restored.run_due()

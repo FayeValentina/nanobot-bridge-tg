@@ -35,6 +35,15 @@ class Clock:
         self.value += seconds
 
 
+def remove_v4_columns(db):
+    """Build an actual pre-V4 fixture before replaying its migrations."""
+    db.execute("ALTER TABLE scopes DROP COLUMN last_member_at")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(proactive_state)")}
+    for column in ("opportunity_seq", "probability", "sample", "selected", "metrics", "tracked_since", "stopped"):
+        if column in columns:
+            db.execute(f"ALTER TABLE proactive_state DROP COLUMN {column}")
+
+
 @pytest.fixture
 def social(tmp_path):
     root = tmp_path / "social"
@@ -630,7 +639,7 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
     db.close()
     store = SocialStore(root)
     try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 12
         state = store.state(A.session_key)
         assert (state["next_seq"], state["read_through"], state["seen_through"]) == (7, 4, 5)
         assert state["mode"] == "observing"

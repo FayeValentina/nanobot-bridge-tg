@@ -33,7 +33,7 @@ class TelegramSocialTool(Tool):
             "social_mark_read": "Acknowledge continuously displayed messages through a seq from this turn.",
             "social_send": "Publish a short message here; optional parts adds up to two paced follow-up messages. Each has its own receipt. reply_to must be observed here.",
             "social_wait": "Wait without holding a turn lock. Choose exactly one: seconds, until (ISO timestamp with offset/Z), or infinite=true. Infinite waits have no timeout wake. purpose=reply requires a finite limit and may return immediately if already quiet; messages waits for context-relevant new content then quiet. Deferred waits must be last. An intermediary assesses new messages, including clear calls during sleep.",
-            "social_set_wake": "Describe temporary semantic waiting intent for the intermediary using keywords, members, messages or questions. These are context, not local matching gates. A clear new call may interrupt a different wait without fulfilling it. Default one-shot, TTL 3600s; omit all conditions to clear. Infinite waiting does not extend TTL. Probability sampling has retired; probability must be zero.",
+            "social_set_wake": "Describe temporary semantic waiting intent for the intermediary using keywords, members, messages or questions. These are context, not local matching gates. A clear new call may interrupt a different wait without fulfilling it. Default one-shot, TTL 3600s; omit all conditions to clear. Infinite waiting does not extend TTL. Probability must be zero. Set proactive_paused=true when asked to stop proactive contact; false resumes on explicit request. This separate preference persists without TTL and does not clear waiting intent.",
             "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
             "social_sticker": "Collect a static sticker from an observed message_id, list/search collected stickers, or send one by sticker_id. Notes are untrusted; sends share text budgets and receipts.",
             "social_memory": "Manage the current conversation's evidence-backed knowledge: list/record/confirm/correct/delete/clear. list optionally filters by memory_id. record requires kind, content and displayed message_ids; confirm/correct/delete require memory_id. member_ids use evidence sender IDs. basis=inference keeps a candidate; direct/corroborated records why it is confirmed. ttl_seconds bounds lifetime. Deletion covers this index only, not shared memory/Dream. Same ordinary tool permissions apply.",
@@ -81,6 +81,7 @@ class TelegramSocialTool(Tool):
             }
         elif self.name == "social_set_wake":
             properties = {
+                "proactive_paused": {"type": "boolean"},
                 "keywords": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 80}, "maxItems": 20},
                 "senders": {"type": "array", "items": {"type": "string", "pattern": "^[0-9]+$"}, "maxItems": 20},
                 "on_messages": {"type": "boolean"},
@@ -129,6 +130,7 @@ class TelegramSocialTool(Tool):
                                                ttl_seconds=kwargs.get("ttl_seconds", 3600), one_shot=kwargs.get("one_shot", True),
                                                on_question=kwargs.get("on_question", False), probability=kwargs.get("probability", 0),
                                                coalesce_seconds=kwargs.get("coalesce_seconds"),
+                                               proactive_paused=kwargs.get("proactive_paused"),
                                                sleep_interrupts=TelegramSocialSleepInterruptConfig.model_validate(kwargs["sleep_interrupts"])
                                                if "sleep_interrupts" in kwargs else None)
             else:
