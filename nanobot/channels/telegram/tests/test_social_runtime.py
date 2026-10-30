@@ -810,7 +810,7 @@ async def test_group_wide_binding_observes_and_replies_in_each_actual_topic(tmp_
     assert sent["chat_id"] == A.chat_id
     assert sent.get("message_thread_id", 0) == thread
     system = str(loop.provider.chat_stream_with_retry.call_args.kwargs["messages"][0]["content"])
-    assert "An intermediary selected this batch using the current conversation" in system
+    assert "For a member-message wake, an intermediary selected the batch" in system
     tg._handle_message.assert_not_awaited()
     if target != A:
         assert social.store.state(A.session_key)["next_seq"] == 1
