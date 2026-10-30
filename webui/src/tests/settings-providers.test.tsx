@@ -82,7 +82,7 @@ describe("Settings providers", () => {
     expect(popup.location.href).toBe(authorization.authorization_url);
 
     expect(
-      screen.getByText(
+      await screen.findByText(
         "Complete sign-in in your browser. If nanobot does not connect automatically, paste the authorization code below.",
       ),
     ).toBeInTheDocument();
