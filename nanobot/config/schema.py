@@ -205,7 +205,7 @@ class TelegramSocialSleepObservationConfig(Base):
 
 
 class TelegramSocialJudgeConfig(Base):
-    """V3 intermediary component settings; V3-A does not activate message routing."""
+    """Intermediary for fresh member batches; idle timer opportunities use the main agent directly."""
 
     model_config = ConfigDict(extra="forbid")
     model: str = Field(default="openai-codex/gpt-6-luna", min_length=1, max_length=160)
@@ -235,7 +235,7 @@ class TelegramSocialJudgeConfig(Base):
 
 
 class TelegramSocialConfig(Base):
-    """Opt-in Telegram text social mode; runtime state is stored outside config."""
+    """Opt-in Telegram group/topic social mode; runtime state is stored outside config."""
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False

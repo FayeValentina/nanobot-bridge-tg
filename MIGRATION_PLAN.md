@@ -1,15 +1,15 @@
 # Telegram 仿真 AI 群友迁移计划
 
-> **2026-10-30 当前状态**：V3-A/B/C 已完成，实际镜像 `6ae4ada0`、schema 11、`social-judge-v4`。
-> 普通观察/显式等待已分开，直接纠正和行为调整不再被旧提问开关拦住；21 个真实模型合成样例及安装镜像 4 例通过。
-> 成本核对与体验见 [V3-C 记录](docs/V3C_IMPLEMENTATION.md)；后续已删除全部迁移自建哈希，见 [哈希清理记录](docs/NO_HASH_IMPLEMENTATION.md)，同组样例输入再降 6.4%。
-> **下一步优先 [V4：还原 qq-bridge 主动交流机制](docs/MIGRATION_V4_PLAN.md)，目前仅计划、尚未实施。** 不先进行 V2-C；主动调度、必要统计和待追问/想法动机并入 V4。其他 V2 后续在 V4 后重评，M5 继续暂缓。下方保留 M0–M4 历史范围。
+> **2026-10-31 当前状态**：V3 与 V4-A/B 已发布，实际镜像 `310011ce`、schema 13、`social-judge-v6`，包含图片判断和分条发送修复。
+> [V4-C](docs/V4C_IMPLEMENTATION.md) 已完成源端体验验收与提示收敛，等待发布和安装包核验后收尾。
+> V4 已包含必要主动统计/调度及待追问、想法动机，不另开 V2-C 重复开发；其余 V2-D/E/F 后续重评，M5 继续暂缓。
+> 本页下方保留 M0–M4 历史范围；当前完整行为与验收见 [V4 计划](docs/MIGRATION_V4_PLAN.md) 和各批记录。
 
 > 状态：M0–M3 首批及 M4a/M4b 已完成实现、验收和本机发布；M5 尚未开始。仿真在当前实际实例已按本人配置启用，新增主动机会/安静时段保留关闭默认值。GIF/WebM/TGS 本批提供缩略图或元信息降级，逐帧理解和动画发送按需后续扩展。当前部署以 [本机管线说明](docs/LOCAL_PIPELINE.md) 及实例 state.json 为准。
 > 目标：把 qq-bridge 的群友仿真、人格、多媒体及群内记忆能力移植到 nanobot，使用 Telegram 收发消息，保持 nanobot 的轻量与可扩展性。
 > 最近核对：2026-10-28，M4a 见 [群记忆说明](docs/M4A_IMPLEMENTATION.md)，M4b 见 [主动机会说明](docs/M4B_IMPLEMENTATION.md)。分批范围和验收见 [M4 实施计划](docs/M4_PLAN.md)。日常发布操作以 [本机管线说明](docs/LOCAL_PIPELINE.md) 为准。
 > 本机部署记录：M0–M2 已提交为 `798d172d` 并部署到独立验证实例（8766 / 18791），健康检查与安装包离线验证通过；该次部署未切换实际使用实例，详见 [部署记录](docs/M2_DEPLOYMENT.md)。用户后续明确：个人本机使用，无测试群前置要求，后续功能批次默认及时部署到实际使用实例（8765 / 18790），以 [本机迭代约定](docs/LOCAL_PIPELINE.md) 为准。
-> 当前实际实例：去哈希版本 `6ae4ada0`，schema 11，独立 Codex OAuth / `gpt-6-luna`。整群仿真、M4a/M4b、主动机会、共享工具权限保留；每小时 120 个主唤醒/60 次 social 发送尝试，quietHours 关闭。容器健康、数据与配置保留，见 [哈希清理记录](docs/NO_HASH_IMPLEMENTATION.md)。
+> 此前去哈希发布记录：`6ae4ada0`，schema 11，独立 Codex OAuth / `gpt-6-luna`。整群仿真、M4a/M4b、主动机会、共享工具权限保留；每小时 120 个主唤醒/60 次 social 发送尝试，quietHours 关闭，见 [哈希清理记录](docs/NO_HASH_IMPLEMENTATION.md)。当前版本以页首和实例 state.json 为准。
 
 > 2026-10-28 后续调整：支持按群启用所有话题的仿真，保持实际话题会话与发送路由，见 [按群启用说明](docs/GROUP_SOCIAL.md)。
 

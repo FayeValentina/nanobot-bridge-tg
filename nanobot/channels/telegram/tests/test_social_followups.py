@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,11 +10,14 @@ import pytest
 from pydantic import ValidationError
 from telegram.error import TimedOut
 
+from nanobot.agent.context import ContextBuilder, TranscriptInput
+from nanobot.agent.context_governance import ContextCompactionState, ContextGovernor
+from nanobot.agent.hook import AgentHookContext, AgentTurnHookContext
 from nanobot.agent.tools.context import RequestContext, ToolContext, request_context
 from nanobot.agent.tools.message import MessageTool
 from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import SocialDeliveryUnknownError
-from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
+from nanobot.channels.telegram.social.runtime import SOCIAL_PROTOCOL, TelegramSocialRuntime
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_proactive import enable, tick
@@ -92,6 +96,35 @@ def test_retired_intentions_do_not_reappear_in_context_or_probability(social, ac
         social.memory.apply(A.session_key, "retire", MemoryRequest(action=action, memory_id=item["id"] if action == "delete" else None))
     assert not social.store.followups.has_pending_thought(A.session_key)
     assert item["id"] not in social.memory.context(A.session_key)
+
+
+async def test_compaction_rebuild_keeps_trusted_protocol_and_injects_only_live_intentions(tmp_path, social):
+    item = own(social)
+    ctx = context(social)
+    persona, _ = social._persona(A)
+    builder = ContextBuilder(tmp_path)
+    raw, compaction = ContextCompactionState.from_transcript(
+        TranscriptInput(history=[], current_message="Synthetic idle observation"),
+        partial(builder.build_transcript, trusted_persona=persona, include_skills=False),
+        AsyncMock(return_value="Earlier chat summary"), None,
+    )
+    assert compaction is not None
+    raw[0]["content"] += "\nOBSOLETE_RUNTIME_MATERIAL"
+    rebuilt = ContextGovernor._summary_transcript(compaction, "Earlier chat summary")
+    rebuilt.append({"role": "user", "content": "Synthetic idle observation"})
+    assert SOCIAL_PROTOCOL in rebuilt[0]["content"]
+    assert "OBSOLETE_RUNTIME_MATERIAL" not in str(rebuilt)
+    hook = social.hook_factory(AgentTurnHookContext(session_key=A.session_key))
+    assert hook is not None
+    iteration = AgentHookContext(iteration=0, messages=rebuilt)
+    with request_context(ctx):
+        await hook.before_iteration(iteration)
+        assert item["pending_thought"] in str(iteration.messages)
+        edit(social, item["id"], followup_state="dropped", state_reason="not relevant now")
+        # Same hook/turn after a live update must withdraw the stale suggestion.
+        await hook.before_iteration(iteration)
+        assert item["pending_thought"] not in str(iteration.messages)
+        assert SOCIAL_PROTOCOL in iteration.messages[0]["content"]
 
 
 async def test_pending_thought_multiplier_is_first_and_clamped(social):

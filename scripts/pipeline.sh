@@ -40,6 +40,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_revisions.py \
       nanobot/channels/telegram/tests/evaluate_social_judge.py \
       nanobot/channels/telegram/tests/evaluate_social_followups.py \
+      nanobot/channels/telegram/tests/evaluate_social_v4.py \
       nanobot/channels/telegram/tests/conftest.py \
       nanobot/channels/telegram/tests/test_stream_pacing.py \
       nanobot/cli/gateway_runtime.py nanobot/webui/settings_system.py \
