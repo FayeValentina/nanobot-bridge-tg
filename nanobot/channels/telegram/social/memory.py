@@ -7,7 +7,6 @@ unchanged. Suppressions cover this index, not the agent's shared Dream archives.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sqlite3
@@ -95,10 +94,6 @@ class SocialMemory:
         return self.db.execute("SELECT 1 FROM memories WHERE scope=? LIMIT 1", (scope,)).fetchone() is not None
 
     @staticmethod
-    def _digest(value: str) -> str:
-        return hashlib.sha256(value.encode()).hexdigest()
-
-    @staticmethod
     def _normalize(value: str) -> str:
         return " ".join(value.casefold().split())
 
@@ -126,7 +121,7 @@ class SocialMemory:
         for row in self.db.execute("SELECT id FROM memories WHERE scope=? "
                                    "AND status IN ('candidate','confirmed') AND expires<=?", (scope, self.store.now())).fetchall():
             self.db.executemany("INSERT OR IGNORE INTO memory_suppressions VALUES(?,?,?)", [
-                (scope, "message", self._digest(str(item[0]))) for item in self.db.execute(
+                (scope, "message", str(item[0])) for item in self.db.execute(
                     "SELECT message_id FROM memory_evidence WHERE memory_id=?", (row[0],),
                 )
             ])
@@ -164,14 +159,14 @@ class SocialMemory:
         return result
 
     def _suppressed(self, scope: str, kind: str, value: str) -> bool:
-        return self.db.execute("SELECT 1 FROM memory_suppressions WHERE scope=? AND kind=? AND digest=?",
-                               (scope, kind, self._digest(value))).fetchone() is not None
+        return self.db.execute("SELECT 1 FROM memory_suppressions WHERE scope=? AND kind=? AND value=?",
+                               (scope, kind, value)).fetchone() is not None
 
     def _retire(self, entry: MemoryEntry) -> None:
         values = [("content", self._normalize(entry.content)),
                   *(("message", str(item.message_id)) for item in entry.evidence)]
         self.db.executemany("INSERT OR IGNORE INTO memory_suppressions VALUES(?,?,?)",
-                            [(entry.scope, kind, self._digest(value)) for kind, value in values])
+                            [(entry.scope, kind, value) for kind, value in values])
 
     def _save_evidence(self, memory_id: str, evidence: list[MemoryEvidence]) -> None:
         if len(evidence) > self.MAX_EVIDENCE:

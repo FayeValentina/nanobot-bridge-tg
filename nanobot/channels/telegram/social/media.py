@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import os
+import re
 import tempfile
 import warnings
 from pathlib import Path
@@ -21,10 +21,14 @@ class SocialMediaCache:
             raise ValueError("social media cache must not be a symlink")
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root = root.resolve()
+        for path in self.root.iterdir():
+            if re.fullmatch(r"[0-9a-f]{64}\.(original|jpg)", path.name) and path.is_file() and not path.is_symlink():
+                path.unlink()  # Disposable legacy entries; Telegram can supply them again.
 
     def _path(self, scope: ConversationScope, ref: MediaReference, suffix: str) -> Path:
-        digest = hashlib.sha256(f"{scope.session_key}\0{ref.file_id}\0{ref.unique_id}".encode()).hexdigest()
-        path = self.root / (digest + suffix)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", ref.unique_id):
+            raise ValueError("invalid Telegram media identity")
+        path = self.root / f"{scope.chat_id}_{scope.thread_id}_{ref.unique_id}{suffix}"
         if path.is_symlink() or path.resolve().parent != self.root:
             raise ValueError("invalid media cache path")
         return path

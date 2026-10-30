@@ -27,17 +27,23 @@ def decide(runtime, decision="wake", *, fulfills=False, error=False):
     provider = AsyncMock(spec=LLMProvider)
 
     async def respond(**kwargs):
-        snapshot = JudgeSnapshot.model_validate_json(kwargs["messages"][1]["content"])
+        snapshot = json.loads(kwargs["messages"][1]["content"])
         if error:
             return LLMResponse(content=None, finish_reason="error")
-        source = snapshot.new_seqs[-1:] or tuple(message.seq for message in snapshot.messages if not message.is_self)[-1:]
-        return LLMResponse(content=json.dumps({"decision":decision,"through_seq":snapshot.through_seq,
+        source = snapshot["new_seqs"][-1:] or tuple(message["seq"] for message in snapshot["messages"] if not message["is_self"])[-1:]
+        return LLMResponse(content=json.dumps({"decision":decision,"through_seq":snapshot["through_seq"],
                                               "source_seqs":list(source) if decision=="wake" else [],
                                               "reason":"canned integration outcome", "fulfills_intent":fulfills}))
 
     provider.chat.side_effect = respond
     runtime.judging.set_provider(provider, "integration-provider")
     return provider
+
+
+def sent_snapshot(provider):
+    data = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+    return JudgeSnapshot.model_validate_json(json.dumps({**data, "scope": A.session_key,
+        "version": "test", "expires": data["created"] + 120}))
 
 
 async def due(runtime, seconds=2):
@@ -107,7 +113,7 @@ async def test_continuous_messages_are_batched_with_a_fixed_total_cap(social):
             await due(social,1)
     await social.run_due()
     provider.chat.assert_awaited_once()
-    snapshot=JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    snapshot=sent_snapshot(provider)
     assert snapshot.new_seqs==(1,2,3,4)
     assert social.store.state(A.session_key)["next_seq"]==6
     assert social.bus.inbound.qsize()==1
@@ -124,7 +130,7 @@ async def test_topic_root_is_not_presented_as_a_member_reply(social, creator):
     quote["from"]={"id":creator,"is_bot":creator==999,"first_name":"Creator"}
     await tg._observe_social(Update.de_json(data,None))
     await due(social)
-    snapshot=JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    snapshot=sent_snapshot(provider)
     assert snapshot.messages[-1].reply.kind=="topic_root"
     assert not snapshot.messages[-1].mentions_bot
 
@@ -268,7 +274,7 @@ async def test_standing_preferences_do_not_invent_a_selective_wait(social, mode)
         context(social)
     await social.observe(observed(social, text="你别用繁体字"), directed=False)
     await due(social)
-    snapshot = JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    snapshot = sent_snapshot(provider)
     assert snapshot.intent is None
     assert snapshot.participation.on_question
     assert snapshot.participation.keywords == ("旅行",)
@@ -292,7 +298,7 @@ async def test_real_selective_wait_keeps_conditions_deadline_and_one_shot(social
     provider = decide(social, "observe")
     await social.observe(observed(social, text="今晚吃面"), directed=False)
     await due(social)
-    snapshot = JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    snapshot = sent_snapshot(provider)
     assert snapshot.intent.purpose == "messages"
     assert snapshot.intent.keywords == ("到家",) and snapshot.intent.senders == ("456",)
     assert snapshot.intent.infinite == infinite
@@ -325,7 +331,7 @@ async def test_expired_temporary_wait_does_not_fall_back_to_question_only_observ
     provider = decide(social)
     await social.observe(observed(social, text="你别用繁体字"), directed=False)
     await due(social)
-    snapshot = JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    snapshot = sent_snapshot(provider)
     assert snapshot.intent is None and snapshot.mode == "observing"
     assert social.bus.inbound.qsize() == 1
 
@@ -339,7 +345,7 @@ async def test_sleep_observation_is_not_a_selective_question_wait(social):
     provider = decide(social)
     await social.observe(observed(social, text="你别用繁体字"), directed=False)
     await due(social)
-    snapshot = JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    snapshot = sent_snapshot(provider)
     assert snapshot.intent.purpose == "observe"
     assert '"waiting_for_questions": false' in snapshot.intent.description
 

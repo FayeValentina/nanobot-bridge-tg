@@ -6,14 +6,17 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import sqlite3
 from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from nanobot.channels.telegram.social.judge import SocialJudge, make_judge_provider
+from nanobot.channels.telegram.social.judge import (
+    JudgeProviderSettings,
+    SocialJudge,
+    make_judge_provider,
+)
 from nanobot.channels.telegram.social.judge_models import (
     JudgeIntent,
     JudgeMessage,
@@ -35,7 +38,7 @@ if TYPE_CHECKING:
 
 class JudgeCoordinator:
     def __init__(self, runtime: TelegramSocialRuntime, provider: LLMProvider | None = None,
-                 provider_version: str = "") -> None:
+                 provider_version: JudgeProviderSettings = "") -> None:
         self.runtime = runtime
         self.store = runtime.store
         self.tasks: dict[str, asyncio.Task[None]] = {}
@@ -43,23 +46,24 @@ class JudgeCoordinator:
         self.provider_version = provider_version
         self.configure()
 
-    def configure(self) -> None:
+    def configure(self, *, provider_changed: bool = False) -> None:
         if self.provider is None:
             self.provider, self.provider_version = make_judge_provider(Config(), self.runtime.config.judge)
         self.judge = SocialJudge(self.store, self.runtime.config.judge, self.provider,
-                                 provider_version=self.provider_version)
+                                 provider_changed=provider_changed)
         # A restart can change the prompt as well as the provider. Reassess live
         # pending content with fresh facts instead of restoring an old wait intent.
         with self.store.db:
             self.store.db.execute("UPDATE judge_batches SET status='cancelled',error_code='provider_changed' "
-                                  "WHERE status IN ('pending','running') AND signature<>?", (self.judge.signature,))
+                                  "WHERE status IN ('pending','running') AND judge_revision<>?", (self.judge.revision,))
             self.store.db.execute("UPDATE judge_state SET batch_id=NULL,pending_due=? WHERE batch_id IN "
                                   "(SELECT id FROM judge_batches WHERE status='cancelled' AND error_code='provider_changed')",
                                   (self.runtime.now(),))
 
-    def set_provider(self, provider: LLMProvider, version: str) -> None:
+    def set_provider(self, provider: LLMProvider, version: JudgeProviderSettings) -> None:
+        changed = version != self.provider_version
         self.provider, self.provider_version = provider, version
-        self.configure()
+        self.configure(provider_changed=changed)
         self.runtime.scheduler.notify()
 
     def cancel(self) -> None:
@@ -129,7 +133,7 @@ class JudgeCoordinator:
         return JudgeMessage(seq=int(row["seq"]), message_id=int(row["message_id"]), sender_id=str(row["sender_id"]),
                             name=str(row["display_name"]), timestamp=float(row["at"]), text=text,
                             is_self=bool(row["is_self"]), mentions_bot=bool(facts.get("directed")), reply=reply,
-                            media=tuple(json.loads(row["media"])), content_hash=hashlib.sha256(text.encode()).hexdigest())
+                            media=tuple(json.loads(row["media"])), revision=int(row["revision"]))
 
     def _restore(self, batch: str) -> JudgeSnapshot:
         row = self.store.db.execute("SELECT input_meta FROM judge_batches WHERE id=?", (batch,)).fetchone()
@@ -140,7 +144,7 @@ class JudgeCoordinator:
             if source is None:
                 raise ValueError("judge source no longer retained")
             message = self._message(source)
-            if excerpt["content_hash"] != message.content_hash:
+            if excerpt["revision"] != message.revision:
                 raise ValueError("judge source changed")
             reply = message.reply.model_copy(update={"text": message.reply.text[:excerpt["reply_length"]]}) if message.reply else None
             messages.append(message.model_copy(update={"text": message.text[:excerpt["length"]], "reply": reply}))
@@ -207,7 +211,7 @@ class JudgeCoordinator:
         truncated = False
         while True:
             snapshot = JudgeSnapshot.model_validate({**base, "messages": tuple(history+new+confirmed_after), "history_truncated": truncated})
-            if len(snapshot.model_dump_json()) <= self.runtime.config.judge.context_chars:
+            if len(snapshot.prompt_json()) <= self.runtime.config.judge.context_chars:
                 return snapshot
             truncated = True
             if history:
@@ -255,9 +259,8 @@ class JudgeCoordinator:
             if snapshot is None:
                 return
             if batch is None:
-                result = self.store.open_judge_batch(snapshot, self.judge.signature, self.judge.settings.model)
+                result = self.store.open_judge_batch(snapshot, self.judge.revision, self.judge.settings.model)
                 batch = result.id
-                self.store.freeze_judge_input(batch, snapshot)
                 with self.store.db:
                     self.store.db.execute("UPDATE judge_state SET batch_id=?,pending_first=NULL,pending_due=NULL,opportunity=NULL WHERE scope=?", (batch, key))
             result = await self.judge.assess(snapshot)

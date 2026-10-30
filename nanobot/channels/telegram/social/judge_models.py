@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nanobot.channels.telegram.social.models import ConversationScope
 
-JUDGE_PROMPT_VERSION = "social-judge-v3"
+JUDGE_PROMPT_VERSION = "social-judge-v4"
 
 
 class JudgeDTO(BaseModel):
@@ -34,7 +34,7 @@ class JudgeMessage(JudgeDTO):
     mentions_bot: bool = False
     reply: JudgeReply | None = None
     media: tuple[str, ...] = Field(default=(), max_length=8)
-    content_hash: str = Field(default="", max_length=64)
+    revision: int = Field(default=1, ge=1)
 
 
 class JudgeIntent(JudgeDTO):
@@ -67,6 +67,7 @@ class JudgeParticipation(JudgeDTO):
 
 
 class JudgeSnapshot(JudgeDTO):
+    batch_id: str = Field(default_factory=lambda: uuid4().hex, min_length=1, max_length=64)
     scope: str = Field(min_length=1, max_length=160)
     version: str = Field(min_length=1, max_length=128)
     after_seq: int = Field(ge=0)
@@ -108,12 +109,13 @@ class JudgeSnapshot(JudgeDTO):
             raise ValueError("own messages provide context, not new judgement events")
         return self
 
-    def input_hash(self) -> str:
-        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
-
     def prompt_json(self) -> str:
-        """Keep integrity hashes locally; they carry no conversational meaning."""
-        return self.model_dump_json(exclude={"messages": {"__all__": {"content_hash"}}})
+        """Only conversational facts belong in the model request."""
+        return self.model_dump_json(exclude={
+            "batch_id": True, "scope": True, "version": True, "expires": True,
+            "quiet_due": True, "total_due": True,
+            "messages": {"__all__": {"revision"}},
+        })
 
 
 class JudgeDecision(JudgeDTO):
@@ -143,8 +145,7 @@ class JudgeRecord(JudgeDTO):
     id: str
     scope: str
     version: str
-    signature: str
-    input_hash: str
+    judge_revision: int
     model: str
     prompt_version: str
     after_seq: int

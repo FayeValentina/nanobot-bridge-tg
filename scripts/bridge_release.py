@@ -6,7 +6,6 @@ import argparse
 import contextlib
 import fcntl
 import gzip
-import hashlib
 import json
 import os
 import platform
@@ -22,7 +21,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = Path.home() / ".local/share/nanobot-bridge-tg-deploy"
 REVISION = re.compile(r"[0-9a-f]{40}\Z")
-IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 WHEEL = re.compile(r"nanobot_ai-[A-Za-z0-9_.+!-]+\.whl\Z")
 
 
@@ -42,39 +40,24 @@ def write_json(path: Path, value: dict) -> None:
     staging.replace(path)
 
 
-def digest(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
 def verify_release(directory: Path) -> dict:
-    """Verify all payload bytes before reading their metadata or loading an image."""
-    checksums = {}
-    for line in (directory / "SHA256SUMS").read_text().splitlines():
-        checksum, name = line.split("  ", 1)
-        if not re.fullmatch(r"[0-9a-f]{64}", checksum):
-            raise ValueError("invalid release checksum")
-        if name in checksums or name != Path(name).name:
-            raise ValueError("invalid release filename")
-        checksums[name] = checksum
+    """Check the local release inventory; loading and health checks verify behavior."""
+    if (directory / "release.json").is_symlink():
+        raise ValueError("invalid release metadata path")
     metadata = json.loads((directory / "release.json").read_text())
     revision = metadata["revision"]
     wheel = metadata["wheel"]
     if not REVISION.fullmatch(revision) or not WHEEL.fullmatch(wheel):
         raise ValueError("invalid revision or wheel filename")
     expected = {"release.json", "image.tar.gz", wheel}
-    if checksums.keys() != expected:
-        raise ValueError("release checksum inventory does not match payload")
-    for name, checksum in checksums.items():
+    for name in expected:
         path = directory / name
-        if path.is_symlink() or not path.is_file() or digest(path) != checksum:
-            raise ValueError(f"release integrity check failed: {name}")
-    if metadata.get("schema") != 1:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"release payload is missing or empty: {name}")
+    if metadata.get("schema") not in {1, 2}:
         raise ValueError("unsupported release schema")
     if metadata["image"] != f"nanobot-bridge-tg:sha-{revision}":
         raise ValueError("unexpected image name")
-    if not IMAGE_ID.fullmatch(metadata["image_id"]):
-        raise ValueError("invalid image identity")
     if metadata["architecture"] not in {"arm64", "amd64"}:
         raise ValueError("unsupported architecture")
     return metadata
@@ -128,7 +111,7 @@ class ReleaseManager:
         self._docker_prefix: list[str] | None = None
         settings_path = self.root / "settings.json"
         if not settings_path.exists():
-            suffix = hashlib.sha256(str(self.root).encode()).hexdigest()[:8]
+            suffix = secrets.token_hex(4)
             settings = {
                 "project": "nanobot-bridge-tg" if self.root == DEFAULT_ROOT.resolve() else f"nanobot-bridge-tg-{suffix}",
                 "web_port": int(os.environ.get("BRIDGE_WEB_PORT", "8765")),
@@ -171,16 +154,16 @@ class ReleaseManager:
         if metadata["architecture"] != expected_arch:
             raise ValueError("release architecture does not match this server")
         found = subprocess.run(
-            [*self.docker, "image", "inspect", metadata["image"], "--format", "{{.Id}}"],
+            [*self.docker, "image", "inspect", metadata["image"], "--format", "{{index .Config.Labels \"org.opencontainers.image.revision\"}}"],
             capture_output=True, text=True,
         )
-        if found.returncode or found.stdout.strip() != metadata["image_id"]:
+        if found.returncode or found.stdout.strip() != metadata["revision"]:
             run([*self.docker, "load", "--input", str(directory / "image.tar.gz")])
         identity = json.loads(output([*self.docker, "image", "inspect", metadata["image"]]))[0]
-        if identity["Id"] != metadata["image_id"]:
-            raise ValueError("loaded image identity does not match release")
         if identity["Config"].get("Labels", {}).get("org.opencontainers.image.revision") != metadata["revision"]:
             raise ValueError("loaded image revision does not match release")
+        if identity["Architecture"] != metadata["architecture"]:
+            raise ValueError("loaded image architecture does not match release")
 
     def _compose(self, revision: str, *args: str) -> str:
         _, metadata = self.release(revision)
@@ -259,14 +242,11 @@ class ReleaseManager:
                 if producer.wait() != 0:
                     raise RuntimeError("docker save failed")
             metadata = {
-                "schema": 1, "revision": revision, "image": image,
-                "image_id": output([*self.docker, "image", "inspect", image, "--format", "{{.Id}}"]),
+                "schema": 2, "revision": revision, "image": image,
                 "architecture": output([*self.docker, "image", "inspect", image, "--format", "{{.Architecture}}"]),
                 "wheel": wheels[0].name,
             }
             write_json(staging / "release.json", metadata)
-            names = ["release.json", "image.tar.gz", wheels[0].name]
-            (staging / "SHA256SUMS").write_text("".join(f"{digest(staging / n)}  {n}\n" for n in names))
             verify_release(staging)
             shutil.copytree(staging, target)
         self.smoke(revision)
@@ -406,7 +386,7 @@ class ReleaseManager:
         directory, metadata = self.release(revision)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tarfile.open(destination, "w") as archive:
-            for name in ["release.json", "SHA256SUMS", "image.tar.gz", metadata["wheel"]]:
+            for name in ["release.json", "image.tar.gz", metadata["wheel"]]:
                 archive.add(directory / name, arcname=name, recursive=False)
         print(f"Release transfer bundle: {destination}")
 

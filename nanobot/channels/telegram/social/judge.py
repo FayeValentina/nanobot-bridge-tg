@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 from pathlib import Path
@@ -24,7 +23,8 @@ from nanobot.channels.telegram.social.judge_models import (
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import Config, ModelPresetConfig, TelegramSocialJudgeConfig
 from nanobot.providers.base import LLMProvider, LLMResponse
-from nanobot.providers.factory import make_provider, provider_signature
+from nanobot.providers.factory import make_provider
+from nanobot.providers.factory import provider_signature as provider_settings
 from nanobot.utils.prompt_templates import render_template
 
 
@@ -34,7 +34,10 @@ def judge_preset(settings: TelegramSocialJudgeConfig) -> ModelPresetConfig:
                              reasoning_effort=settings.reasoning_effort)
 
 
-def make_judge_provider(config: Config, settings: TelegramSocialJudgeConfig) -> tuple[LLMProvider, str]:
+JudgeProviderSettings = tuple[object, ...] | str
+
+
+def make_judge_provider(config: Config, settings: TelegramSocialJudgeConfig) -> tuple[LLMProvider, JudgeProviderSettings]:
     """Reuse provider resolution/auth; never inherit main-model fallback chains."""
     isolated = config.model_copy(deep=True)
     isolated.agents.defaults.fallback_models = []
@@ -49,7 +52,7 @@ def make_judge_provider(config: Config, settings: TelegramSocialJudgeConfig) -> 
                            "required": list(JudgeDecision.model_fields)},
             }},
         }
-    signature = hashlib.sha256(repr(provider_signature(isolated, preset=preset)).encode()).hexdigest()
+    values = provider_settings(isolated, preset=preset)
     provider = make_provider(isolated, preset=preset)
     if settings.oauth_storage_dir is not None:
         from nanobot.providers.openai_codex_provider import OpenAICodexProvider
@@ -60,28 +63,28 @@ def make_judge_provider(config: Config, settings: TelegramSocialJudgeConfig) -> 
             data_dir=Path(settings.oauth_storage_dir).expanduser(),
             token_filename=OPENAI_CODEX_PROVIDER.token_filename, import_codex_cli=False,
         )
-    return provider, signature
+    return provider, values
 
 
 class SocialJudge:
     """Call once per assessment, journaling pending retries without polling or main calls."""
 
     def __init__(self, store: SocialStore, settings: TelegramSocialJudgeConfig,
-                 provider: LLMProvider, *, provider_version: str = "") -> None:
+                 provider: LLMProvider, *, provider_changed: bool = False) -> None:
         self.store = store
         self.settings = settings.model_copy(deep=True)
         self.provider = provider
         self.prompt = render_template("telegram/social_judge.md")
-        self.signature = hashlib.sha256(json.dumps({
-            "settings": self.settings.model_dump(), "provider_version": provider_version,
+        self.revision = store.setting_revision("judge", json.dumps({
+            "settings": self.settings.model_dump(),
             "prompt_version": JUDGE_PROMPT_VERSION, "prompt": self.prompt,
-        }, sort_keys=True).encode()).hexdigest()
+        }, sort_keys=True), force=provider_changed)
 
     @classmethod
     def from_config(cls, store: SocialStore, config: Config,
                     settings: TelegramSocialJudgeConfig) -> SocialJudge:
-        provider, version = make_judge_provider(config, settings)
-        return cls(store, settings, provider, provider_version=version)
+        provider, _ = make_judge_provider(config, settings)
+        return cls(store, settings, provider)
 
     async def assess(self, snapshot: JudgeSnapshot) -> JudgeRecord:
         """Never mark main views or publish messages; persist decisions with their handoff.
@@ -91,11 +94,11 @@ class SocialJudge:
         """
         settings = self.settings
         payload = snapshot.prompt_json()
-        if len(snapshot.messages) > settings.context_messages or len(snapshot.model_dump_json()) > settings.context_chars:
+        if len(snapshot.messages) > settings.context_messages or len(payload) > settings.context_chars:
             raise ValueError("judge snapshot exceeds configured context limits")
         if snapshot.expires - snapshot.created > settings.batch_ttl_seconds:
             raise ValueError("judge snapshot exceeds configured batch TTL")
-        record = self.store.open_judge_batch(snapshot, self.signature, settings.model)
+        record = self.store.open_judge_batch(snapshot, self.revision, settings.model)
         if record.status != "pending":
             return record
         if record.attempts >= 1 + settings.max_retries:

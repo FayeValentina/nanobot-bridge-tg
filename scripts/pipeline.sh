@@ -36,6 +36,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_wake_v2.py \
       nanobot/channels/telegram/tests/test_social_judge.py \
       nanobot/channels/telegram/tests/test_social_judge_runtime.py \
+      nanobot/channels/telegram/tests/test_social_revisions.py \
       nanobot/channels/telegram/tests/evaluate_social_judge.py \
       nanobot/channels/telegram/tests/conftest.py \
       nanobot/channels/telegram/tests/test_stream_pacing.py \

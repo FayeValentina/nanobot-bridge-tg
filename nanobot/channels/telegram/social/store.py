@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Callable
@@ -45,7 +45,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -156,8 +156,8 @@ class SocialStore:
                     excerpt TEXT NOT NULL, PRIMARY KEY(memory_id,message_id)
                 );
                 CREATE TABLE memory_suppressions (
-                    scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL, digest TEXT NOT NULL,
-                    PRIMARY KEY(scope,kind,digest)
+                    scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL, value TEXT NOT NULL,
+                    PRIMARY KEY(scope,kind,value)
                 );
                 CREATE TABLE memory_resets (
                     scope TEXT PRIMARY KEY REFERENCES scopes(key), through_seq INTEGER NOT NULL
@@ -250,13 +250,12 @@ class SocialStore:
                 );
                 CREATE TABLE IF NOT EXISTS judge_batches (
                     id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
-                    version TEXT NOT NULL, signature TEXT NOT NULL, input_hash TEXT NOT NULL,
+                    version TEXT NOT NULL, judge_revision INTEGER NOT NULL,
                     model TEXT NOT NULL, prompt_version TEXT NOT NULL,
                     after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL,
                     created REAL NOT NULL, expires REAL NOT NULL, due REAL NOT NULL,
                     status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-                    decision TEXT, error_code TEXT, fallback_at REAL,
-                    UNIQUE(scope,version,signature,input_hash)
+                    decision TEXT, error_code TEXT, fallback_at REAL
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS judge_running_scope ON judge_batches(scope) WHERE status='running';
                 CREATE TABLE IF NOT EXISTS judge_attempts (
@@ -288,8 +287,93 @@ class SocialStore:
                 self.db.execute("INSERT INTO judge_state(scope,assessed_through) SELECT key,next_seq-1 FROM scopes WHERE 1 "
                                 "ON CONFLICT(scope) DO UPDATE SET assessed_through=MAX(assessed_through,excluded.assessed_through)")
                 self.db.execute("PRAGMA user_version=10")
+        if version < 11:
+            self._upgrade_without_hashes()
         self.closed = False
         path.chmod(0o600)
+
+    def _upgrade_without_hashes(self) -> None:
+        """Retain journals and watermarks while retiring the old derived keys."""
+        self.db.execute("PRAGMA foreign_keys=OFF")
+        try:
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                columns = {row[1] for row in self.db.execute("PRAGMA table_info(messages)")}
+                if "revision" not in columns:
+                    self.db.execute("ALTER TABLE messages ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+                self.db.execute("CREATE TABLE IF NOT EXISTS runtime_settings (name TEXT PRIMARY KEY, "
+                                "value TEXT NOT NULL, revision INTEGER NOT NULL)")
+                columns = {row[1] for row in self.db.execute("PRAGMA table_info(judge_batches)")}
+                revision = "judge_revision" if "judge_revision" in columns else "0"
+                self.db.execute("CREATE TABLE judge_batches_v11 (id TEXT PRIMARY KEY, "
+                    "scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL, judge_revision INTEGER NOT NULL, "
+                    "model TEXT NOT NULL, prompt_version TEXT NOT NULL, after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, "
+                    "created REAL NOT NULL, expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, "
+                    "attempts INTEGER NOT NULL DEFAULT 0, decision TEXT, error_code TEXT, fallback_at REAL, "
+                    "input_meta TEXT, handoff_job TEXT, condition_config TEXT NOT NULL DEFAULT '{}')")
+                self.db.execute(f"INSERT INTO judge_batches_v11 SELECT id,scope,version,{revision},model,prompt_version,"
+                    "after_seq,through_seq,created,expires,due,status,attempts,decision,error_code,fallback_at,"
+                    "input_meta,handoff_job,condition_config FROM judge_batches")
+                self.db.execute("DROP TABLE judge_batches")
+                self.db.execute("ALTER TABLE judge_batches_v11 RENAME TO judge_batches")
+                self.db.execute("CREATE UNIQUE INDEX judge_running_scope ON judge_batches(scope) WHERE status='running'")
+                self.db.execute("UPDATE judge_batches SET status='cancelled',error_code='protocol_changed' "
+                                "WHERE status IN ('pending','running')")
+                self.db.execute("UPDATE judge_state SET batch_id=NULL,inflight=0,pending_due=? "
+                                "WHERE batch_id IS NOT NULL", (self.now(),))
+                # Only legacy derived versions need replacing. Native record IDs stay intact.
+                tables = ("views", "wakes", "actions", "proactive_state", "message_deliveries", "wake_samples", "judge_batches")
+                existing = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                tables = tuple(table for table in tables if table in existing)
+                for scope in self.db.execute("SELECT key,version FROM scopes").fetchall():
+                    key, current = scope
+                    mapping = {current: "1"} if re.fullmatch(r"[0-9a-f]{64}", current) else {}
+                    for table in tables:
+                        for row in self.db.execute(f"SELECT DISTINCT version FROM {table} WHERE scope=?", (key,)).fetchall():
+                            if row[0] and re.fullmatch(r"[0-9a-f]{64}", row[0]):
+                                mapping.setdefault(row[0], f"legacy-{len(mapping)+1}")
+                        for old, new in mapping.items():
+                            self.db.execute(f"UPDATE {table} SET version=? WHERE scope=? AND version=?", (new, key, old))
+                    if current in mapping:
+                        self.db.execute("UPDATE scopes SET version=? WHERE key=?", (mapping[current], key))
+                    for row in self.db.execute("SELECT id,input_meta FROM judge_batches WHERE scope=? AND input_meta IS NOT NULL", (key,)).fetchall():
+                        data = json.loads(row["input_meta"])
+                        data["batch_id"] = row["id"]
+                        data["version"] = mapping.get(data["version"], data["version"])
+                        for item in data["excerpts"]:
+                            item.pop("content_hash", None)
+                            item["revision"] = 1
+                        self.db.execute("UPDATE judge_batches SET input_meta=? WHERE id=?", (json.dumps(data), row["id"]))
+                columns = {row[1] for row in self.db.execute("PRAGMA table_info(memory_suppressions)")}
+                if "digest" in columns:
+                    # Old opaque keys cannot recover corrected text. Keep a source
+                    # cutoff so retiring them cannot relearn facts from old evidence.
+                    self.db.execute("INSERT INTO memory_resets SELECT s.key,s.next_seq-1 FROM scopes s WHERE s.key IN "
+                        "(SELECT scope FROM memory_suppressions) ON CONFLICT(scope) DO UPDATE SET "
+                        "through_seq=MAX(through_seq,excluded.through_seq)")
+                    self.db.execute("DROP TABLE memory_suppressions")
+                    self.db.execute("CREATE TABLE memory_suppressions (scope TEXT NOT NULL REFERENCES scopes(key), "
+                                    "kind TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,kind,value))")
+                    self.db.executemany("INSERT OR IGNORE INTO memory_suppressions VALUES(?,'content',?)", [
+                        (row["scope"], " ".join(str(row["content"]).casefold().split()))
+                        for row in self.db.execute("SELECT scope,content FROM memories WHERE status IN ('deleted','expired')")
+                    ])
+                    self.db.execute("INSERT OR IGNORE INTO memory_suppressions SELECT m.scope,'message',CAST(e.message_id AS TEXT) "
+                        "FROM memory_evidence e JOIN memories m ON m.id=e.memory_id WHERE m.status IN ('deleted','expired')")
+                self.db.execute("PRAGMA user_version=11")
+        finally:
+            self.db.execute("PRAGMA foreign_keys=ON")
+
+    def setting_revision(self, name: str, value: str, *, force: bool = False) -> int:
+        """Compare source settings once and persist a small monotonic revision."""
+        row = self.db.execute("SELECT value,revision FROM runtime_settings WHERE name=?", (name,)).fetchone()
+        if row is not None and row["value"] == value and not force:
+            return int(row["revision"])
+        revision = int(row["revision"]) + 1 if row else 1
+        with self.db:
+            self.db.execute("INSERT INTO runtime_settings VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET "
+                            "value=excluded.value,revision=excluded.revision", (name, value, revision))
+        return revision
 
     def close(self) -> None:
         self.closed = True
@@ -367,16 +451,13 @@ class SocialStore:
                 or not snapshot.created <= self.now() < snapshot.expires):
             return False
         displayed = {message.seq: message for message in snapshot.messages}
-        rows = self.db.execute("SELECT seq,message_id,sender_id,text,is_self,judge_facts FROM messages WHERE scope=? AND seq IN "
+        rows = self.db.execute("SELECT seq,message_id,sender_id,text,is_self,revision FROM messages WHERE scope=? AND seq IN "
                                "(SELECT value FROM json_each(?))", (snapshot.scope, json.dumps(list(displayed)))).fetchall()
         if len(rows) != len(displayed) or any(
             row["message_id"] != displayed[row["seq"]].message_id
             or row["sender_id"] != displayed[row["seq"]].sender_id
             or bool(row["is_self"]) != displayed[row["seq"]].is_self
-            or (displayed[row["seq"]].content_hash and row["seq"] in snapshot.new_seqs
-                and not json.loads(row["judge_facts"]).get("eligible"))
-            or (hashlib.sha256(str(row["text"]).encode()).hexdigest() != displayed[row["seq"]].content_hash
-                if displayed[row["seq"]].content_hash else row["text"] != displayed[row["seq"]].text)
+            or row["revision"] != displayed[row["seq"]].revision
             or not str(row["text"]).startswith(displayed[row["seq"]].text) for row in rows
         ):
             return False
@@ -386,23 +467,25 @@ class SocialStore:
             (snapshot.scope, snapshot.after_seq, snapshot.through_seq),
         ))
 
-    def open_judge_batch(self, snapshot: JudgeSnapshot, signature: str, model: str) -> JudgeRecord:
+    def open_judge_batch(self, snapshot: JudgeSnapshot, revision: int, model: str) -> JudgeRecord:
         if not self._judge_current(snapshot):
             raise PermissionError("judge snapshot is expired, changed, paused or not retained")
         with self.db:
-            existing = self.db.execute("SELECT id FROM judge_batches WHERE scope=? AND version=? "
-                                       "AND signature=? AND input_hash=?",
-                                       (snapshot.scope, snapshot.version, signature, snapshot.input_hash())).fetchone()
+            existing = self.db.execute("SELECT id,judge_revision FROM judge_batches WHERE id=?", (snapshot.batch_id,)).fetchone()
             if existing:
+                if existing["judge_revision"] != revision or not self._judge_input_matches(snapshot.batch_id, snapshot):
+                    raise PermissionError("judge batch input changed")
                 return self.judge_record(str(existing[0]))
             if snapshot.after_seq != self.judge_through(snapshot.scope):
                 raise PermissionError("judge batch must start at the assessment watermark")
-            batch = uuid4().hex
-            self.db.execute("INSERT INTO judge_batches(id,scope,version,signature,input_hash,model,prompt_version,"
-                            "after_seq,through_seq,created,expires,due,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending')",
-                            (batch, snapshot.scope, snapshot.version, signature, snapshot.input_hash(), model,
+            batch = snapshot.batch_id
+            self.db.execute("INSERT INTO judge_batches(id,scope,version,judge_revision,model,prompt_version,"
+                            "after_seq,through_seq,created,expires,due,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending')",
+                            (batch, snapshot.scope, snapshot.version, revision, model,
                              JUDGE_PROMPT_VERSION, snapshot.after_seq, snapshot.through_seq, snapshot.created,
                              snapshot.expires, self.now()))
+            self.db.execute("UPDATE judge_batches SET input_meta=?,condition_config=? WHERE id=?",
+                            (json.dumps(self._judge_metadata(snapshot)), self.state(snapshot.scope)["wake_config"], batch))
             self.db.execute("DELETE FROM judge_batches WHERE created<? AND status NOT IN ('pending','running')",
                             (self.now() - 86400,))
         return self.judge_record(batch)
@@ -411,7 +494,7 @@ class SocialStore:
                             interval: float, max_attempts: int) -> JudgeRecord:
         with self.db:
             record = self.judge_record(batch)
-            if record.input_hash != snapshot.input_hash():
+            if not self._judge_input_matches(batch, snapshot):
                 raise PermissionError("judge batch input changed")
             if record.status != "pending":
                 return record
@@ -447,7 +530,7 @@ class SocialStore:
             decision.validate_for(snapshot)
         with self.db:
             record = self.judge_record(batch)
-            if record.input_hash != snapshot.input_hash():
+            if not self._judge_input_matches(batch, snapshot):
                 raise PermissionError("judge batch input changed")
             self.db.execute("UPDATE judge_attempts SET finished=?,error_code=?,latency_ms=?,input_tokens=?,"
                             "output_tokens=?,total_tokens=? WHERE batch_id=? AND attempt=? AND finished IS NULL",
@@ -472,7 +555,7 @@ class SocialStore:
         """Persist a single handoff intent; V3-A never creates or executes a main wake."""
         with self.db:
             record = self.judge_record(batch)
-            if record.status != "pending" or record.input_hash != snapshot.input_hash():
+            if record.status != "pending" or not self._judge_input_matches(batch, snapshot):
                 return record
             if not self._judge_current(snapshot) or self.judge_through(snapshot.scope) != snapshot.after_seq:
                 self.db.execute("UPDATE judge_batches SET status=?,error_code='stale_input' WHERE id=?",
@@ -520,21 +603,25 @@ class SocialStore:
                             "pending_due=?,pending_max=?,opportunity=COALESCE(?,opportunity) WHERE scope=?",
                             (first, self.now(), seq, due, first + maximum, opportunity, key))
 
-    def freeze_judge_input(self, batch: str, snapshot: JudgeSnapshot) -> None:
-        # Store reconstruction facts and excerpt lengths, not another chat transcript.
+    @staticmethod
+    def _judge_metadata(snapshot: JudgeSnapshot) -> dict[str, object]:
+        # Freeze reconstruction facts, not another transcript or derived key.
         metadata = snapshot.model_dump(mode="json", exclude={"messages"})
         metadata["excerpts"] = [{"seq": message.seq, "length": len(message.text),
-                                 "content_hash": message.content_hash,
+                                 "revision": message.revision,
                                  "reply_length": len(message.reply.text) if message.reply else 0}
                                 for message in snapshot.messages]
-        with self.db:
-            self.db.execute("UPDATE judge_batches SET input_meta=?,condition_config=? WHERE id=? AND input_meta IS NULL",
-                            (json.dumps(metadata, ensure_ascii=False), self.state(snapshot.scope)["wake_config"], batch))
+        return metadata
+
+    def _judge_input_matches(self, batch: str, snapshot: JudgeSnapshot) -> bool:
+        row = self.db.execute("SELECT input_meta FROM judge_batches WHERE id=?", (batch,)).fetchone()
+        return row is not None and row[0] is not None and json.loads(row[0]) == self._judge_metadata(snapshot)
 
     def _handoff_judgement(self, batch: str, snapshot: JudgeSnapshot, decision: JudgeDecision) -> None:
         """Caller owns the same transaction as the decision/cursor, including a single fallback."""
         row = self.db.execute("SELECT * FROM judge_batches WHERE id=?", (batch,)).fetchone()
-        if row is None or row["input_meta"] is None or row["handoff_job"] is not None or decision.decision != "wake":
+        if (row is None or row["handoff_job"] is not None or decision.decision != "wake"
+                or not self.db.execute("SELECT 1 FROM judge_state WHERE scope=? AND batch_id=?", (snapshot.scope, batch)).fetchone()):
             return  # Standalone V3-A evaluations do not schedule main work.
         key = snapshot.scope
         for active in self.db.execute("SELECT id,turn_id FROM wakes WHERE scope=? AND "
@@ -585,7 +672,7 @@ class SocialStore:
                 self.db.execute("INSERT INTO updates VALUES(?,?)", (msg.scope.channel, msg.update_id))
             if existing is not None:
                 self.db.execute(
-                    "UPDATE messages SET text=?,media=?,media_refs=?,reply_context=?,album_id=?,judge_facts='{}' "
+                    "UPDATE messages SET text=?,media=?,media_refs=?,reply_context=?,album_id=?,judge_facts='{}',revision=revision+1 "
                     "WHERE scope=? AND message_id=?",
                     (msg.text[:4000], json.dumps(msg.media),
                      json.dumps([ref.model_dump() for ref in msg.media_refs]),
@@ -1326,10 +1413,10 @@ class SocialStore:
                 continue
             metadata = json.loads(batch[0])
             sources = json.loads(batch[1])["source_seqs"] if batch[1] else metadata["new_seqs"]
-            hashes = {item["seq"]:item["content_hash"] for item in metadata["excerpts"]}
+            revisions = {item["seq"]:item["revision"] for item in metadata["excerpts"]}
             for seq in sources:
-                message = self.db.execute("SELECT text,judge_facts FROM messages WHERE scope=? AND seq=?", (key,seq)).fetchone()
-                if (message is None or (hashes.get(seq) and hashlib.sha256(str(message[0]).encode()).hexdigest()!=hashes[seq])
+                message = self.db.execute("SELECT revision,judge_facts FROM messages WHERE scope=? AND seq=?", (key,seq)).fetchone()
+                if (message is None or revisions.get(seq) != message[0]
                         or (seq in metadata["new_seqs"] and not json.loads(message[1]).get("eligible"))):
                     raise PermissionError("judged source is no longer retained or changed")
 

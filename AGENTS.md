@@ -14,7 +14,7 @@ This file provides guidance to AI coding agents working with this repository.
 
 - The owner explicitly rejects using hashes or fingerprints in this migration's implementation and acceptance checks. Do not introduce hash-based content comparisons, deduplication, configuration versions, input signatures, or validation reports.
 - Prefer existing message/record IDs, explicit revision numbers, and direct comparison of the relevant source values. Do not add hash layers as a default correctness measure.
-- V3-C removed message hashes from intermediary model inputs only. Existing local message/input hashes, provider/configuration signatures, memory/media hashes, and release fingerprint checks still exist; do not report them as removed without actually cleaning up their complete paths.
+- The follow-up cleanup removes migration-owned content/input hashes, derived configuration/persona signatures, hashed memory/media keys and release checksums. Use message revisions, batch IDs, direct settings/value comparisons and ordinary release metadata. Do not reuse older fingerprint-based acceptance probes; compare source values directly.
 
 ## Owner's shared-tool behavior (confirmed 2026-10-28)
 

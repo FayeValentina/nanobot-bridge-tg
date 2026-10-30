@@ -452,6 +452,15 @@ def test_cache_preserves_original_and_evicts_under_budget(tmp_path):
     assert cache.original(A, reference(unique_id="0"), config.media_max_bytes) is None
     assert cache.original(A, reference(unique_id="19"), config.media_max_bytes) == raw
     assert cache.original(B, reference(unique_id="19"), config.media_max_bytes) is None
+    restarted = SocialMediaCache(cache.root)
+    assert restarted.original(A, reference(unique_id="19"), config.media_max_bytes) == raw
+
+
+@pytest.mark.parametrize("identity", ["../escape", "/outside", "x" * 129])
+def test_native_media_identity_cannot_escape_cache_directory(tmp_path, identity):
+    cache = SocialMediaCache(tmp_path / "cache")
+    with pytest.raises(ValueError, match="media identity"):
+        cache.original(A, reference(unique_id=identity), 1024)
 
 
 def test_cache_rejects_symlink_and_oversized_pixel_payload(tmp_path):
@@ -495,7 +504,7 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     store.close()
     reopened = SocialStore(root)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert reopened.state(A.session_key)["read_through"] == 1
         row = reopened.db.execute("SELECT content,status,message_id,kind FROM actions").fetchone()
         assert tuple(row) == ("old text", "sent", 501, "text")

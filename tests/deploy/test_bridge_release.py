@@ -11,7 +11,6 @@ pytest.importorskip("fcntl", reason="local deployment scripts target Linux")
 from scripts.bridge_release import (
     ReleaseManager,
     container_config,
-    digest,
     verify_release,
     write_json,
 )
@@ -27,20 +26,27 @@ def release(root: Path, revision: str) -> Path:
     (directory / wheel).write_bytes(b"test wheel")
     (directory / "image.tar.gz").write_bytes(b"test image")
     write_json(directory / "release.json", {
-        "schema": 1, "revision": revision, "image": f"nanobot-bridge-tg:sha-{revision}",
-        "image_id": "sha256:" + "c" * 64, "architecture": "arm64", "wheel": wheel,
+        "schema": 2, "revision": revision, "image": f"nanobot-bridge-tg:sha-{revision}",
+        "architecture": "arm64", "wheel": wheel,
     })
-    names = ["release.json", "image.tar.gz", wheel]
-    (directory / "SHA256SUMS").write_text("".join(f"{digest(directory / n)}  {n}\n" for n in names))
     return directory
 
 
-def test_release_detects_changed_image_before_loading(tmp_path):
+def test_release_rejects_missing_payload_before_loading(tmp_path):
     directory = release(tmp_path, OLD)
     assert verify_release(directory)["revision"] == OLD
-    (directory / "image.tar.gz").write_bytes(b"tampered")
-    with pytest.raises(ValueError, match="integrity"):
+    (directory / "image.tar.gz").write_bytes(b"")
+    with pytest.raises(ValueError, match="empty"):
         verify_release(directory)
+
+
+def test_legacy_release_is_usable_without_its_old_manifest(tmp_path):
+    directory = release(tmp_path, OLD)
+    metadata = json.loads((directory / "release.json").read_text())
+    metadata["schema"] = 1
+    metadata["image_id"] = "unused-legacy-value"
+    write_json(directory / "release.json", metadata)
+    assert verify_release(directory)["revision"] == OLD
 
 
 def test_container_config_preserves_credentials_and_source_values():
@@ -116,7 +122,7 @@ def test_release_export_roundtrip(tmp_path):
     instance.export(OLD, bundle)
     with tarfile.open(bundle) as archive:
         assert set(archive.getnames()) == {
-            "release.json", "SHA256SUMS", "image.tar.gz", "nanobot_ai-0.3.5-py3-none-any.whl",
+            "release.json", "image.tar.gz", "nanobot_ai-0.3.5-py3-none-any.whl",
         }
         assert json.load(archive.extractfile("release.json"))["revision"] == OLD
 

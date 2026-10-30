@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import math
 import re
@@ -23,6 +22,7 @@ from nanobot.agent.hook import (
 from nanobot.agent.tools.context import RequestContext, current_request_context
 from nanobot.bus.events import DeliveryReceipt, InboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.judge import JudgeProviderSettings
 from nanobot.channels.telegram.social.judge_runtime import JudgeCoordinator
 from nanobot.channels.telegram.social.media import SocialMediaCache
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
@@ -56,6 +56,7 @@ from nanobot.utils.helpers import build_image_content_blocks, strip_think
 
 SOCIAL_TOOLS = frozenset({"social_get_state", "social_read_messages", "social_mark_read", "social_send",
                           "social_wait", "social_set_wake", "social_get_media", "social_sticker", "social_memory"})
+SOCIAL_PROTOCOL_VERSION = 1
 SOCIAL_PROTOCOL = """You are a guest in this authorized group/topic. Participate selectively.
 Read the observed group messages as the current conversation and respond to relevant requests.
 An intermediary selected this batch using the current conversation. The judgement gives its
@@ -134,7 +135,7 @@ class TelegramSocialRuntime:
     def __init__(
         self, config: TelegramSocialConfig, root: Path, bus: MessageBus,
         *, channel: str = "telegram", now: Callable[[], float] = time.time,
-        judge_provider: LLMProvider | None = None, judge_provider_version: str = "",
+        judge_provider: LLMProvider | None = None, judge_provider_version: JudgeProviderSettings = "",
     ) -> None:
         self.root = root
         self.roles = root / "roles"
@@ -296,10 +297,10 @@ class TelegramSocialRuntime:
         except (OSError, ValueError):
             persona = f"Role file unavailable: {path}. Use ordinary file tools to inspect or repair it when requested."
         assembled = f"{SOCIAL_PROTOCOL}\n\n# Operator persona\n{persona}\n\n# Operator group background\n{binding.background}"
-        version = hashlib.sha256(
-            SOCIAL_PROTOCOL.encode() + binding.model_dump_json().encode()
-            + self.config.model_dump_json(exclude={"scopes"}).encode()
-        ).hexdigest()
+        version = str(self.store.setting_revision(f"scope:{scope.session_key}", json.dumps({
+            "protocol": SOCIAL_PROTOCOL_VERSION, "binding": binding.model_dump(),
+            "config": self.config.model_dump(exclude={"scopes"}),
+        }, sort_keys=True)))
         self.store.bind(scope, version)
         if binding.paused:
             self.store.pause(scope.session_key)
@@ -320,7 +321,8 @@ class TelegramSocialRuntime:
         if binding is not None:
             try:
                 persona, version = self._persona(scope)
-                context_version = hashlib.sha256((persona + version).encode()).hexdigest()
+                persona_revision = self.store.setting_revision(f"persona:{scope.session_key}", persona)
+                context_version = f"social:{scope.session_key}:{version}:{persona_revision}"
                 policy = SessionPolicy(persona=persona, tool_only=True, context_version=context_version)
                 version = context_version
             except (OSError, ValueError, PermissionError):

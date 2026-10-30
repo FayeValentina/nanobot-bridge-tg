@@ -1,7 +1,6 @@
 """V3-A intermediary contracts, durable budgets and isolated provider calls."""
 
 import asyncio
-import hashlib
 import json
 import sqlite3
 from unittest.mock import AsyncMock
@@ -66,7 +65,10 @@ def case(tmp_path):
 
 
 def updated(snapshot, **values):
-    return JudgeSnapshot.model_validate({**snapshot.model_dump(), **values})
+    data = {**snapshot.model_dump(), **values}
+    if any(key in values for key in ("scope", "after_seq", "through_seq")):
+        data.pop("batch_id")
+    return JudgeSnapshot.model_validate(data)
 
 
 def test_judge_defaults_roundtrip_through_existing_json_settings():
@@ -95,12 +97,12 @@ def test_provider_reuses_oauth_without_main_fallback_or_config_mutation():
     config = Config()
     config.agents.defaults.fallback_models = [InlineFallbackConfig(model="main-secret", provider="openai")]
     before = config.model_dump()
-    provider, signature = make_judge_provider(config, TelegramSocialJudgeConfig())
+    provider, values = make_judge_provider(config, TelegramSocialJudgeConfig())
     assert isinstance(provider, OpenAICodexProvider)
     assert provider.default_model == "openai-codex/gpt-6-luna"
     assert provider.generation.reasoning_effort == "low"
     assert provider._extra_body["text"]["format"]["strict"]
-    assert len(signature) == 64
+    assert isinstance(values, tuple)
     assert config.model_dump() == before
 
 
@@ -170,16 +172,13 @@ async def test_context_topic_metadata_and_intent_are_shown_without_main_session(
     provider.chat_with_retry.assert_not_called()
 
 
-async def test_model_payload_omits_integrity_hashes_but_retry_identity_keeps_them(case):
+async def test_model_payload_omits_internal_identity_and_revisions(case):
     _, _, provider, judge, snapshot, _ = case
-    original = snapshot.messages[1]
-    hashed = original.model_copy(update={"content_hash": hashlib.sha256(original.text.encode()).hexdigest()})
-    messages = (snapshot.messages[0], hashed, snapshot.messages[2])
-    snapshot = updated(snapshot, messages=messages)
     await judge.assess(snapshot)
     payload = provider.chat.call_args.kwargs["messages"][1]["content"]
-    assert "content_hash" not in payload and hashed.content_hash not in payload
-    assert hashed.content_hash in snapshot.model_dump_json()
+    body = json.loads(payload)
+    assert not {"batch_id", "version", "scope", "expires", "quiet_due", "total_due"} & body.keys()
+    assert all("revision" not in message for message in body["messages"])
     assert len(payload) < len(snapshot.model_dump_json())
 
 
@@ -360,7 +359,7 @@ async def test_cancelled_request_is_charged_and_does_not_mark_read(case):
 
 def test_startup_recovery_does_not_refund_an_incomplete_attempt(case):
     store, settings, _, judge, snapshot, _ = case
-    record = store.open_judge_batch(snapshot, judge.signature, settings.model)
+    record = store.open_judge_batch(snapshot, judge.revision, settings.model)
     running = store.claim_judge_attempt(record.id, snapshot, limit=240, interval=0, max_attempts=2)
     assert running.attempts == 1
     store.recover_judge_batches()
@@ -371,7 +370,7 @@ def test_startup_recovery_does_not_refund_an_incomplete_attempt(case):
 
 def test_decision_and_assessment_watermark_rollback_together(case):
     store, settings, _, judge, snapshot, _ = case
-    record = store.open_judge_batch(snapshot, judge.signature, settings.model)
+    record = store.open_judge_batch(snapshot, judge.revision, settings.model)
     running = store.claim_judge_attempt(record.id, snapshot, limit=240, interval=0, max_attempts=2)
     store.db.execute("CREATE TRIGGER fail_judge_cursor BEFORE INSERT ON judge_state BEGIN SELECT RAISE(ABORT,'test'); END")
     store.db.commit()
@@ -407,7 +406,7 @@ def test_schema_eight_upgrade_preserves_main_data(case, tmp_path):
     store.close()
     upgraded = SocialStore(tmp_path)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert upgraded.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 3
         assert upgraded.state(A.session_key)["read_through"] == 0
@@ -501,7 +500,7 @@ async def test_same_scope_different_batch_cannot_overlap_network_requests(case):
 
 async def test_recovery_cannot_replenish_exhausted_attempts(case):
     store, settings, provider, judge, snapshot, _ = case
-    record = store.open_judge_batch(snapshot, judge.signature, settings.model)
+    record = store.open_judge_batch(snapshot, judge.revision, settings.model)
     for _ in range(2):
         store.claim_judge_attempt(record.id, snapshot, limit=240, interval=0, max_attempts=2)
         store.recover_judge_batches()
