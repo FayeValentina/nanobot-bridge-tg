@@ -91,6 +91,12 @@ class SocialJudge:
         provider, _ = make_judge_provider(config, settings)
         return cls(store, settings, provider)
 
+    def system_prompt(self, snapshot: JudgeSnapshot) -> str:
+        """Anchor the assessed account in runtime facts, outside chat history."""
+        identity = {"bot_username": snapshot.bot_username, "bot_name": snapshot.bot_name,
+                    "nicknames": snapshot.nicknames}
+        return self.prompt + "\nRuntime target bot identity: " + json.dumps(identity, ensure_ascii=False)
+
     async def assess(self, snapshot: JudgeSnapshot) -> JudgeRecord:
         """Never mark main views or publish messages; persist decisions with their handoff.
 
@@ -127,7 +133,7 @@ class SocialJudge:
                 content = [{"type": "text", "text": payload}, *media] if media else payload
                 # Raw chat, not chat_with_retry: all retry attempts are bounded and charged here.
                 response = await self.provider.chat(
-                    messages=[{"role": "system", "content": self.prompt}, {"role": "user", "content": content}],
+                    messages=[{"role": "system", "content": self.system_prompt(snapshot)}, {"role": "user", "content": content}],
                     tools=None, model=settings.model, max_tokens=settings.max_tokens,
                     temperature=0, reasoning_effort=settings.reasoning_effort,
                     tool_choice="none",

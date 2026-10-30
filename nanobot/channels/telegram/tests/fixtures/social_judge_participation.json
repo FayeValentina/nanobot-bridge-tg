@@ -6,5 +6,7 @@
   {"name":"other_member_invitation","history":[["alice","小明在吗？"]],"text":"小明，没人说话，你陪我聊会儿","expected":"observe"},
   {"name":"quoted_invitation","history":[],"text":"小说里有句台词：“没人说话？”，我把它抄下来做校对。","expected":"observe"},
   {"name":"selective_wait_unrelated","history":[["bot","等阿林到家后告诉我。"]],"text":"有人聊天吗，好无聊","wait":true,"expected":"observe"},
-  {"name":"stop_speaking","history":[["bot","想聊点什么？"]],"text":"先别说了，我要睡觉了","expected":"wake"}
+  {"name":"stop_speaking","history":[["bot","想聊点什么？"]],"text":"先别说了，我要睡觉了","expected":"wake"},
+  {"name":"mixed_bot_identity_continuation","history":[["member","@LunaSea_Faye_Bot 早，你跟肥鱼聊聊天试试"],["peer","早～@fish_bot，今天白饭配什么？拿 token 拌饭吗？"],["member","肥鱼回应"],["bot","配颗荷包蛋。你那边早餐吃啥？"],["member","@LunaSea_Faye_Bot 继续"]],"text":"@fish_bot 要我选，就黄油吐司配流心蛋，白饭留给你。显卡灰可不是椒盐。","expected":"wake"},
+  {"name":"mixed_bot_other_addressee","history":[["member","@LunaSea_Faye_Bot 早，你跟肥鱼聊聊天试试"],["peer","早～@fish_bot，今天白饭配什么？"],["bot","配颗荷包蛋。你那边早餐吃啥？"]],"text":"@LunaSea_Faye_Bot 继续说说你的早餐吧，这条只问你。","expected":"observe"}
 ]

@@ -185,6 +185,23 @@ async def test_model_payload_omits_internal_identity_and_revisions(case):
     assert len(payload) < len(snapshot.model_dump_json())
 
 
+@pytest.mark.parametrize("username,name", [("Deep_Fat_Fish_bot", "肥鱼"), ("another_bot", "另一个群友")])
+async def test_judge_system_identity_comes_from_target_not_peer_history(case, username, name):
+    store, _, provider, judge, snapshot, _ = case
+    peer = snapshot.messages[0].model_copy(update={"text": "@LunaSea_Faye_Bot 继续"})
+    with store.db:
+        store.db.execute("UPDATE messages SET text=? WHERE scope=? AND message_id=?",
+                         (peer.text, snapshot.scope, peer.message_id))
+    snapshot = updated(snapshot, bot_username=username, bot_name=name, nicknames=(name,),
+                       messages=(peer, *snapshot.messages[1:]))
+    await judge.assess(snapshot)
+    system = provider.chat.call_args.kwargs["messages"][0]["content"]
+    identity = json.loads(system.split("Runtime target bot identity: ", 1)[1])
+    assert identity == {"bot_username": username, "bot_name": name, "nicknames": [name]}
+    assert "@LunaSea_Faye_Bot" not in system
+    assert "host-verified references to THIS target bot" in system
+
+
 def test_public_defaults_do_not_advertise_retired_attention_settings():
     default = SETUP_SPEC.fields["social"].default
     assert "replyAttention" not in default

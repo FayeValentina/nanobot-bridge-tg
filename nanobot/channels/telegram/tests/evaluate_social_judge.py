@@ -16,14 +16,19 @@ from loguru import logger
 
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.telegram.social.judge import make_judge_provider
-from nanobot.channels.telegram.social.judge_models import JUDGE_PROMPT_VERSION
+from nanobot.channels.telegram.social.judge import SocialJudge, make_judge_provider
+from nanobot.channels.telegram.social.judge_models import (
+    JUDGE_PROMPT_VERSION,
+    JudgeDecision,
+    JudgeSnapshot,
+)
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
     ObservedMessage,
     QuotedMessage,
 )
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
+from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import (
     Config,
     TelegramSocialConfig,
@@ -36,6 +41,38 @@ async def evaluate(args):
     settings = TelegramSocialJudgeConfig(oauth_storage_dir=args.oauth_dir, max_retries=0,
                                          max_fallbacks_per_hour=0, min_interval_seconds=0)
     provider, version = make_judge_provider(Config(), settings)
+    if args.snapshot:
+        # Historical model-input replay only: never hand an expired batch to the
+        # scheduler or change the live assessment/read watermarks.
+        snapshot = JudgeSnapshot.model_validate_json(args.snapshot.read_text())
+        results = []
+        with tempfile.TemporaryDirectory(prefix="judge-input-replay-") as directory:
+            store = SocialStore(Path(directory))
+            try:
+                judge = SocialJudge(store, settings, provider)
+                prompt = args.system_prompt.read_text() if args.system_prompt else judge.system_prompt(snapshot)
+                for index in range(args.repeat):
+                    response = await provider.chat(
+                        messages=[{"role": "system", "content": prompt},
+                                  {"role": "user", "content": snapshot.prompt_json()}],
+                        tools=None, model=settings.model, max_tokens=settings.max_tokens,
+                        temperature=0, reasoning_effort=settings.reasoning_effort, tool_choice="none")
+                    if response.tool_calls or response.finish_reason != "stop" or response.content is None:
+                        raise ValueError("historical replay did not return a final decision")
+                    decision = JudgeDecision.model_validate_json(response.content)
+                    decision.validate_for(snapshot)
+                    result = {"run": index+1, "decision": decision.model_dump(mode="json"),
+                              "matched": args.expected is None or decision.decision == args.expected}
+                    results.append(result)
+                    print(json.dumps(result, ensure_ascii=False), flush=True)
+            finally:
+                store.close()
+        args.output.write_text(json.dumps({"model": settings.model, "historical_input_replay": True,
+            "messages": len(snapshot.messages), "results": results}, ensure_ascii=False, indent=2))
+        args.output.chmod(0o600)
+        if not all(result["matched"] for result in results):
+            raise SystemExit("Historical model-input replay has mismatches")
+        return
     cases = json.loads(args.cases.read_text())
     results = []
     for case in cases:
@@ -115,5 +152,9 @@ if __name__ == "__main__":
     parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("fixtures") / "social_judge_v3c.json")
     parser.add_argument("--case", action="append")
     parser.add_argument("--persona", type=Path, help="Use the reviewed role file in the actual 600-character summary")
+    parser.add_argument("--snapshot", type=Path, help="Replay an exported JudgeSnapshot without scheduling/delivery")
+    parser.add_argument("--system-prompt", type=Path, help="Replay a saved baseline system prompt with --snapshot")
+    parser.add_argument("--repeat", type=int, default=1, choices=range(1, 11))
+    parser.add_argument("--expected", choices=["wake", "observe"])
     logger.remove()
     asyncio.run(evaluate(parser.parse_args()))
