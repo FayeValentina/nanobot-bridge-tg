@@ -111,3 +111,12 @@ V3 使用 `openai-codex/gpt-6-luna` / low / 既有 temperature=0。主模型使�
 - 修改的三个 Python 实现文件 BasedPyright：0 errors / 0 warnings / 0 notes。最终 Ruff 及 `git diff --check` 通过。
 - 真实 V3 最终完整回放：21/21 + 8/8；真实主模型五例：5/5 结构检查通过。可审查的合成输入预期、判断及公开发送替身输出见 [validation.json](harness/validation.json)。这不是模型的长期语义准确率。
 - 实例补丁私有副本 `git apply --check` 及 Dream 工具白名单 dry-run 通过。实际同步/发布结果在完成后追加。
+
+### 本机发布结果
+
+- 源码提交/实际运行镜像：`d3b47efaeed133729ccee863bafb2db630fc511f`。构建和发布使用 `scripts/pipeline.sh build`、`scripts/pipeline.sh stop`、`scripts/pipeline.sh deploy d3b47efaeed133729ccee863bafb2db630fc511f`，均完成；文档后续提交不需要重建运行代码。
+- 四份外部文件已在停止实例期间同步。profile/MEMORY 的维护使用原 Dream 工具白名单并生成工作区审计提交 `45511095`；没有让运行中的群聊模型绕过权限。临时维护脚本第一次导入了错误的发布器类名，未写入任何实例文件；改为实际 `ReleaseManager` 后执行成功。
+- 外部修改前全实例备份：`/home/ubuntu/.local/share/nanobot-bridge-tg-deploy/backups/1793395456295079101/`，其中 `harness-maintenance.json` 记录范围和源值核验。原发布管线另生成代码发布备份；自动回滚后若需撤销本次人格/记忆维护，应同时从上述修改前备份恢复四份文件。
+- 运行容器 `nanobot-bridge-tg-gateway-1` healthy；安装 wheel、Telegram 依赖、WebUI、认证及 health 冒烟通过。启动日志确认 `bot @Deep_Fat_Fish_bot connected`，检查时近期 ERROR 为 0。
+- 安装包内用临时库/替身平台验证：普通 message 与 social_send 共享额度，发送保持 topic，当前 wait schema 包含 seconds/until/infinite，V3 获取人格前 600 字符，普通模式无鲸鱼娘人格，装载的是修正后的 V3 prompt。探针没有连接或发送到真实 Telegram 群。
+- 实例发布前后：137 条原消息、6 条原记忆、7 条原证据逐行源值保留；read/seen 水位不变；schema 13、quick_check=ok、foreign_key_check 无错误。`config.json` 原始字节完全一致；长期记忆旅行资料及 Active Tasks 的原始字节保留；外部 groupmate 与仓库审阅正文完全一致。
