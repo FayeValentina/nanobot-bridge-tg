@@ -1,17 +1,15 @@
 # Telegram 仿真 AI 群友迁移计划
 
-> **2026-10-29 后续顺序更新**：按本人要求，优先实施 [V3：消息池由中间模型判断](docs/MIGRATION_V3_PLAN.md)，
-> [V3-A/B](docs/V3B_IMPLEMENTATION.md) 已发布 `c9af722b`，schema 10，实际消息入口已交中间模型，旧代码语义规则退役。V2-C–F 顺延，M5 继续暂缓。
-> [迁移计划 v2.0](docs/MIGRATION_V2_PLAN.md) 保留已完成与后续功能范围。V2-A（动态等待、答后关注、睡前观察）已发布 `93fcb83f`，
-> 三个机制实际已启用，见 [V2-A 记录](docs/V2A_IMPLEMENTATION.md)。V2-B（触发/潜水条件）也已发布 `29579798`，schema 8，
-> 其提问、5% 概率等本地语义规则已由 V3-B 替换，见 [V2-B 历史记录](docs/V2B_IMPLEMENTATION.md)。下一批为 V3-C，
-> 完成后重新核对 V2-C/D，再补学习与表达能力。本页保留 M0–M4 的原始范围和完成记录。
+> **2026-10-30 当前状态**：V3-A/B/C 已完成，实际镜像 `e9669e5d`、schema 10、`social-judge-v3`。
+> 普通观察/显式等待已分开，直接纠正和行为调整不再被旧提问开关拦住；21 个真实模型合成样例及安装镜像 4 例通过。
+> 成本核对、配置展示清理和本机发布见 [V3-C 记录](docs/V3C_IMPLEMENTATION.md)。
+> 下一批 V2-C，再按 V3 适配 V2-D；V2-E/F 后续，M5 继续暂缓。下方保留 M0–M4 历史范围。
 
 > 状态：M0–M3 首批及 M4a/M4b 已完成实现、验收和本机发布；M5 尚未开始。仿真在当前实际实例已按本人配置启用，新增主动机会/安静时段保留关闭默认值。GIF/WebM/TGS 本批提供缩略图或元信息降级，逐帧理解和动画发送按需后续扩展。当前部署以 [本机管线说明](docs/LOCAL_PIPELINE.md) 及实例 state.json 为准。
 > 目标：把 qq-bridge 的群友仿真、人格、多媒体及群内记忆能力移植到 nanobot，使用 Telegram 收发消息，保持 nanobot 的轻量与可扩展性。
 > 最近核对：2026-10-28，M4a 见 [群记忆说明](docs/M4A_IMPLEMENTATION.md)，M4b 见 [主动机会说明](docs/M4B_IMPLEMENTATION.md)。分批范围和验收见 [M4 实施计划](docs/M4_PLAN.md)。日常发布操作以 [本机管线说明](docs/LOCAL_PIPELINE.md) 为准。
 > 本机部署记录：M0–M2 已提交为 `798d172d` 并部署到独立验证实例（8766 / 18791），健康检查与安装包离线验证通过；该次部署未切换实际使用实例，详见 [部署记录](docs/M2_DEPLOYMENT.md)。用户后续明确：个人本机使用，无测试群前置要求，后续功能批次默认及时部署到实际使用实例（8765 / 18790），以 [本机迭代约定](docs/LOCAL_PIPELINE.md) 为准。
-> 当前实际实例：V3-B `c9af722b`，schema 10，独立 Codex OAuth / `gpt-6-luna` 已统一判断群消息池，昵称、问句、随机、关注名单不再独立生成主回合。有限/无限及绝对期限等待、睡前观察、主动机会与共享工具权限保留。整群仿真、M4a/M4b、主动机会开启和 quietHours 关闭保留；social 原额度仍为每小时 120 个主唤醒回合/60 次 social 发送尝试。容器健康、Telegram 已连接，原消息、水位、记忆、角色与配置保留。详见 [V3-B 记录](docs/V3B_IMPLEMENTATION.md) 与 [整群仿真说明](docs/GROUP_SOCIAL.md)。
+> 当前实际实例：V3-C `e9669e5d`，schema 10，独立 Codex OAuth / `gpt-6-luna`。整群仿真、M4a/M4b、主动机会、共享工具权限保留；每小时 120 个主唤醒/60 次 social 发送尝试，quietHours 关闭。容器健康、数据与配置保留，见 [V3-C 记录](docs/V3C_IMPLEMENTATION.md)。
 
 > 2026-10-28 后续调整：支持按群启用所有话题的仿真，保持实际话题会话与发送路由，见 [按群启用说明](docs/GROUP_SOCIAL.md)。
 
