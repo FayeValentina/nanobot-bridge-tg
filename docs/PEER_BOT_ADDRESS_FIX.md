@@ -38,3 +38,10 @@
 ```
 
 发布与安装包核验结果完成后另行记录；本批不需要同步角色、SOUL、USER、MEMORY 或 config。
+
+## 发布结果
+
+- 发送与追问回归第二组 61 通过；本批相关本地测试合计 243 通过，Ruff、类型检查和 diff 检查通过。未重复执行前端全量测试，因本批不改 UI 或前端接口。
+- 代码提交/运行镜像 `2c557cf1e98d46abfc53db16433cc3997dfc4e0b`；现有 `scripts/pipeline.sh build` 与 `deploy 2c557cf1e98d46abfc53db16433cc3997dfc4e0b` 均通过，保留管线备份及失败回滚。
+- 安装包中再用原生 Telegram Update 和临时 SQLite 验证：两次连续明确 @、直接回复均进入 V3；未点名机器人、自身消息不触发；V3 observe 时不唤醒主模型，不产生发送。无真实群探测或旧消息补发。
+- 容器 healthy，Telegram 已连接，检查时 ERROR=0。139 条消息、6 条记忆、7 条证据原值保留，数据库完整性/外键检查通过；config、SOUL、USER、MEMORY、groupmate 与发布备份字节完全一致。
