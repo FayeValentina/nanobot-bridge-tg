@@ -1,6 +1,6 @@
 # Telegram 仿真群友改进计划 v3.0：消息池由中间模型判断
 
-> 2026-10-31，状态：**V3-A/B/C 已发布；[V4 主动交流](MIGRATION_V4_PLAN.md) A/B 已发布，C 已完成源端验收，待发布核验。** V2-C 必要部分已并入 V4，不先独立实施。
+> 2026-10-31，状态：**V3 与 [V4 主动交流](MIGRATION_V4_PLAN.md) A/B/C 均已完成验收与发布。** V2-C 必要部分已并入 V4，不独立重复实施。
 > 用户决定：真正替换现有代码中的语义唤醒规则，由中间模型根据消息池上下文决定是否让主模型介入。
 > **V3-C 已完成；V2-C/D 原剩余范围已核对，现按 V4 优先级重新安排；M5 继续暂缓。** 见 [V3-C 记录](V3C_IMPLEMENTATION.md)，不恢复已退役的消息语义触发设计。
 > 当前实际镜像为去哈希版本 `6ae4ada0`、social schema 11、`social-judge-v4`；消息语义判断统一使用独立 OAuth / `gpt-6-luna`。
@@ -239,7 +239,7 @@ V3 完成必须同时具备：统一中间入口、旧语义分支退役、配�
 ## 9. 关联与后续
 
 - [原迁移计划](../MIGRATION_PLAN.md)：M0–M4 历史范围与发布记录。
-- [迁移计划 V4](MIGRATION_V4_PLAN.md)：主动交流还原，A/B 已发布，C 完成源端验收后等待发布核验。
+- [迁移计划 V4](MIGRATION_V4_PLAN.md)：主动交流还原，A/B/C 已完成并发布，见最终验收记录。
 - [迁移计划 V2](MIGRATION_V2_PLAN.md)：A/B 已完成；C 不再先行，必要主动能力并入 V4，其余在 V4 后重新核对。
 - [V2-A 实现](V2A_IMPLEMENTATION.md)、[V2-B 实现](V2B_IMPLEMENTATION.md)：现有等待、存储、触发配置与兼容基线。
 - [共用工具权限](SHARED_TOOL_PERMISSIONS.md)、[本机管线](LOCAL_PIPELINE.md)：继续适用。
