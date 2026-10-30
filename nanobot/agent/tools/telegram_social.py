@@ -31,7 +31,7 @@ class TelegramSocialTool(Tool):
             "social_get_state": "Read the current role_id, role_file path inside this runtime, group/topic watermarks and behavior limits.",
             "social_read_messages": "Read bounded unread/recent messages in the current group/topic.",
             "social_mark_read": "Acknowledge continuously displayed messages through a seq from this turn.",
-            "social_send": "Publish a short message here; optional parts adds up to two paced messages. Each has its own receipt. reply_to must be observed here. For a proactive question/share about a saved matter, pass its stable followup_id; at most two confirmed attempts, parts count once. Omit for ordinary answers.",
+            "social_send": "Publish here using exactly one of text or parts. For one message, pass text only. For 2–3 paced messages, pass parts as the COMPLETE ordered list, including the first message, and omit text. Each part must add distinct content; do not repeat or rephrase the first part. Each has its own receipt. reply_to must be observed here. For a proactive question/share about a saved matter, pass its stable followup_id; at most two confirmed attempts, parts count once. Omit for ordinary answers.",
             "social_wait": "Wait without holding a turn lock. Choose exactly one: seconds, until (ISO timestamp with offset/Z), or infinite=true. Infinite waits have no timeout wake. purpose=reply requires a finite limit and may return immediately if already quiet; messages waits for context-relevant new content then quiet. Deferred waits must be last. An intermediary assesses new messages, including clear calls during sleep.",
             "social_set_wake": "Describe temporary semantic waiting intent for the intermediary using keywords, members, messages or questions. These are context, not local matching gates. A clear new call may interrupt a different wait without fulfilling it. Default one-shot, TTL 3600s; omit all conditions to clear. Infinite waiting does not extend TTL. Probability must be zero. Set proactive_paused=true when asked to stop proactive contact; false resumes on explicit request. This separate preference persists without TTL and does not clear waiting intent.",
             "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
@@ -64,12 +64,13 @@ class TelegramSocialTool(Tool):
         elif self.name == "social_send":
             properties = {
                 "followup_id": {"type": "string", "minLength": 1, "maxLength": 64},
-                "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "text": {"type": "string", "minLength": 1, "maxLength": 4000,
+                         "description": "One complete message. Omit when using parts."},
                 "reply_to": {"type": "integer", "minimum": 1},
                 "parts": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 4000},
-                          "minItems": 1, "maxItems": 2},
+                          "minItems": 2, "maxItems": 3,
+                          "description": "Complete ordered list of 2–3 distinct messages, including the first. Omit text."},
             }
-            required = ["text"]
         elif self.name == "social_wait":
             properties = {
                 "seconds": {"type": "number", "minimum": 1, "maximum": 86400},
@@ -93,7 +94,20 @@ class TelegramSocialTool(Tool):
                 "ttl_seconds": {"type": "number", "minimum": 1, "maximum": 86400},
                 "one_shot": {"type": "boolean"},
             }
-        return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
+        schema: dict[str, Any] = {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
+        if self.name == "social_send":
+            schema["oneOf"] = [{"required": ["text"]}, {"required": ["parts"]}]
+        return schema
+
+    def validate_params(self, params: dict[str, Any]) -> list[str]:
+        errors = super().validate_params(params)
+        if not errors and self.name == "social_send" and ("text" in params) == ("parts" in params):
+            errors.append(self._send_shape_error())
+        return errors
+
+    @staticmethod
+    def _send_shape_error() -> str:
+        return "Provide exactly one of text or parts: text for one message, or parts=[first, second, ...] for the complete 2–3 message sequence. Never supply both; no messages were queued."
 
     async def execute(self, **kwargs: Any) -> str | list[dict[str, Any]]:
         ctx = current_request_context()
@@ -135,8 +149,10 @@ class TelegramSocialTool(Tool):
                                                sleep_interrupts=TelegramSocialSleepInterruptConfig.model_validate(kwargs["sleep_interrupts"])
                                                if "sleep_interrupts" in kwargs else None)
             else:
-                if kwargs.get("parts"):
-                    result = {"actions": await self.runtime.send_parts(ctx, [kwargs["text"], *kwargs["parts"]], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))}
+                if ("text" in kwargs) == ("parts" in kwargs):
+                    raise ValueError(self._send_shape_error())
+                if "parts" in kwargs:
+                    result = {"actions": await self.runtime.send_parts(ctx, kwargs["parts"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))}
                 else:
                     result = await self.runtime.send(ctx, kwargs["text"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))
                 if kwargs.get("followup_id"):

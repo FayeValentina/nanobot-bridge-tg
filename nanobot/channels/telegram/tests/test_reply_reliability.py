@@ -10,6 +10,7 @@ from telegram.error import BadRequest, TimedOut
 
 from nanobot.agent.tools.context import RequestContext, ToolContext, request_context
 from nanobot.agent.tools.message import MessageTool
+from nanobot.agent.tools.telegram_social import TelegramSocialTool
 from nanobot.bus.events import OutboundMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
@@ -272,3 +273,58 @@ async def test_interrupted_ordinary_send_is_not_reawakened_after_restart(social)
         assert bus.inbound.empty()
     finally:
         restored.close()
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"text": "上午去海边。", "parts": ["上午去海边。", "下午逛市区。"]},
+    {"text": "上午去海边。\n午前回城。", "parts": ["上午去海边——午前回城。", "下午逛市区。"]},
+])
+async def test_ambiguous_social_send_is_rejected_before_any_queue_or_budget(social, payload):
+    sender = AsyncMock(return_value=800)
+    social.set_sender(sender)
+    tool = TelegramSocialTool(social, "social_send")
+    ctx = context(social)
+    assert any("exactly one" in error for error in tool.validate_params(payload))
+    with request_context(ctx):
+        result = await tool.execute(**payload)
+    assert result.is_error and "no messages were queued" in result
+    assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
+    assert social.store.db.execute("SELECT COUNT(*) FROM send_attempts").fetchone()[0] == 0
+    sender.assert_not_awaited()
+
+
+@pytest.mark.parametrize("texts", [["早上看海", "下午逛市区"], ["早上看海", "下午逛市区", "晚上休息"]])
+async def test_parts_is_the_complete_sequence_and_repeated_call_reuses_receipts(social, texts):
+    social.config.send_cooldown_seconds = 0
+    sender = AsyncMock(side_effect=range(800, 803))
+    social.set_sender(sender)
+    tool = TelegramSocialTool(social, "social_send")
+    ctx = context(social)
+    assert tool.validate_params({"parts": texts}) == []
+    assert tool.parameters["oneOf"] == [{"required": ["text"]}, {"required": ["parts"]}]
+    with request_context(ctx):
+        first = json.loads(await tool.execute(parts=texts))
+        repeated = json.loads(await tool.execute(parts=texts))
+    assert first == repeated and len(first["actions"]) == len(texts)
+    await social.run_due()
+    assert [call.args[1] for call in sender.call_args_list] == texts
+    assert social.store.db.execute("SELECT COUNT(*) FROM actions WHERE status='sent'").fetchone()[0] == len(texts)
+
+
+async def test_agent_recovers_from_old_text_plus_parts_without_duplicate_first_message(tmp_path, social):
+    social.config.coalesce_seconds = 0
+    social.config.send_cooldown_seconds = 0
+    sender = AsyncMock(side_effect=[800, 801])
+    social.set_sender(sender)
+    loop = agent(tmp_path, social, [
+        LLMResponse(content=None, tool_calls=[ToolCallRequest("ambiguous", "social_send", {
+            "text": "上午看海。\n午前回城。", "parts": ["上午看海——午前回城。", "下午逛市区。"]})]),
+        LLMResponse(content=None, tool_calls=[ToolCallRequest("corrected", "social_send", {
+            "parts": ["上午看海——午前回城。", "下午逛市区。"]})]),
+        LLMResponse(content=None, tool_calls=[ToolCallRequest("wait", "social_wait", {"seconds": 30, "purpose": "messages"})]),
+    ])
+    await loop._dispatch(await wake(social))
+    await social.run_due()
+    assert [call.args[1] for call in sender.call_args_list] == ["上午看海——午前回城。", "下午逛市区。"]
+    assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 2
