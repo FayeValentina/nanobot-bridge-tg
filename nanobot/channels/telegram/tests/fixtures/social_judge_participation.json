@@ -1,0 +1,10 @@
+[
+  {"name":"quiet_chat_invitation","history":[["123","我明天准备去郊游"],["bot","带点水，出发前看一下交通。"]],"text":"没人说话","expected":"wake","standing_questions":true},
+  {"name":"unanswered_invitation_followup","history":[["123","我明天准备去郊游"],["bot","带点水，出发前看一下交通。"],["123","没人说话"]],"text":"？","expected":"wake","standing_questions":true},
+  {"name":"open_chat_invitation","history":[],"text":"有人聊天吗，好无聊","expected":"wake"},
+  {"name":"ordinary_personal_update","history":[],"text":"今天第一次去做陶艺，终于烧出了一个能用的杯子","expected":"wake"},
+  {"name":"other_member_invitation","history":[["alice","小明在吗？"]],"text":"小明，没人说话，你陪我聊会儿","expected":"observe"},
+  {"name":"quoted_invitation","history":[],"text":"小说里有句台词：“没人说话？”，我把它抄下来做校对。","expected":"observe"},
+  {"name":"selective_wait_unrelated","history":[["bot","等阿林到家后告诉我。"]],"text":"有人聊天吗，好无聊","wait":true,"expected":"observe"},
+  {"name":"stop_speaking","history":[["bot","想聊点什么？"]],"text":"先别说了，我要睡觉了","expected":"wake"}
+]
