@@ -42,3 +42,10 @@
 151 项本地测试通过，Ruff 通过，类型 0 errors / 0 warnings / 0 notes。新组装测试第一次未同步 fixture 的原消息内容，被既有“快照来源改变”校验正确拒绝；完善 fixture 后完整重跑通过，没有放松校验。真实 V3-C 21/21、增补两例后的参与集 10/10 通过。没有重复执行前端全量测试，本批没有 UI 或前端接口变更；部署结果完成后追加。
 
 本批只需源码镜像重建/重启，不修改 config、profile、人格、社交记忆或数据库结构。新模板会通过既有 prompt setting revision 失效旧判断缓存。修复后是否实际公开回复，仍应分别查看新一轮 V3 判断、主模型回合及 Telegram 确认回执。
+
+## 发布结果
+
+- 源码提交/运行镜像 `ed10132686b345de6f74a9b6c3a3e1cd74a84b8e`，现有 build/deploy、wheel/WebUI/认证/健康冒烟均通过。容器 healthy，Telegram connected，检查时 ERROR=0。
+- 使用安装 wheel、实例 provider 配置和持久 OAuth，直接回放同一份实际失败输入，再次返回 wake、source_seqs=[82]；只使用临时库，不调用 Telegram 发送或调度器。安装包探针初版误把插件 channels 字典当属性访问，修正读取方式后执行通过；不是运行实例异常。
+- 143 条原消息、6 条记忆、7 条证据逐行保留；config、SOUL、USER、MEMORY、groupmate 与发布备份字节一致，数据库完整性与外键检查通过。
+- 新的 system 身份锚定已在实际运行包生效；原消息 6862 没有补发或伪造成新消息。安装包真实模型结果归档到同一私有验证目录。
