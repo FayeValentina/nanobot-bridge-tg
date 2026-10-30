@@ -191,6 +191,29 @@ async def test_failed_send_does_not_count_and_unknown_send_blocks_resending(soci
     assert social.store.followups.describe(item["id"]).confirmed_attempts == 1
 
 
+async def test_reworded_unknown_matter_stays_blocked_after_process_restart(social):
+    item = own(social)
+    social.set_sender(AsyncMock(side_effect=SocialDeliveryUnknownError("lost receipt")))
+    result = await social.send(ordinary("before-restart"), "旅行后来怎么样？", None, followup_id=item["id"])
+    changed = edit(social, item["id"], pending_question="换个说法：旅途顺利吗？")
+    assert changed["id"] == item["id"] and changed["reserved_attempts"] == 1
+    social.close()
+    restored = TelegramSocialRuntime(social.config, social.root, social.bus, now=social.now)
+    sender = AsyncMock(return_value=501)
+    restored.set_sender(sender)
+    try:
+        clock(restored).advance(3)
+        with pytest.raises(PermissionError, match="unknown send"):
+            await restored.send(ordinary("after-restart"), changed["pending_question"], None, followup_id=item["id"])
+        sender.assert_not_awaited()
+        restored.store.delivery(result["action_id"], "sent", message_id=501)
+        restored.store.delivery(result["action_id"], "sent", message_id=501)
+        info = restored.store.followups.describe(item["id"])
+        assert info.confirmed_attempts == 1 and info.remaining_attempts == 1
+    finally:
+        restored.close()
+
+
 async def test_two_paced_groups_count_once_each_and_second_group_finishes(social):
     item = own(social)
     sender = AsyncMock(side_effect=[501, 502, 503, 504])
@@ -251,12 +274,15 @@ async def test_ordinary_message_shares_attempts_and_preserves_regular_delivery(t
     tg._app.bot.send_message = AsyncMock(side_effect=[SimpleNamespace(message_id=501), SimpleNamespace(message_id=502)])
     tg.bus.set_delivery_handler("telegram", tg.send_confirmed)
     tool = MessageTool.create(ToolContext(config=ToolsConfig(), workspace=str(tmp_path), bus=tg.bus))
+    clock(social).advance(3)
     with request_context(ordinary("ordinary-second")):
         result = json.loads(await tool.execute(content="再关心一次旅行", followup_id=item["id"]))
     assert result["status"] == "sent"
     assert "remaining_attempts=0" in result["detail"]
+    clock(social).advance(3)
     with request_context(ordinary("third")):
         rejected = json.loads(await tool.execute(content="第三次主动追问", followup_id=item["id"]))
+        clock(social).advance(3)
         regular = json.loads(await tool.execute(content="普通答复"))
     assert rejected["status"] == "failed" and regular["status"] == "sent"
     assert tg._app.bot.send_message.await_count == 2

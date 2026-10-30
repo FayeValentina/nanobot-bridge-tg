@@ -1,0 +1,507 @@
+{
+  "scope": "Synthetic conversations, real models, temporary SQLite and fake publishing; no live group probe and no statistical accuracy claim.",
+  "judge": [
+    {
+      "suite": "v3c",
+      "model": "openai-codex/gpt-6-luna",
+      "reasoning_effort": "low",
+      "cases": 21,
+      "matched": 21,
+      "results": [
+        {
+          "case": "topic_name_call",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 1,
+            "source_seqs": [
+              1
+            ],
+            "reason": "成员直接叫了 bot 的昵称「肥鱼」，是在呼唤它。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "name_particle",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 1,
+            "source_seqs": [
+              1
+            ],
+            "reason": "成员直接用 bot 昵称询问“在吗”，是在呼叫肥鱼。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "implicit_continuation",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "成员接续了机器人刚才的提问，邀请它猜准备了什么。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "plain_answer",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "Member answers the bot’s recent question about when they are leaving.",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "other_members",
+          "expected": "observe",
+          "decision": {
+            "decision": "observe",
+            "through_seq": 2,
+            "source_seqs": [],
+            "reason": "“下午三点”是在回答群友对小明的提问，与机器人无关。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "quoted_name",
+          "expected": "observe",
+          "decision": {
+            "decision": "observe",
+            "through_seq": 1,
+            "source_seqs": [],
+            "reason": "只是转述小明昨天说过的话，并非对肥鱼的新呼唤或面向群体的聊天邀请。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "sleep_call",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 1,
+            "source_seqs": [
+              1
+            ],
+            "reason": "成员直接称呼“肥鱼”并询问是否在，明确呼叫机器人。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "similar_name",
+          "expected": "observe",
+          "decision": {
+            "decision": "observe",
+            "through_seq": 1,
+            "source_seqs": [],
+            "reason": "“肥鱼王”不是已知昵称，消息看起来是在问另一位成员；无法确认是在叫本 bot。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "departure_update",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "这是对机器人“准备出发时告诉我一声”的直接回应，说明快要出发，属于有意义的延续。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "correction",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "这是对机器人回复的直接偏好纠正，需要主模型调整用简体中文。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "preference",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "对机器人刚提出的选择偏好问题作出直接回答，明确希望以后只给一个最推荐选项。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "behavior_request",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "成员明确要求先暂停发言、等其看完；需要唤醒以应用这一行为指示。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "other_member_correction",
+          "expected": "observe",
+          "decision": {
+            "decision": "observe",
+            "through_seq": 2,
+            "source_seqs": [],
+            "reason": "这句明确是在对小明说，不是对机器人提出的偏好或行为要求。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "selective_unrelated",
+          "expected": "observe",
+          "decision": {
+            "decision": "observe",
+            "through_seq": 2,
+            "source_seqs": [],
+            "reason": "当前处于等待小明到家这一特定条件；“今晚吃面”与该条件无关。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "selective_fulfilled",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "Member 456 fulfilled the explicit wait by saying they are home.",
+            "fulfills_intent": true
+          },
+          "matched": true
+        },
+        {
+          "case": "selective_new_call",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "明确呼叫“肥鱼”并请求帮忙看题，属于对 bot 的直接请求；不满足等待小明到家这一条件。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "selective_correction",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "明确称呼肥鱼并要求以后使用简体中文，是对机器人表达偏好变更。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "observe_before_sleep",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "直接纠正了机器人的用字偏好，应唤醒以便后续改用简体中文。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "media_unknown",
+          "expected": "observe",
+          "decision": {
+            "decision": "observe",
+            "through_seq": 2,
+            "source_seqs": [],
+            "reason": "前一条明确请小明看图，后续图片是该成员间的对话；图片内容未知，也没有面向机器人的新邀请。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "cancel_wait",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "成员明确叫出“肥鱼”，并要求取消刚才的等待；这是对机器人行为的直接变更请求。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "crowded_correction",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 30,
+            "source_seqs": [
+              30
+            ],
+            "reason": "直接纠正了机器人的用字偏好，需要主模型知晓并改用简体字。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        }
+      ]
+    },
+    {
+      "suite": "participation",
+      "model": "openai-codex/gpt-6-luna",
+      "reasoning_effort": "low",
+      "cases": 8,
+      "matched": 8,
+      "results": [
+        {
+          "case": "quiet_chat_invitation",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 3,
+            "source_seqs": [
+              3
+            ],
+            "reason": "“没人说话”在闲聊中是开放的参与邀请。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "unanswered_invitation_followup",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 4,
+            "source_seqs": [
+              3,
+              4
+            ],
+            "reason": "“没人说话”是开放的聊天邀请，随后单独的“？”续接了未回应的邀请。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "open_chat_invitation",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 1,
+            "source_seqs": [
+              1
+            ],
+            "reason": "群友直接邀请大家聊天并说无聊，是明确的开放聊天与陪伴邀请。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "ordinary_personal_update",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 1,
+            "source_seqs": [
+              1
+            ],
+            "reason": "分享了第一次做陶艺并成功烧出实用杯子的个人经历，有自然的祝贺和好奇切口。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "other_member_invitation",
+          "expected": "observe",
+          "decision": {
+            "decision": "observe",
+            "through_seq": 2,
+            "source_seqs": [],
+            "reason": "“陪我聊会儿”是对小明的明确邀请，不是对肥鱼的邀请。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "quoted_invitation",
+          "expected": "observe",
+          "decision": {
+            "decision": "observe",
+            "through_seq": 1,
+            "source_seqs": [],
+            "reason": "“没人说话？”是小说台词的引用，消息明确是在抄写校对，不是对群聊发出的邀请。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "selective_wait_unrelated",
+          "expected": "observe",
+          "decision": {
+            "decision": "observe",
+            "through_seq": 2,
+            "source_seqs": [],
+            "reason": "当前处于针对阿林到家消息的选择性等待；“有人聊天吗”是面向群体的邀请，不是对机器人的明确呼叫。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        },
+        {
+          "case": "stop_speaking",
+          "expected": "wake",
+          "decision": {
+            "decision": "wake",
+            "through_seq": 2,
+            "source_seqs": [
+              2
+            ],
+            "reason": "成员明确要求先别说话、要睡觉，需要让主模型应用暂停发言的请求。",
+            "fulfills_intent": false
+          },
+          "matched": true
+        }
+      ]
+    }
+  ],
+  "main": {
+    "model": "deepseek-flash",
+    "temperature": 0.1,
+    "evaluation_max_tokens": 4096,
+    "summary": {
+      "cases": 5,
+      "automated_passes": 5,
+      "main_calls": 14,
+      "judge_calls": 3,
+      "main_tokens": 110875,
+      "judge_tokens": 7084,
+      "main_turn_elapsed_ms": [
+        3127,
+        6349,
+        5615,
+        2056,
+        5232
+      ],
+      "judge_elapsed_ms": [
+        1923,
+        1559,
+        2017
+      ],
+      "web_calls": 0,
+      "semantic_review": "Review all publications and retrieved sources; automated pass is not a naturalness judgement."
+    },
+    "results": [
+      {
+        "case": "silence",
+        "automated_checks": {
+          "main_completed": true,
+          "no_exact_repeat": true,
+          "no_public_reply": true
+        },
+        "matched": true,
+        "publications": []
+      },
+      {
+        "case": "idle_pending_thought",
+        "automated_checks": {
+          "main_completed": true,
+          "no_exact_repeat": true,
+          "published_thought": true,
+          "linked_attempt": true,
+          "idle_bypassed_judge": true
+        },
+        "matched": true,
+        "publications": [
+          "轻装出门这件事我最近老在琢磨，感觉关键是先砍掉\"万一用得上\"的那一堆。真让你只带三样走，会选什么？"
+        ]
+      },
+      {
+        "case": "old_story",
+        "automated_checks": {
+          "main_completed": true,
+          "no_exact_repeat": true,
+          "public_question": true,
+          "linked_attempt": true,
+          "idle_bypassed_judge": true
+        },
+        "matched": true,
+        "publications": [
+          "林林，昨天的陶艺体验课怎么样呀？最好奇的是你最后捧回来个啥(´･ω･`)"
+        ]
+      },
+      {
+        "case": "chat_invitation",
+        "automated_checks": {
+          "main_completed": true,
+          "no_exact_repeat": true,
+          "responded_to_chat_invitation": true
+        },
+        "matched": true,
+        "publications": [
+          "我在呀，刚在边上吐泡泡没吭声 🫧 怎么啦，想聊点什么？"
+        ]
+      },
+      {
+        "case": "explicit_end",
+        "automated_checks": {
+          "main_completed": true,
+          "no_exact_repeat": true,
+          "dropped_without_question": true
+        },
+        "matched": true,
+        "publications": [
+          "好，去忙吧，不问啦~"
+        ]
+      }
+    ]
+  },
+  "intermediate_findings": [
+    "One earlier main sample invented 刚开群; the missing-history boundary was clarified and the five scenes were rerun.",
+    "One intermediate V3 run misidentified 肥鱼王 as the bot (20/21); the distinct-addressee instruction was clarified before the final full 21+8 rerun."
+  ]
+}

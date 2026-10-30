@@ -44,7 +44,7 @@ async def evaluate(args):
         with tempfile.TemporaryDirectory(prefix="social-judge-eval-") as directory:
             root = Path(directory)
             (root / "roles").mkdir()
-            (root / "roles/friend.md").write_text("你是肥鱼，作为群友自然地参与群聊。")
+            (root / "roles/friend.md").write_text(args.persona.read_text() if args.persona else "你是肥鱼，作为群友自然地参与群聊。")
             scope = ConversationScope("telegram", -10001, 53)
             config = TelegramSocialConfig(enabled=True, coalesce_seconds=0, cooldown_seconds=0, judge=settings,
                 scopes=[TelegramSocialScopeConfig(chat_id=scope.chat_id, thread_id=53, role_id="friend",
@@ -114,5 +114,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("fixtures") / "social_judge_v3c.json")
     parser.add_argument("--case", action="append")
+    parser.add_argument("--persona", type=Path, help="Use the reviewed role file in the actual 600-character summary")
     logger.remove()
     asyncio.run(evaluate(parser.parse_args()))

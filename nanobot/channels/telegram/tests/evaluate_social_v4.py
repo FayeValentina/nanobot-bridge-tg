@@ -169,7 +169,7 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
     with tempfile.TemporaryDirectory(prefix="social-v4c-") as directory:
         root = Path(directory)
         (root / "roles").mkdir()
-        (root / "roles/friend.md").write_text("你是肥鱼，作为群友用简短自然的中文交流，具体关心对方近况。")
+        (root / "roles/friend.md").write_text(args.persona.read_text() if args.persona else "你是肥鱼，作为群友用简短自然的中文交流，具体关心对方近况。")
         social = TelegramSocialConfig(enabled=True, coalesce_seconds=0, cooldown_seconds=0, send_cooldown_seconds=0,
             judge=settings, scopes=[TelegramSocialScopeConfig(chat_id=SCOPE.chat_id, thread_id=SCOPE.thread_id,
                 role_id="friend", nicknames=["肥鱼"])])
@@ -409,5 +409,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--case", action="append", choices=CASES)
     parser.add_argument("--live-web", action="store_true", help="Use existing configured web tools for interest_search")
+    parser.add_argument("--persona", type=Path, help="Use the reviewed role file for judge and main turns")
     logger.remove()
     asyncio.run(evaluate(parser.parse_args()))

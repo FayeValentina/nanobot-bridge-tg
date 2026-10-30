@@ -172,7 +172,7 @@ async def test_ordinary_message_gets_platform_ids_and_a_durable_receipt(tmp_path
     assert tg.bus.outbound.empty()
     row = social.store.db.execute("SELECT status,message_ids,turn_id FROM message_deliveries").fetchone()
     assert row[0] == "sent" and json.loads(row[1]) == result["message_ids"] and row[2] == "normal-send"
-    assert social.store.db.execute("SELECT COUNT(*) FROM send_attempts").fetchone()[0] == 0
+    assert social.store.db.execute("SELECT COUNT(*) FROM send_attempts").fetchone()[0] == (2 if attachment else 1)
     assert social.store.db.execute("SELECT text FROM messages WHERE is_self=1").fetchone()[0] == "ordinary public answer"
     assert tg._app.bot.send_message.call_args.kwargs["message_thread_id"] == A.thread_id
 
@@ -185,6 +185,77 @@ async def test_ordinary_timeout_is_unknown_and_never_retried(social):
     assert receipt.status == "unknown" and receipt.message_ids == ()
     assert tg._app.bot.send_message.await_count == 1
     assert social.store.db.execute("SELECT status FROM message_deliveries").fetchone()[0] == "unknown"
+
+
+@pytest.mark.parametrize("first", ["social", "message"])
+@pytest.mark.parametrize("limit", ["budget", "cooldown"])
+async def test_switching_publishers_cannot_bypass_shared_limits(social, first, limit):
+    if limit == "budget":
+        social.config.max_sends_per_hour = 1
+        social.config.send_cooldown_seconds = 0
+    social.configure(social.config)
+    tg = channel(social)
+    tg._app_ready.set()
+    ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
+                         turn_id="shared-send", metadata={"message_thread_id": A.thread_id})
+    outbound = OutboundMessage("telegram", str(A.chat_id), "ordinary text",
+                               metadata={"message_thread_id": A.thread_id})
+    if first == "social":
+        assert (await social.send(ctx, "social text", None))["status"] == "sent"
+        result = await tg.send_confirmed(outbound)
+        assert result.status == "failed" and limit in result.detail
+    else:
+        assert (await tg.send_confirmed(outbound)).status == "sent"
+        with pytest.raises(PermissionError, match=limit):
+            await social.send(ctx, "social text", None)
+    assert tg._app.bot.send_message.await_count == 1
+    assert social.store.db.execute("SELECT COUNT(*) FROM send_attempts").fetchone()[0] == 1
+
+
+async def test_ordinary_unknown_survives_restart_and_blocks_cross_tool_retry(social):
+    tg = channel(social)
+    tg._app_ready.set()
+    tg._app.bot.send_message.side_effect = TimedOut()
+    outbound = OutboundMessage("telegram", str(A.chat_id), "不要重复这个问题",
+                               metadata={"message_thread_id": A.thread_id})
+    assert (await tg.send_confirmed(outbound)).status == "unknown"
+    social.close()
+    restored = TelegramSocialRuntime(social.config, social.root, social.bus, now=social.now)
+    try:
+        clock(restored).advance(3)
+        sender = AsyncMock(return_value=502)
+        restored.set_sender(sender)
+        ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
+                             turn_id="later-turn", metadata={"message_thread_id": A.thread_id})
+        with pytest.raises(PermissionError, match="unknown"):
+            await restored.send(ctx, outbound.content, None)
+        sender.assert_not_awaited()
+        assert restored.store.uncertain_send(A.session_key)["text"] == outbound.content
+    finally:
+        restored.close()
+
+
+async def test_queued_ordinary_delivery_failure_keeps_topic_and_never_retries(social):
+    tg = channel(social)
+    tg._app_ready.set()
+    tg._app.bot.send_message.side_effect = BadRequest("topic not available")
+    await tg.send(OutboundMessage("telegram", str(A.chat_id), "topic only",
+                                  metadata={"message_thread_id": A.thread_id}))
+    tg._app.bot.send_message.assert_awaited_once()
+    assert tg._app.bot.send_message.call_args.kwargs["message_thread_id"] == A.thread_id
+    assert social.store.db.execute("SELECT status FROM actions").fetchone()[0] == "failed"
+
+
+async def test_ordinary_envelope_reserves_every_chunk_before_any_platform_send(social):
+    social.config.max_sends_per_hour = 1
+    social.configure(social.config)
+    tg = channel(social)
+    tg._app_ready.set()
+    result = await tg.send_confirmed(OutboundMessage("telegram", str(A.chat_id), "x" * 5000,
+        metadata={"message_thread_id": A.thread_id}))
+    assert result.status == "failed" and "budget" in result.detail
+    tg._app.bot.send_message.assert_not_awaited()
+    assert not social.store.db.execute("SELECT 1 FROM send_attempts").fetchone()
 
 
 async def test_partial_ordinary_send_reports_confirmed_prefix(social):

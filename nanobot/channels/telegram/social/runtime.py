@@ -63,14 +63,20 @@ For a member-message wake, an intermediary selected the batch using the conversa
 source messages and a short reason, not a command to speak. Verified mentions/replies refer to
 this Telegram bot account even if shared memory uses a different name.
 Only explicit publishing tools send messages. Your final text is internal and is never published.
+These Social delivery rules override ordinary current-chat/final reply guidance.
 To answer a member, call social_send or the ordinary message tool, including after web searches.
 If you choose silence, return no text or call social_wait. Never put an intended public reply only in final text.
-An uncertain_send may already have reached the group. Do not repeat that attempted text.
+Use the current tool schema, runtime limits and actual receipts as authority. Never bypass
+limits, cooldowns or deduplication by switching tools or rewording. Replies to this conversation
+keep its current group/topic; a failed topic send must not fall back to the whole group or a remembered chat_id.
+queued is not confirmed delivery; let the runtime handle queued retries. failed/rejected is not success. An uncertain_send/unknown
+may already have reached the group: do not retry it, including with different wording/tools.
 You may end silently. Keep public messages short and relevant. Do not narrate tool activity.
 Read the snapshot, identify who is speaking and who a reply addresses. Do not answer conversations
 between other members as if they addressed you. Use message age; avoid replying to stale remarks.
 You may acknowledge only continuously displayed seq values with social_mark_read. New messages
 can arrive during your turn. A history_gap is missing information, not evidence you read it.
+Do not turn a short snapshot or missing history into claims about what just happened in the group.
 Media markers do not contain image content. Use social_get_media with an observed message_id
 to view images or sticker thumbnails on demand, including a quoted message's media.
 If media is unavailable or the model cannot see images, do not invent its content.
@@ -108,7 +114,8 @@ Your current persona text is supplied below. If asked where its configuration li
 social_get_state for the actual role_id and role_file instead of guessing a path or saying
 no configuration is available. role_file is a path inside this runtime, not a host-machine path.
 All enabled ordinary assistant tools are available with the same configured permissions here.
-Use normal file/command tools to inspect or edit the role file when requested. Changes apply to
+Use normal file/command tools within their current permissions to inspect or edit the role file
+when requested; this does not authorize edits to Dream-managed profile/memory files. Changes apply to
 the next conversation turn. Use the ordinary message tool for attachments or cross-chat delivery.
 Use social_wait to wait for new messages or sleep. Legacy calls and deferred waits end the turn
 immediately and must be your last action; an already-quiet purpose="reply" call may return to this turn.
@@ -137,20 +144,19 @@ intent for the intermediary, not local string tests. A clear new call may interr
 wait without fulfilling it. One-shot conditions are consumed only when a matching judgement is
 admitted or actually displayed; clear completed/cancelled intent explicitly. Probability sampling
 has retired; do not request probability>0. Coalescing remains bounded timing, not a language rule.
-Have concrete curiosity about members, their plans and unfinished conversations. Naturally ask a
-specific follow-up or share a relevant thought when you have one; do not habitually lurk or wait
-for another question before continuing. Keep the tone and timing considerate.
 Ground follow-ups in the displayed conversation and live memories. Do not fill gaps with assumed
 weather, location, transport, dates or personal experiences; ask when a missing detail matters.
 A short answer only establishes what it says: an afternoon departure time does not establish
 sunshine, heat or comfortable weather. Own thoughts and motivations are ideas, not a record of
-physical experiences. Share them as ideas or hypotheticals ("想到一个问题", "如果是我会选…"); do not
+physical experiences. Share them as ideas or hypotheticals; do not
 turn them into claims that you recently packed, travelled, bought things, or repeatedly did so.
 Before publishing, remove factual embellishments unsupported by the displayed data or a source.
 An opportunity with kind="idle" is a configured chance to START a conversation, even without new
 messages or unused memories. Look at current topic/pending memories and member interests. Follow
-up on something worth caring about, ask a specific question, or share an idea and why it came to
-mind. If nothing is ready, you may use available web/search tools for a bounded look at something
+up on an unfinished topic or a member's earlier voluntary share, or express a pending_thought.
+Check message/evidence dates and recent confirmed speech: old memories are not recent events.
+Reuse the live intention ID; do not reopen an already shared/declined topic merely because it is idle.
+If nothing is ready, you may use available web/search tools for a bounded look at something
 relevant to their interests, then briefly share or ask for their view. Be honest about sources;
 never present search results as your own lived experience or invent recent events. If there is
 enough credible content after one lookup, stop exploring; otherwise use at most three web lookups
@@ -171,9 +177,6 @@ This persists across sleep, ordinary conversation and restart; resume only on an
 using proactive_paused=false. It does not disable responses to member messages.
 Prefer social_send/sticker for paced proactive delivery. Quiet hours skip opportunities;
 explicit addresses still use normal triggers. Ordinary tools retain their usual permissions.
-Public replies should stay close to the facts: after "下午三点，跟朋友一起", a natural continuation
-is "跟朋友一起呀，准备去哪儿玩？". The time alone is not weather evidence. Share a packing idea
-as "想到个问题：轻装出门你会带哪三样？", without inventing a recent packing/travel story.
 """
 
 SocialSender = Callable[[ConversationScope, str, int | None], Awaitable[int]]
@@ -693,6 +696,29 @@ class TelegramSocialRuntime:
         assert ctx.turn_id is not None
         return self.store.mark_read(scope.session_key, ctx.turn_id, through)
 
+    def send_lock(self, scope: ConversationScope) -> asyncio.Lock:
+        """All publishing tools serialize against the same scope's send journal."""
+        return self._send_locks.setdefault(scope.session_key, asyncio.Lock())
+
+    def reserve_message_send(self, scope: ConversationScope, text: str, turn: str | None, *, units: int = 1) -> str:
+        """Reserve an ordinary delivery envelope; caller holds the shared send lock."""
+        _, version = self._persona(scope)
+        if self.store.state(scope.session_key)["mode"] == "paused":
+            raise PermissionError("social conversation is paused")
+        self.proactive.check_send(scope, turn, self.binding(scope))
+        previous = self.store.last_send(scope.session_key)
+        if previous is not None and self.now() < previous + self.config.send_cooldown_seconds:
+            raise PermissionError("send cooldown is active")
+        if self.store.db.execute("SELECT 1 FROM actions WHERE scope=? AND status='queued'",
+                                 (scope.session_key,)).fetchone():
+            raise PermissionError("an earlier send is awaiting delivery")
+        if turn is not None and self.store.db.execute(
+            "SELECT 1 FROM actions WHERE scope=? AND version=? AND turn_id=? AND trim(content)=trim(?) "
+            "AND status IN ('sent','sending','unknown')", (scope.session_key, version, turn, text),
+        ).fetchone():
+            raise PermissionError("delivery already attempted in this turn; do not repeat it")
+        return self.store.reserve_send(scope.session_key, version, text, self.config.max_sends_per_hour, turn=turn, units=units)
+
     async def send(self, ctx: RequestContext, text: str, reply_to: int | None,
                    *, sticker: MediaReference | None = None, followup_id: str | None = None) -> DeliveryResult:
         scope = self.validate_context(ctx)
@@ -701,7 +727,7 @@ class TelegramSocialRuntime:
             raise PermissionError("reply target was not observed in this group/topic")
         if (self._sticker_sender if sticker else self._sender) is None:
             raise RuntimeError("Telegram sender is unavailable")
-        lock = self._send_locks.setdefault(scope.session_key, asyncio.Lock())
+        lock = self.send_lock(scope)
         async with lock:
             self.validate_context(ctx)
             self.proactive.check_send(scope, ctx.turn_id, self.binding(scope))
@@ -756,7 +782,7 @@ class TelegramSocialRuntime:
         if self._sender is None:
             raise RuntimeError("Telegram sender is unavailable")
         assert ctx.turn_id is not None
-        lock = self._send_locks.setdefault(scope.session_key, asyncio.Lock())
+        lock = self.send_lock(scope)
         async with lock:
             self.validate_context(ctx)
             self.proactive.check_send(scope, ctx.turn_id, self.binding(scope))
@@ -868,7 +894,7 @@ class TelegramSocialRuntime:
             if scope is None or self.binding(scope) is None:
                 self.store.delivery(str(row["id"]), "failed", error="scope revoked")
                 continue
-            lock = self._send_locks.setdefault(scope.session_key, asyncio.Lock())
+            lock = self.send_lock(scope)
             async with lock:
                 action = str(row["id"])
                 try:

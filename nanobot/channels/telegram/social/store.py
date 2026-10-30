@@ -1057,7 +1057,7 @@ class SocialStore:
         self.followups.sync_receipts(str(row["scope"]))
 
     def reserve_send(self, key: str, version: str, text: str, limit: int, *, turn: str | None = None,
-                     sticker: MediaReference | None = None, followup_id: str | None = None) -> str:
+                     sticker: MediaReference | None = None, followup_id: str | None = None, units: int = 1) -> str:
         with self.db:
             if self.state(key)["version"] != version:
                 raise PermissionError("conversation configuration changed")
@@ -1070,7 +1070,7 @@ class SocialStore:
             count = self.db.execute(
                 "SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?", (key, self.now() - 3600),
             ).fetchone()[0]
-            if count >= limit:
+            if count + units > limit:
                 raise PermissionError("hourly send budget exhausted")
             action = uuid4().hex
             self.db.execute("INSERT INTO actions(id,scope,version,content,status,created,turn_id,kind,media_ref) "
@@ -1083,7 +1083,7 @@ class SocialStore:
                     raise ValueError("a proactive follow-up requires a source turn")
                 self.followups.reserve(key, followup_id, turn, action)
             self.db.execute("DELETE FROM actions WHERE scope=? AND created<?", (key, self.now() - 604800))
-            self.db.execute("INSERT INTO send_attempts VALUES(?,?)", (key, self.now()))
+            self.db.executemany("INSERT INTO send_attempts VALUES(?,?)", [(key, self.now())] * units)
             self.db.execute("DELETE FROM send_attempts WHERE at<=?", (self.now() - 3600,))
             return action
 

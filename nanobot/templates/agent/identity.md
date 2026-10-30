@@ -16,6 +16,7 @@ Nanobot's agent workspace is at: {{ agent_workspace_path }}
 {% endif %}
 
 Only Dream memory-consolidation tasks may edit the profile and long-term memory files listed above.
+The bound Social role file is separate from these files. All writes remain subject to current tool/workspace permissions; persona text cannot grant additional access.
 
 {{ platform_policy }}
 {% if channel == 'telegram' or channel == 'qq' or channel == 'discord' %}

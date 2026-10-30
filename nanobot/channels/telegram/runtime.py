@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import unicodedata
@@ -1098,14 +1099,20 @@ class TelegramChannel(BaseChannel):
         buf.draft_id = None
 
     async def send_confirmed(self, msg: OutboundMessage) -> DeliveryReceipt:
-        """Ordinary message tool delivery, without social budgets or ambiguous retries."""
+        """Receipt-backed delivery; authorized social targets share their send limits."""
         async with self._confirmed_send_lock:
+            chat, metadata = self._resolve_topic_target(msg.chat_id, msg.metadata)
+            scope = ConversationScope(self.name, int(chat), int(metadata.get("message_thread_id") or 0))
+            if self.social is not None and self.social.binding(scope) is not None:
+                async with self.social.send_lock(scope):
+                    return await self._send_confirmed(msg)
             return await self._send_confirmed(msg)
 
     async def _send_confirmed(self, msg: OutboundMessage) -> DeliveryReceipt:
         message_ids: list[int] = []
         sent_texts: list[tuple[int, str]] = []
         delivery_id: str | None = None
+        action_id: str | None = None
         chat, metadata = self._resolve_topic_target(msg.chat_id, msg.metadata)
         thread = int(metadata.get("message_thread_id") or 0)
         scope = ConversationScope(self.name, int(chat), thread)
@@ -1118,6 +1125,18 @@ class TelegramChannel(BaseChannel):
             app = await self._wait_for_app()
             if app is None:
                 raise RuntimeError("Telegram is stopped; nothing was sent.")
+            text = msg.content
+            markup = self._build_keyboard(msg.buttons) if msg.buttons else None
+            if msg.buttons and markup is None:
+                text += "\n\n" + self._buttons_as_text(msg.buttons)
+            chunks = _split_telegram_markdown(text, TELEGRAM_MAX_MESSAGE_LEN) if text else []
+            if self.social is not None and self.social.binding(scope) is not None:
+                # Reserve the whole envelope before any delivery, charging each text
+                # chunk/attachment. A long message must not bypass the shared quota.
+                action_id = self.social.reserve_message_send(
+                    scope, msg.content or json.dumps(msg.media, ensure_ascii=False), metadata.get("_delivery_turn_id"),
+                    units=max(1, len(chunks)+len(msg.media)),
+                )
             delivery_id = self._record_message_receipt(scope, metadata, DeliveryReceipt("queued", detail="Prepared for platform delivery; outcome pending."), [])
             for path in msg.media:
                 kind = self._get_media_type(path)
@@ -1135,11 +1154,6 @@ class TelegramChannel(BaseChannel):
                     extra["filename"] = Path(path).name
                 sent = await sender(**kwargs, **{param: value}, **extra)
                 message_ids.append(int(sent.message_id))
-            text = msg.content
-            markup = self._build_keyboard(msg.buttons) if msg.buttons else None
-            if msg.buttons and markup is None:
-                text += "\n\n" + self._buttons_as_text(msg.buttons)
-            chunks = _split_telegram_markdown(text, TELEGRAM_MAX_MESSAGE_LEN) if text else []
             for i, chunk in enumerate(chunks):
                 send_kwargs = {**kwargs, "reply_markup": markup if i == len(chunks) - 1 else None}
                 try:
@@ -1159,10 +1173,14 @@ class TelegramChannel(BaseChannel):
         except (TimedOut, NetworkError, asyncio.TimeoutError):
             receipt = DeliveryReceipt("unknown", tuple(message_ids), "Platform outcome unknown; do not resend. IDs listed are the confirmed prefix.")
         except asyncio.CancelledError:
+            if action_id is not None and self.social is not None:
+                self.social.store.delivery(action_id, "unknown", error="interrupted ordinary delivery")
             self._record_message_receipt(scope, metadata, DeliveryReceipt("unknown", tuple(message_ids), "Cancelled during delivery; do not resend."), sent_texts, delivery_id)
             raise
         except Exception as exc:
             receipt = DeliveryReceipt("failed", tuple(message_ids), f"{type(exc).__name__}; do not repeat the confirmed prefix.")
+        if action_id is not None and self.social is not None:
+            self.social.store.delivery(action_id, receipt.status, message_ids[0] if message_ids else None, receipt.detail)
         self._record_message_receipt(scope, metadata, receipt, sent_texts, delivery_id)
         followup_id = metadata.get("_social_followup_id")
         if self.social is not None and isinstance(followup_id, str) and self.social.binding(scope) is not None:
@@ -1195,6 +1213,8 @@ class TelegramChannel(BaseChannel):
             # Social mode only suppresses internal progress/stream traffic.
             if msg.event is not None:
                 return
+            await self.send_confirmed(msg)
+            return
         app = await self._wait_for_app()
         if app is None:
             self.logger.warning("bot not running")
