@@ -14,7 +14,8 @@ def offline_intermediary(monkeypatch):
         provider = AsyncMock(spec=LLMProvider)
 
         async def decide(**kwargs):
-            data = json.loads(kwargs["messages"][1]["content"])
+            content = kwargs["messages"][1]["content"]
+            data = json.loads(content[0]["text"] if isinstance(content, list) else content)
             fresh = [message for message in data["messages"] if message["seq"] in data["new_seqs"]]
             intent = data.get("intent") or {}
             preferences = intent or data.get("participation", {})

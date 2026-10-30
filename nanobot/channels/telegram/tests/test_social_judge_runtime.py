@@ -1,15 +1,20 @@
 """V3-B message-pool integration: one semantic authority, durable bounded scheduling."""
 
 import asyncio
+import base64
+import io
 import json
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 from telegram import Update
 
 from nanobot.channels.telegram.social.judge_models import JudgeSnapshot
+from nanobot.channels.telegram.social.models import QuotedMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
+from nanobot.channels.telegram.tests.test_social_media import picture, reference
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, channel, telegram_update
 from nanobot.channels.telegram.tests.test_social_scheduler import (
     clock,
@@ -27,7 +32,8 @@ def decide(runtime, decision="wake", *, fulfills=False, error=False):
     provider = AsyncMock(spec=LLMProvider)
 
     async def respond(**kwargs):
-        snapshot = json.loads(kwargs["messages"][1]["content"])
+        content = kwargs["messages"][1]["content"]
+        snapshot = json.loads(content[0]["text"] if isinstance(content, list) else content)
         if error:
             return LLMResponse(content=None, finish_reason="error")
         source = snapshot["new_seqs"][-1:] or tuple(message["seq"] for message in snapshot["messages"] if not message["is_self"])[-1:]
@@ -41,7 +47,8 @@ def decide(runtime, decision="wake", *, fulfills=False, error=False):
 
 
 def sent_snapshot(provider):
-    data = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+    content = provider.chat.call_args.kwargs["messages"][1]["content"]
+    data = json.loads(content[0]["text"] if isinstance(content, list) else content)
     return JudgeSnapshot.model_validate_json(json.dumps({**data, "scope": A.session_key,
         "version": "test", "expires": data["created"] + 120}))
 
@@ -383,3 +390,152 @@ async def test_restart_with_changed_judge_rebuilds_pending_input_without_reusing
         assert restored.store.state(A.session_key)["read_through"] == 0
     finally:
         restored.close()
+
+
+async def settle_images(social):
+    await due(social)
+    await asyncio.gather(*list(social.judging.tasks.values()))
+    await social.run_due()
+
+
+@pytest.mark.parametrize("kind,caption", [("photo", "[non-text message]"), ("photo", "今天的晚饭"),
+                                         ("document", "[non-text message]")])
+async def test_judge_sees_native_image_before_deciding_and_can_wake_main(social, kind, caption):
+    provider = decide(social)
+    loader = AsyncMock(return_value=picture((1800, 900)))
+    social.set_media_services(loader, AsyncMock())
+    ref = reference(kind=kind)
+    await social.observe(observed(social, text=caption, media=(kind,), media_refs=(ref,)), directed=False)
+    await settle_images(social)
+    content = provider.chat.call_args.kwargs["messages"][1]["content"]
+    images = [block for block in content if block["type"] == "image_url"]
+    assert len(images) == 1
+    with Image.open(io.BytesIO(base64.b64decode(images[0]["image_url"]["url"].split(",", 1)[1]))) as image:
+        assert image.size == (768, 384)
+    assert "Message 1 (seq 1)" in content[-1]["text"]
+    assert "_meta" not in images[0] and str(social.root) not in json.dumps(content)
+    loader.assert_awaited_once()
+    assert social.bus.inbound.qsize() == 1
+    assert social.store.state(A.session_key)["read_through"] == 0
+    metadata = social.store.db.execute("SELECT input_meta FROM judge_batches").fetchone()[0]
+    assert "base64" not in metadata and "download-file" not in metadata
+
+
+async def test_album_image_budget_and_topic_isolation(social):
+    social.config.judge.media_max_images = 2
+    provider = decide(social)
+    loader = AsyncMock(return_value=picture())
+    social.set_media_services(loader, AsyncMock())
+    # An unrelated old image in another topic must never be downloaded.
+    social.store.observe(observed(social, 99, scope=B, media=("photo",),
+                                 media_refs=(reference(file_id="other-topic", unique_id="other"),)), 500)
+    for seq in range(1, 5):
+        await social.observe(observed(social, seq, text="[non-text message]", media=("photo",),
+            media_refs=(reference(file_id=f"file-{seq}", unique_id=f"unique-{seq}"),), album_id="album"), directed=False)
+    await settle_images(social)
+    blocks = provider.chat.call_args.kwargs["messages"][1]["content"]
+    assert sum(block["type"] == "image_url" for block in blocks) == 2
+    assert "image limit" in blocks[-1]["text"]
+    assert [call.args[0].file_id for call in loader.call_args_list] == ["file-1", "file-2"]
+
+
+async def test_new_text_reply_can_show_its_quoted_image(social):
+    provider = decide(social)
+    loader = AsyncMock(return_value=picture())
+    social.set_media_services(loader, AsyncMock())
+    quote = QuotedMessage(message_id=77, sender_id="member", name="Member", timestamp=social.now()-100, text="",
+                          media_refs=[reference()])
+    await social.observe(observed(social, text="这个怎么看？", reply_to=77, reply=quote), directed=False)
+    await settle_images(social)
+    blocks = provider.chat.call_args.kwargs["messages"][1]["content"]
+    assert sum(block["type"] == "image_url" for block in blocks) == 1
+    assert "Quoted message 77, replied to by seq 1" in blocks[-1]["text"]
+
+
+@pytest.mark.parametrize("failure", ["download", "invalid", "oversize", "timeout"])
+async def test_unavailable_judge_image_is_explicit_without_extra_model_calls(social, failure):
+    provider = decide(social, "observe")
+    loader = AsyncMock(return_value=b"broken" if failure == "invalid" else picture())
+    if failure == "download":
+        loader.side_effect = RuntimeError("offline")
+    if failure == "timeout":
+        social.config.judge.media_timeout_seconds = 0.1
+
+        async def blocked(*args):
+            await asyncio.Event().wait()
+
+        loader.side_effect = blocked
+    social.set_media_services(loader, AsyncMock())
+    ref = reference(size=social.config.media_max_bytes+1) if failure == "oversize" else reference()
+    await social.observe(observed(social, media=("photo",), media_refs=(ref,)), directed=False)
+    await settle_images(social)
+    provider.chat.assert_awaited_once()
+    blocks = provider.chat.call_args.kwargs["messages"][1]["content"]
+    assert not any(block["type"] == "image_url" for block in blocks)
+    assert "unavailable" in blocks[-1]["text"]
+    assert social.bus.inbound.empty()
+    assert social.store.judge_through(A.session_key) == 1
+
+
+@pytest.mark.parametrize("change", ["pause", "edit"])
+async def test_invalidated_judge_image_download_never_calls_model(social, change):
+    provider = decide(social)
+    message = observed(social, media=("photo",), media_refs=(reference(),))
+
+    async def pause(*args):
+        if change == "pause":
+            social.store.pause(A.session_key)
+        else:
+            await social.observe(replace(message, update_id=99, is_edit=True), directed=False)
+        return picture()
+
+    social.set_media_services(AsyncMock(side_effect=pause), AsyncMock())
+    await social.observe(message, directed=False)
+    await settle_images(social)
+    provider.chat.assert_not_awaited()
+    assert social.bus.inbound.empty()
+    assert not list(social.media.root.iterdir())
+
+
+async def test_bounded_judge_retry_reuses_downloaded_original(social):
+    social.config.judge.retry_delay_seconds = 0
+    provider = decide(social, error=True)
+    loader = AsyncMock(return_value=picture())
+    social.set_media_services(loader, AsyncMock())
+    await social.observe(observed(social, media=("photo",), media_refs=(reference(),)), directed=False)
+    await settle_images(social)
+    await asyncio.gather(*list(social.judging.tasks.values()))
+    await social.run_due()
+    assert provider.chat.await_count == 2
+    loader.assert_awaited_once()
+    assert social.store.db.execute("SELECT attempts,status FROM judge_batches").fetchone()["status"] == "fallback"
+
+
+async def test_exhausted_judge_budget_does_not_download_images(social):
+    social.config.judge.max_requests_per_hour = 1
+    decide(social, "observe")
+    await social.observe(observed(social), directed=False)
+    await due(social)
+    loader = AsyncMock(return_value=picture())
+    social.set_media_services(loader, AsyncMock())
+    await social.observe(observed(social, 2, media=("photo",), media_refs=(reference(),)), directed=False)
+    await settle_images(social)
+    loader.assert_not_awaited()
+
+
+@pytest.mark.parametrize("purpose", ["reply", "messages"])
+async def test_general_reply_wait_never_inherits_standing_question_only_preference(social, purpose):
+    social.config.scopes[0].wake_on_question = True
+    social.config.scopes[0].wake_keywords = ["旅行"]
+    social.config.scopes[0].wake_senders = ["456"]
+    social.store.observe(observed(social), 500)
+    ctx = context(social)
+    social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
+    social.wait(ctx, 30, purpose=purpose)
+    finish(social, ctx)
+    intent = social.judging.intent(A)
+    assert intent.purpose == purpose
+    assert intent.keywords == () and intent.senders == ()
+    assert '"waiting_for_questions": false' in intent.description
+    assert '"waiting_for_messages": true' in intent.description
+    assert "not only questions" in intent.description

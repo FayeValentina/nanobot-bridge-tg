@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -51,7 +51,7 @@ class JudgeCoordinator:
         if self.provider is None:
             self.provider, self.provider_version = make_judge_provider(Config(), self.runtime.config.judge)
         self.judge = SocialJudge(self.store, self.runtime.config.judge, self.provider,
-                                 provider_changed=provider_changed)
+                                 provider_changed=provider_changed, media_loader=self._media_content)
         # A restart can change the prompt as well as the provider. Reassess live
         # pending content with fresh facts instead of restoring an old wait intent.
         with self.store.db:
@@ -99,15 +99,19 @@ class JudgeCoordinator:
         dynamic = dynamic and bool(conditions.keywords or conditions.senders or conditions.on_messages or conditions.on_question)
         if not (wait or dynamic or state["mode"] in {"waiting", "sleeping"}):
             return None
-        keywords = conditions.keywords if dynamic else binding.wake_keywords
-        senders = conditions.senders if dynamic else binding.wake_senders
+        # Standing participation preferences must not become selective criteria
+        # merely because a normal reply/messages wait is present.
+        keywords = conditions.keywords if dynamic else []
+        senders = conditions.senders if dynamic else []
         observing = wait is not None and wait["purpose"] == "observe"
+        selective = dynamic and not observing
         return JudgeIntent(
             purpose=wait["purpose"] if wait else None,
             description=("Background observation before sleep, not a selective wait for questions. " if observing else
-                         "An explicit wait is selective; ordinary unrelated messages need not interrupt it. Clear calls remain reachable. ")
-                        + json.dumps({"waiting_for_messages": conditions.on_messages if dynamic else binding.wake_on_messages,
-                                      "waiting_for_questions": (conditions.on_question if dynamic else binding.wake_on_question) and not observing}),
+                         "An explicit wait is selective; ordinary unrelated messages need not interrupt it. Clear calls remain reachable. " if selective else
+                         "Waiting for a relevant conversation continuation, including photos and short answers; not only questions. ")
+                        + json.dumps({"waiting_for_messages": conditions.on_messages if selective else not observing,
+                                      "waiting_for_questions": conditions.on_question if selective else False}),
             keywords=tuple(keywords), senders=tuple(senders),
             until=float(wait["total_due"]) if wait and wait["total_due"] is not None else state["wake_at"],
             infinite=bool(state["wait_infinite"]),
@@ -116,6 +120,54 @@ class JudgeCoordinator:
             interrupt_policy=json.dumps({"operator": binding.sleep_interrupts.model_dump(),
                                           "temporary": conditions.sleep_interrupts.model_dump() if conditions.sleep_interrupts else None}),
         )
+
+    async def _media_content(self, snapshot: JudgeSnapshot) -> list[dict[str, Any]]:
+        scope = ConversationScope.from_session_key(snapshot.scope)
+        assert scope is not None  # JudgeSnapshot validates the scope.
+
+        def validate() -> None:
+            if self.runtime.binding(scope) is None or not self.store._judge_current(snapshot):
+                raise PermissionError("judge image batch is no longer current")
+
+        validate()
+        fresh = [message for message in snapshot.messages if message.seq in snapshot.new_seqs]
+        targets = [(message.message_id, f"Message {message.message_id} (seq {message.seq})") for message in fresh if message.media]
+        targets += [(message.reply.message_id, f"Quoted message {message.reply.message_id}, replied to by seq {message.seq}")
+                    for message in fresh if message.reply is not None and message.reply.kind != "topic_root"]
+        if not targets:
+            return []
+        blocks: list[dict[str, Any]] = []
+        used: set[tuple[int, str]] = set()
+        settings = self.runtime.config.judge
+        limit = min(settings.media_max_images, self.runtime.config.media_max_images_per_turn)
+        try:
+            # Bound all image I/O together, leaving time for the actual decision.
+            async with asyncio.timeout(min(settings.media_timeout_seconds, settings.timeout_seconds / 2)):
+                async with self.runtime._media_lock:
+                    for message_id, label in targets:
+                        validate()
+                        for ref in self.store.media_for_message(snapshot.scope, message_id):
+                            image_label = label
+                            identity = (message_id, ref.unique_id)
+                            if identity in used:
+                                continue
+                            if len(used) >= limit:
+                                blocks.append({"type": "text", "text": "Other batch images omitted at the image limit; their content is unknown."})
+                                return blocks
+                            used.add(identity)
+                            if ref.animated or ref.video or ref.kind in {"video", "animation"}:
+                                if not ref.thumbnail_id:
+                                    blocks.append({"type": "text", "text": f"{label}: no thumbnail; motion not decoded."})
+                                    continue
+                                ref = ref.model_copy(update={"file_id": ref.thumbnail_id, "size": None, "width": 0, "height": 0})
+                                image_label += "; thumbnail only, motion not decoded"
+                            images = await self.runtime.prepare_media(scope, ref, image_label, validate=validate,
+                                                                      max_edge=settings.media_max_edge)
+                            blocks.extend({key: value for key, value in block.items() if key != "_meta"} for block in images)
+        except TimeoutError:
+            blocks.append({"type": "text", "text": "Remaining images unavailable: image preparation timed out; do not infer their content."})
+        validate()
+        return blocks
 
     def _message(self, row: object) -> JudgeMessage:
         # sqlite3.Row is typed at the dynamic storage boundary.

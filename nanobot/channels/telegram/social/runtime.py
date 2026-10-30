@@ -233,26 +233,34 @@ class TelegramSocialRuntime:
                     ref = original.model_copy(update={"file_id": original.thumbnail_id,
                                                       "size": None, "width": 0, "height": 0})
                 ctx.attributes["social_images"] = used + 1
-                try:
-                    if ref.size is not None and ref.size > self.config.media_max_bytes:
-                        raise ValueError("media exceeds the byte limit")
-                    if ref.width * ref.height > self.config.media_max_pixels:
-                        raise ValueError("media exceeds the pixel limit")
-                    raw = self.media.original(scope, ref, self.config.media_max_bytes)
-                    if raw is None:
-                        raw = await asyncio.wait_for(self._media_loader(ref, self.config.media_max_bytes), timeout=20)
-                    self.validate_context(ctx)
-                    image, path = await asyncio.to_thread(self.media.prepare, scope, ref, raw, self.config)
-                    self.validate_context(ctx)
-                    label = f"Message {message_id}: {original.summary()}" + ("; thumbnail only, motion not decoded" if thumbnail else "")
-                    blocks.extend(build_image_content_blocks(image, "image/jpeg", path, label))
-                except asyncio.CancelledError:
-                    raise
-                except PermissionError:
-                    raise
-                except Exception:
-                    blocks.append({"type": "text", "text": f"Message {message_id}: media unavailable, invalid or exceeds limits; do not infer image content."})
+                blocks.extend(await self.prepare_media(scope, ref,
+                    f"Message {message_id}: {original.summary()}" + ("; thumbnail only, motion not decoded" if thumbnail else ""),
+                    validate=lambda: self.validate_context(ctx)))
         return blocks or [{"type": "text", "text": "This message has no supported visual media."}]
+
+    async def prepare_media(self, scope: ConversationScope, ref: MediaReference, label: str, *,
+                            validate: Callable[[], object], max_edge: int | None = None) -> list[dict[str, Any]]:
+        """Shared main/judge image preparation; callers hold the media lock and validate their own turn/batch."""
+        validate()
+        if self._media_loader is None:
+            return [{"type": "text", "text": f"{label}: media unavailable; downloader is offline."}]
+        try:
+            if ref.size is not None and ref.size > self.config.media_max_bytes:
+                raise ValueError("media exceeds the byte limit")
+            if ref.width * ref.height > self.config.media_max_pixels:
+                raise ValueError("media exceeds the pixel limit")
+            raw = self.media.original(scope, ref, self.config.media_max_bytes)
+            if raw is None:
+                raw = await asyncio.wait_for(self._media_loader(ref, self.config.media_max_bytes), timeout=20)
+            validate()
+            config = self.config.model_copy(update={"media_max_edge": min(max_edge, self.config.media_max_edge)}) if max_edge else self.config
+            image, path = await asyncio.to_thread(self.media.prepare, scope, ref, raw, config)
+            validate()
+            return build_image_content_blocks(image, "image/jpeg", path, label)
+        except (asyncio.CancelledError, PermissionError):
+            raise
+        except Exception:
+            return [{"type": "text", "text": f"{label}: media unavailable, invalid or exceeds limits; do not infer image content."}]
 
     def collect_sticker(self, ctx: RequestContext, message_id: int, note: str | None) -> str:
         scope = self.validate_context(ctx)

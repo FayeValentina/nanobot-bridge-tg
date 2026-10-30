@@ -220,6 +220,9 @@ class TelegramSocialJudgeConfig(Base):
     max_fallbacks_per_hour: int = Field(default=6, ge=0, le=60)
     context_messages: int = Field(default=30, ge=2, le=100)
     context_chars: int = Field(default=16000, ge=2000, le=32000)
+    media_max_images: int = Field(default=4, ge=1, le=8)
+    media_max_edge: int = Field(default=768, ge=64, le=1536)
+    media_timeout_seconds: float = Field(default=5, ge=0.1, le=30, allow_inf_nan=False)
     batch_ttl_seconds: int = Field(default=120, ge=30, le=600)
     oauth_storage_dir: str | None = Field(default=None, min_length=1, max_length=1024)
 

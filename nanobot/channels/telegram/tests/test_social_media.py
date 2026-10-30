@@ -257,6 +257,8 @@ async def test_album_items_keep_identity_and_share_one_wake(social):
     assert social.store.db.execute("SELECT COUNT(*) FROM judge_state WHERE pending_due IS NOT NULL").fetchone()[0] == 1
     await asyncio.sleep(1.05)
     await social.run_due()
+    await asyncio.gather(*list(social.judging.tasks.values()))
+    await social.run_due()
     assert social.bus.inbound.qsize() == 1
     ctx = context(social)
     view = json.loads(social.read_messages(ctx))
@@ -409,6 +411,10 @@ async def test_real_agent_receives_image_tool_result_without_public_leak(tmp_pat
         LLMResponse(content="internal result"),
     ])
     await social.observe(message(seq=2, text="@bot look"), directed=True)
+    await asyncio.gather(*list(social.judging.tasks.values()))
+    await social.run_due()
+    await asyncio.gather(*list(social.judging.tasks.values()))
+    await social.run_due()
     await loop._dispatch(social.bus.inbound.get_nowait())
     calls = loop.provider.chat_stream_with_retry.call_args_list
     tools = [m for m in calls[-1].kwargs["messages"] if m["role"] == "tool"]
@@ -427,6 +433,10 @@ async def test_real_agent_cannot_reset_image_budget_between_tool_rounds(tmp_path
         LLMResponse(content="internal"),
     ])
     await social.observe(message(seq=2, text="@bot look"), directed=True)
+    await asyncio.gather(*list(social.judging.tasks.values()))
+    await social.run_due()
+    await asyncio.gather(*list(social.judging.tasks.values()))
+    await social.run_due()
     await loop._dispatch(social.bus.inbound.get_nowait())
     messages = loop.provider.chat_stream_with_retry.call_args.kwargs["messages"]
     tool_messages = [m for m in messages if m["role"] == "tool"]

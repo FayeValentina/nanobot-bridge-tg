@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from oauth_cli_kit.providers import OPENAI_CODEX_PROVIDER
 from oauth_cli_kit.storage import FileTokenStorage
@@ -35,6 +37,7 @@ def judge_preset(settings: TelegramSocialJudgeConfig) -> ModelPresetConfig:
 
 
 JudgeProviderSettings = tuple[object, ...] | str
+JudgeMediaLoader = Callable[[JudgeSnapshot], Awaitable[list[dict[str, Any]]]]
 
 
 def make_judge_provider(config: Config, settings: TelegramSocialJudgeConfig) -> tuple[LLMProvider, JudgeProviderSettings]:
@@ -70,10 +73,12 @@ class SocialJudge:
     """Call once per assessment, journaling pending retries without polling or main calls."""
 
     def __init__(self, store: SocialStore, settings: TelegramSocialJudgeConfig,
-                 provider: LLMProvider, *, provider_changed: bool = False) -> None:
+                 provider: LLMProvider, *, provider_changed: bool = False,
+                 media_loader: JudgeMediaLoader | None = None) -> None:
         self.store = store
         self.settings = settings.model_copy(deep=True)
         self.provider = provider
+        self.media_loader = media_loader
         self.prompt = render_template("telegram/social_judge.md")
         self.revision = store.setting_revision("judge", json.dumps({
             "settings": self.settings.model_dump(),
@@ -116,9 +121,13 @@ class SocialJudge:
         started = time.monotonic()
         try:
             async with asyncio.timeout(min(settings.timeout_seconds, snapshot.expires - self.store.now())):
+                # Prepare only after claiming the durable request budget. Image bytes
+                # are transient provider input, never persisted in batch metadata.
+                media = await self.media_loader(snapshot) if self.media_loader else []
+                content = [{"type": "text", "text": payload}, *media] if media else payload
                 # Raw chat, not chat_with_retry: all retry attempts are bounded and charged here.
                 response = await self.provider.chat(
-                    messages=[{"role": "system", "content": self.prompt}, {"role": "user", "content": payload}],
+                    messages=[{"role": "system", "content": self.prompt}, {"role": "user", "content": content}],
                     tools=None, model=settings.model, max_tokens=settings.max_tokens,
                     temperature=0, reasoning_effort=settings.reasoning_effort,
                     tool_choice="none",

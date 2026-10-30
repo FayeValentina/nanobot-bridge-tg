@@ -88,6 +88,8 @@ def test_judge_defaults_roundtrip_through_existing_json_settings():
     {"timeoutSeconds": float("nan")}, {"timeoutSeconds": float("inf")},
     {"contextMessages": 101}, {"contextChars": 100}, {"model": "gpt-6-luna "},
     {"provider": ""}, {"reasoningEffort": "ultra"}, {"enabled": True},
+    {"mediaMaxImages": 0}, {"mediaMaxImages": 9}, {"mediaMaxEdge": 63},
+    {"mediaMaxEdge": 1537}, {"mediaTimeoutSeconds": float("nan")},
 ])
 def test_judge_config_rejects_invalid_or_unsupported_settings(values):
     with pytest.raises(ValidationError):
