@@ -4,6 +4,7 @@ This file provides guidance to AI coding agents working with this repository.
 
 - The next implementation priority is [V4: restore qq-bridge proactive conversation](docs/MIGRATION_V4_PLAN.md). Do not start V2-C as a separate batch first.
 - V4-A and V4-B are implemented and deployed (schema 13); see [V4-A](docs/V4A_IMPLEMENTATION.md) and [V4-B](docs/V4B_IMPLEMENTATION.md). V4-C remains. The planning-only restriction below describes the earlier planning task, not the later authorized implementation.
+- The subsequent [group image participation fix](docs/IMAGE_WAKE_FIX.md) is deployed (schema 13, social-judge-v6): V3 sees bounded native images before deciding; ordinary conversation waits do not inherit standing question-only preferences. This does not complete V4-C.
 - V4 covers idle autonomous wakes without new messages or unconsumed memories, proactive conversation prompts, pending questions/thoughts with motivation, pacing, reply continuity and at most two proactive attempts per matter.
 - Bring the necessary V2-C statistics/scheduling and V2-E follow-up memory fields into V4; defer unrelated V2 scope and M5. V3 remains the semantic entry for incoming messages; the planned V4 idle timer event goes directly to the existing main-agent execution path as documented.
 - The 2026-10-30 V4 planning task is documentation only. Record implementation and deployment status separately when later implementation is requested; do not treat planned behavior as already implemented.
