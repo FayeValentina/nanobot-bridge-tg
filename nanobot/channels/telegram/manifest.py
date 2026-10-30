@@ -12,7 +12,9 @@ SETUP_SPEC = ChannelSetupSpec(
         "proxy": field(),
         "allowFrom": field("list"),
         "groupPolicy": field("enum", choices=DIRECT_GROUP_POLICIES, default="mention"),
-        "social": field("json", default=TelegramSocialConfig().model_dump(by_alias=True)),
+        "social": field("json", default=TelegramSocialConfig().model_dump(by_alias=True, exclude={
+            "reply_attention": True, "dynamic_wait": {"enabled", "unfinished_seconds"},
+        })),
         "mode": field("enum", choices={"polling", "webhook"}, default="polling"),
         "replyToMessage": field("bool", default=False),
         "reactEmoji": field(default="👀"),

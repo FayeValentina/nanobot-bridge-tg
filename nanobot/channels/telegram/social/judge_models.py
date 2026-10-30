@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nanobot.channels.telegram.social.models import ConversationScope
 
-JUDGE_PROMPT_VERSION = "social-judge-v2"
+JUDGE_PROMPT_VERSION = "social-judge-v3"
 
 
 class JudgeDTO(BaseModel):
@@ -57,6 +57,15 @@ class JudgeIntent(JudgeDTO):
         return self
 
 
+class JudgeParticipation(JudgeDTO):
+    """Standing preferences are context, never an explicit selective wait."""
+
+    keywords: tuple[str, ...] = Field(default=(), max_length=20)
+    senders: tuple[str, ...] = Field(default=(), max_length=20)
+    on_messages: bool = False
+    on_question: bool = False
+
+
 class JudgeSnapshot(JudgeDTO):
     scope: str = Field(min_length=1, max_length=160)
     version: str = Field(min_length=1, max_length=128)
@@ -74,6 +83,7 @@ class JudgeSnapshot(JudgeDTO):
     mode: Literal["observing", "waiting", "sleeping"] = "observing"
     main_running: bool = False
     intent: JudgeIntent | None = None
+    participation: JudgeParticipation = Field(default_factory=JudgeParticipation)
     history_truncated: bool = False
     opportunity: str | None = Field(default=None, max_length=2000)
     quiet_due: float | None = Field(default=None, ge=0, allow_inf_nan=False)
@@ -100,6 +110,10 @@ class JudgeSnapshot(JudgeDTO):
 
     def input_hash(self) -> str:
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+
+    def prompt_json(self) -> str:
+        """Keep integrity hashes locally; they carry no conversational meaning."""
+        return self.model_dump_json(exclude={"messages": {"__all__": {"content_hash"}}})
 
 
 class JudgeDecision(JudgeDTO):

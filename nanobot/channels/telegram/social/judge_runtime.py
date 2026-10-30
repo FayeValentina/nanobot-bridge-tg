@@ -17,6 +17,7 @@ from nanobot.channels.telegram.social.judge import SocialJudge, make_judge_provi
 from nanobot.channels.telegram.social.judge_models import (
     JudgeIntent,
     JudgeMessage,
+    JudgeParticipation,
     JudgeReply,
     JudgeSnapshot,
 )
@@ -47,15 +48,18 @@ class JudgeCoordinator:
             self.provider, self.provider_version = make_judge_provider(Config(), self.runtime.config.judge)
         self.judge = SocialJudge(self.store, self.runtime.config.judge, self.provider,
                                  provider_version=self.provider_version)
+        # A restart can change the prompt as well as the provider. Reassess live
+        # pending content with fresh facts instead of restoring an old wait intent.
+        with self.store.db:
+            self.store.db.execute("UPDATE judge_batches SET status='cancelled',error_code='provider_changed' "
+                                  "WHERE status IN ('pending','running') AND signature<>?", (self.judge.signature,))
+            self.store.db.execute("UPDATE judge_state SET batch_id=NULL,pending_due=? WHERE batch_id IN "
+                                  "(SELECT id FROM judge_batches WHERE status='cancelled' AND error_code='provider_changed')",
+                                  (self.runtime.now(),))
 
     def set_provider(self, provider: LLMProvider, version: str) -> None:
-        previous = self.judge.signature
         self.provider, self.provider_version = provider, version
         self.configure()
-        if self.judge.signature != previous:
-            with self.store.db:
-                self.store.db.execute("UPDATE judge_batches SET status='cancelled',error_code='provider_changed' "
-                                      "WHERE status IN ('pending','running') AND signature<>?", (self.judge.signature,))
         self.runtime.scheduler.notify()
 
     def cancel(self) -> None:
@@ -81,21 +85,24 @@ class JudgeCoordinator:
         self.store.queue_judgement(scope.session_key, seq, delay=delay,
                                     maximum=self.runtime.config.dynamic_wait.max_seconds, opportunity=opportunity)
 
-    def _intent(self, scope: ConversationScope) -> JudgeIntent | None:
+    def intent(self, scope: ConversationScope) -> JudgeIntent | None:
         binding = self.runtime.binding(scope)
         assert binding is not None
-        state = self.store.state(scope.session_key)
         conditions, dynamic = self.runtime._wake_conditions(scope.session_key)
+        state = self.store.state(scope.session_key)  # Expiring conditions can end an infinite wait.
         wait = self.store.db.execute("SELECT * FROM dialogue_waits WHERE scope=?", (scope.session_key,)).fetchone()
+        dynamic = dynamic and bool(conditions.keywords or conditions.senders or conditions.on_messages or conditions.on_question)
+        if not (wait or dynamic or state["mode"] in {"waiting", "sleeping"}):
+            return None
         keywords = conditions.keywords if dynamic else binding.wake_keywords
         senders = conditions.senders if dynamic else binding.wake_senders
-        if not (wait or dynamic or keywords or senders or binding.wake_on_messages or binding.wake_on_question or state["mode"] in {"waiting", "sleeping"}):
-            return None
+        observing = wait is not None and wait["purpose"] == "observe"
         return JudgeIntent(
             purpose=wait["purpose"] if wait else None,
-            description="An explicit wait is selective; ordinary unrelated messages need not interrupt it. Clear calls remain reachable. "
+            description=("Background observation before sleep, not a selective wait for questions. " if observing else
+                         "An explicit wait is selective; ordinary unrelated messages need not interrupt it. Clear calls remain reachable. ")
                         + json.dumps({"waiting_for_messages": conditions.on_messages if dynamic else binding.wake_on_messages,
-                                      "waiting_for_questions": conditions.on_question if dynamic else binding.wake_on_question}),
+                                      "waiting_for_questions": (conditions.on_question if dynamic else binding.wake_on_question) and not observing}),
             keywords=tuple(keywords), senders=tuple(senders),
             until=float(wait["total_due"]) if wait and wait["total_due"] is not None else state["wake_at"],
             infinite=bool(state["wait_infinite"]),
@@ -192,7 +199,9 @@ class JudgeCoordinator:
                                        if json.loads(row["judge_facts"]).get("bot_username")), ""),
                     role_summary=persona.split("# Operator persona\n",1)[-1][:600], background=binding.background[:1000],
                     mode=state["mode"] if state["mode"] in {"waiting","sleeping"} else "observing",
-                    main_running=state["mode"]=="active", intent=self._intent(scope), opportunity=pending["opportunity"],
+                    main_running=state["mode"]=="active", intent=self.intent(scope), opportunity=pending["opportunity"],
+                    participation=JudgeParticipation(keywords=tuple(binding.wake_keywords), senders=tuple(binding.wake_senders),
+                                                     on_messages=binding.wake_on_messages, on_question=binding.wake_on_question),
                     quiet_due=max(arrival_times)+self.coalesce_delay(scope) if arrival_times else now,
                     total_due=created+self.runtime.config.dynamic_wait.max_seconds if arrival_times else now)
         truncated = False

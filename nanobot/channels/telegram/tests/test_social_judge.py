@@ -1,6 +1,7 @@
 """V3-A intermediary contracts, durable budgets and isolated provider calls."""
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 from unittest.mock import AsyncMock
@@ -167,6 +168,27 @@ async def test_context_topic_metadata_and_intent_are_shown_without_main_session(
     assert kwargs["tools"] is None and kwargs["tool_choice"] == "none"
     assert kwargs["reasoning_effort"] == "low"
     provider.chat_with_retry.assert_not_called()
+
+
+async def test_model_payload_omits_integrity_hashes_but_retry_identity_keeps_them(case):
+    _, _, provider, judge, snapshot, _ = case
+    original = snapshot.messages[1]
+    hashed = original.model_copy(update={"content_hash": hashlib.sha256(original.text.encode()).hexdigest()})
+    messages = (snapshot.messages[0], hashed, snapshot.messages[2])
+    snapshot = updated(snapshot, messages=messages)
+    await judge.assess(snapshot)
+    payload = provider.chat.call_args.kwargs["messages"][1]["content"]
+    assert "content_hash" not in payload and hashed.content_hash not in payload
+    assert hashed.content_hash in snapshot.model_dump_json()
+    assert len(payload) < len(snapshot.model_dump_json())
+
+
+def test_public_defaults_do_not_advertise_retired_attention_settings():
+    default = SETUP_SPEC.fields["social"].default
+    assert "replyAttention" not in default
+    assert "enabled" not in default["dynamicWait"]
+    assert "unfinishedSeconds" not in default["dynamicWait"]
+    assert TelegramSocialConfig.model_validate(default).reply_attention.enabled is False
 
 
 async def test_older_displayed_member_message_can_be_a_source(case):

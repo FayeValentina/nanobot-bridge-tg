@@ -90,8 +90,8 @@ class SocialJudge:
         may submit the same still-valid snapshot after that time; it must not poll.
         """
         settings = self.settings
-        payload = snapshot.model_dump_json()
-        if len(snapshot.messages) > settings.context_messages or len(payload) > settings.context_chars:
+        payload = snapshot.prompt_json()
+        if len(snapshot.messages) > settings.context_messages or len(snapshot.model_dump_json()) > settings.context_chars:
             raise ValueError("judge snapshot exceeds configured context limits")
         if snapshot.expires - snapshot.created > settings.batch_ttl_seconds:
             raise ValueError("judge snapshot exceeds configured batch TTL")

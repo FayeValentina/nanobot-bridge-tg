@@ -481,7 +481,7 @@ def test_scope_config_and_settings_json_contract_round_trip():
     public = config.model_dump(by_alias=True)
     assert TelegramConfig.model_validate(public) == config
     assert public["social"]["scopes"][0]["proactive"]["intervalSeconds"] == 900
-    assert SETUP_SPEC.fields["social"].default == TelegramSocialConfig().model_dump(by_alias=True)
+    assert TelegramSocialConfig.model_validate(SETUP_SPEC.fields["social"].default) == TelegramSocialConfig()
     assert SETUP_SPEC.fields["social"].kind == "json"
 
 

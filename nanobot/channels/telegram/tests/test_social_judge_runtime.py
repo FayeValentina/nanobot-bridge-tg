@@ -11,7 +11,13 @@ from telegram import Update
 from nanobot.channels.telegram.social.judge_models import JudgeSnapshot
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, channel, telegram_update
-from nanobot.channels.telegram.tests.test_social_scheduler import clock, observed, social
+from nanobot.channels.telegram.tests.test_social_scheduler import (
+    clock,
+    context,
+    finish,
+    observed,
+    social,
+)
 from nanobot.providers.base import LLMProvider, LLMResponse
 
 __all__ = ["social"]
@@ -249,3 +255,125 @@ async def test_pause_cancels_pending_judge_without_an_expired_deadline_spin(soci
         await due(social)
     provider.chat.assert_not_awaited()
     assert social.store.next_due() is None
+
+
+@pytest.mark.parametrize("mode", ["observing", "active"])
+async def test_standing_preferences_do_not_invent_a_selective_wait(social, mode):
+    binding = social.config.scopes[0]
+    binding.wake_on_question = True
+    binding.wake_keywords = ["旅行"]
+    binding.wake_senders = ["456"]
+    provider = decide(social)
+    if mode == "active":
+        context(social)
+    await social.observe(observed(social, text="你别用繁体字"), directed=False)
+    await due(social)
+    snapshot = JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    assert snapshot.intent is None
+    assert snapshot.participation.on_question
+    assert snapshot.participation.keywords == ("旅行",)
+    assert snapshot.participation.senders == ("456",)
+    assert snapshot.main_running == (mode == "active")
+    assert snapshot.mode == "observing"
+    if mode == "observing":
+        assert social.bus.inbound.qsize() == 1
+        row = social.store.db.execute("SELECT through_seq,handoff_job FROM judge_batches").fetchone()
+        assert row["through_seq"] == 1 and row["handoff_job"]
+    assert social.store.state(A.session_key)["read_through"] == 0
+
+
+@pytest.mark.parametrize("seconds,infinite", [(30, False), (None, True)])
+async def test_real_selective_wait_keeps_conditions_deadline_and_one_shot(social, seconds, infinite):
+    social.config.cooldown_seconds = 0
+    ctx = context(social)
+    social.set_wake(ctx, keywords=["到家"], senders=["456"], on_messages=False, ttl_seconds=60)
+    social.wait(ctx, seconds, purpose="messages", infinite=infinite)
+    finish(social, ctx)
+    provider = decide(social, "observe")
+    await social.observe(observed(social, text="今晚吃面"), directed=False)
+    await due(social)
+    snapshot = JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    assert snapshot.intent.purpose == "messages"
+    assert snapshot.intent.keywords == ("到家",) and snapshot.intent.senders == ("456",)
+    assert snapshot.intent.infinite == infinite
+    assert snapshot.intent.until == (None if infinite else snapshot.intent.condition_expires - 30)
+    assert snapshot.intent.one_shot and snapshot.intent.condition_expires > social.now()
+    assert social.bus.inbound.empty()
+    assert social.store.state(A.session_key)["wake_config"] != "{}"
+
+    provider = decide(social, fulfills=True)
+    await social.observe(observed(social, 2, text="到家了"), directed=False)
+    await due(social)
+    inbound = social.bus.inbound.get_nowait()
+    from nanobot.agent.tools.context import RequestContext
+
+    resumed = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
+                             turn_id="resumed", metadata=inbound.metadata,
+                             attributes={"context_version": social.store.state(A.session_key)["version"]})
+    social.admit_request(resumed)
+    assert social.store.state(A.session_key)["wake_config"] == "{}"
+
+
+async def test_expired_temporary_wait_does_not_fall_back_to_question_only_observation(social):
+    social.config.cooldown_seconds = 0
+    social.config.scopes[0].wake_on_question = True
+    ctx = context(social)
+    social.set_wake(ctx, keywords=["到家"], senders=[], on_messages=False, ttl_seconds=1)
+    social.wait(ctx, infinite=True, purpose="messages")
+    finish(social, ctx)
+    clock(social).advance(2)
+    provider = decide(social)
+    await social.observe(observed(social, text="你别用繁体字"), directed=False)
+    await due(social)
+    snapshot = JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    assert snapshot.intent is None and snapshot.mode == "observing"
+    assert social.bus.inbound.qsize() == 1
+
+
+async def test_sleep_observation_is_not_a_selective_question_wait(social):
+    social.config.scopes[0].wake_on_question = True
+    social.config.sleep_observation.enabled = True
+    ctx = context(social)
+    social.wait(ctx, 30, sleeping=True)
+    finish(social, ctx)
+    provider = decide(social)
+    await social.observe(observed(social, text="你别用繁体字"), directed=False)
+    await due(social)
+    snapshot = JudgeSnapshot.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
+    assert snapshot.intent.purpose == "observe"
+    assert '"waiting_for_questions": false' in snapshot.intent.description
+
+
+def test_state_distinguishes_retired_configuration_and_effective_preferences(social):
+    social.config.scopes[0].wake_on_question = True
+    social.config.scopes[0].wake_probability = 0.05
+    social.config.reply_attention.enabled = True
+    state = social.get_state(context(social))
+    assert state["judge"]["intent"] is None
+    assert state["judge"]["participation"]["on_question"]
+    assert "probability" not in state["base_wake"]
+    assert "reply_attention" not in state["dialogue_config"]
+    assert "unfinished_seconds" not in state["dialogue_config"]["dynamic_wait"]
+    assert "wakeProbability" in state["retired_config"]
+
+
+async def test_restart_with_changed_judge_rebuilds_pending_input_without_reusing_old_intent(social):
+    social.config.judge.retry_delay_seconds = 3
+    provider = decide(social, error=True)
+    await social.observe(observed(social, text="你别用繁体字"), directed=False)
+    await due(social)
+    batch = social.store.db.execute("SELECT id FROM judge_batches").fetchone()[0]
+    root, config, bus, now = social.root, social.config, social.bus, social.now
+    social.close()
+    restored = TelegramSocialRuntime(config, root, bus, now=now, judge_provider=provider,
+                                     judge_provider_version="changed-prompt-provider")
+    try:
+        ready = decide(restored)
+        restored.judging.set_provider(ready, "changed-prompt-provider")
+        await restored.recover()
+        assert restored.store.judge_record(batch).status == "cancelled"
+        assert restored.store.judge_record(batch).error_code == "provider_changed"
+        assert bus.inbound.qsize() == 1
+        assert restored.store.state(A.session_key)["read_through"] == 0
+    finally:
+        restored.close()
