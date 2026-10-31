@@ -1,6 +1,6 @@
 # V5-D：按语境表达
 
-2026-10-31。V5-D 已实施并完成实际模型生成验证；发布结果见本文末尾。SQLite 保持 **schema 16**，主 Social 协议升至 **6**。V5-E 的同配置前后自然度对照和长期实际反馈仍待执行，不把本批三例链路验证当成整体自然度验收。
+2026-10-31。**V5-D 已实施、验证并发布到本人实际本机实例**，运行提交 `3464b7f30142558aeefdcde65b57ceac5ef6f4f4`。SQLite 保持 **schema 16**，主 Social 协议升至 **6**。V5-E 的同配置前后自然度对照和长期实际反馈仍待执行，不把本批三例链路验证当成整体自然度验收。
 
 ## 生成前的单次合并选择
 
@@ -52,7 +52,7 @@
 
 复用 V5-A `SocialLearning.record_selection`，每 scope 最近 **25 轮**内存记录候选 ID、是否选中、原因、输入 message_id/revision、模型、调用数、Token、耗时和降级状态，输出结构化日志。`social_get_state.learning.recent_selections` 实时可查，另显示 stage=contextual_expression、selector_enabled/model/timeout。修订导致缓存撤回也在内存标注 reuse_status。
 
-SQLite `expression_turns` 只存调用/Token/耗时/候选数/状态，calls 可为 0；`expression_selections` 只存实际选中 ID/修订和严格确认的使用回执。未选详情不入 DB，重启后内存说明清空，不引入分布式锁、租约或输入摘要。
+SQLite `expression_turns` 只存调用/Token/耗时/候选数/状态，calls 可为 0；`expression_selections` 只存实际选中 ID/修订和严格确认的使用回执。未选详情不入 DB，重启后内存说明清空，不引入分布式锁、租约或输入摘要。超时拿不到 usage 时 Token 字段保留 0，含义是未取得用量，不代表服务端必定零计费。
 
 ## 验证证据与边界
 
@@ -72,4 +72,12 @@ V5-D 专项 **20 项通过**，覆盖 125 张贴纸中的关键词召回、scope
 
 ## 本机发布
 
-完整既有 `pipeline.sh release` 的测试、构建、自动备份、部署和健康检查结果在发布完成后补记。实际配置不必重写即可使用选择器默认值；线上表达/黑话目前为空，现有 240 张 scope 贴纸可直接进入选择流。
+完整既有 `pipeline.sh release` 已通过：**后端 1313 项、provider/OAuth 155 项、前端 96 文件/1553 项**；lint、WebUI/wheel 构建、隔离冒烟、认证、自动备份和健康检查通过。运行版本 `3464b7f30142558aeefdcde65b57ceac5ef6f4f4`，上一版本 `7ca2c6fc25ec5926027219acaf471d396444e1d7`，切换备份 `backups/1793457483553864602/`。容器 **healthy**，健康接口 ready=true，Telegram polling 已连接，没有启动第二个真实更新接收者。
+
+容器内 `/opt/venv/lib/python3.11/site-packages/` 的已安装包，另以临时库、125 张替身贴纸和替身 provider 跑通实际 AgentLoop→选择→贴纸直发→sent 使用关联；普通 message 与 unknown 回执隔离、临时参考不持久化、schema 16 完整性/外键检查均通过。实际配置可解析 selector provider/model=deepseek-flash、硬超时 2 秒；探针未装 Telegram sender/receiver，也没有向实际库插入合成行。
+
+与切换前停机备份**直接逐值比较**，331 条消息、12 条记忆、4 条证据、240 张贴纸、4 条真人素材和 6 个学习游标保持；表达、黑话、批次、选择表仍为空，没有回填 unknown 历史或把验证样例冒充在线成果。config.json 原字节及更正后的角色/SOUL、USER/MEMORY 正文保持。三个 scope 主 read/seen 分别保持 **129/129、200/200、1/1**；scope 版本 34→36 沿用既有启动 bind，不当作学习进度。integrity_check=ok，foreign_key_check=0。
+
+实际配置无需重写即采用新默认值。线上表达/黑话尚为空，240 张已标注 scope 贴纸已经可进入选择流；后续真实新文字满足 B/C 窗口后再产生表达/黑话，不宣称已经学到了线上新条目。
+
+本机证据：`/tmp/v5d-release.log`、`/tmp/v5d-verification/installed-probe.log`、`deployed-audit.json` 及前述实际模型报告。验收使用原值、明确 ID/revision 和 Git 发布元数据，没有新建内容哈希层。
