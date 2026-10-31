@@ -17,6 +17,7 @@
 | 表 | 含义 |
 | --- | --- |
 | `learning_events` | 每 scope 最多 80 条的素材队列；event ID、message_id、seq、revision、sender、时间、来源、顶层原文和有界语境。唯一键是 scope/message_id/revision，无内容摘要 |
+| `learning_message_revisions` | 每条已观察消息仅保留 ID/revision 元数据，保证观察池裁剪后再编辑不会从 revision 1 重计；不保留历史原文 |
 | `learning_cursors` | 表达/黑话分别维护 event ID、最近提交 message_id/revision、提交时间；与主 read/seen、V3 assessed_through 完全独立 |
 | `learning_batches` | 每 scope/类型最多一个 ready/running/failed 批次；冻结有界来源、范围、配置/作用域版本、状态、尝试数、原因、计数、模型与用量/耗时字段。终态仅留最近 25 批/类型 |
 | `learning_counts` | 排除来源、陈旧事件、采集失败、未入批溢出范围及成功/失败累计计数 |
@@ -79,7 +80,7 @@
 
 ## 验证与发布
 
-- V5-A 专项 39 项通过：旁观采集、水位隔离、双游标、scope 隔离、编辑/显式删除、重启、两次尝试预算、事务失败回滚、裁剪/溢出、采集故障、代理与来源校验、Ring Buffer、两条发送路径回执、分类索引和分集隔离。
+- V5-A 专项 40 项通过：旁观采集、水位隔离、双游标、scope 隔离、编辑/显式删除、重启、两次尝试预算、事务失败回滚、裁剪/溢出、采集故障、代理与来源校验、Ring Buffer、两条发送路径回执、分类索引和分集隔离。
 - 实际库只读备份→副本升级：27 张旧表所有旧列直接逐值比较一致；308 条历史记录新增来源均为 unknown；SQLite integrity_check=ok、foreign_key_check=0。没有内容哈希。
 - 副本运行时初始化：3 个 scope 的既有版本、主 read/seen 原值保持。
 - 相关模块严格类型检查 0 errors / 0 warnings；Telegram/共享发送等回归 847 项通过。完整发布管线和实际安装检查：待发布后补充。

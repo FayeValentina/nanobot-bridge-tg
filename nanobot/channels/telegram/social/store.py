@@ -735,15 +735,16 @@ class SocialStore:
                 return (int(existing[0]) if existing else 0), False
             if msg.update_id >= 0:
                 self.db.execute("INSERT INTO updates VALUES(?,?)", (msg.scope.channel, msg.update_id))
+            revision = self.learning.observation_revision(key, msg.message_id, int(existing[1]) if existing else None)
             if existing is not None:
                 self.db.execute(
-                    "UPDATE messages SET text=?,media=?,media_refs=?,reply_context=?,album_id=?,judge_facts='{}',revision=revision+1 "
+                    "UPDATE messages SET text=?,media=?,media_refs=?,reply_context=?,album_id=?,judge_facts='{}',revision=? "
                     "WHERE scope=? AND message_id=?",
                     (msg.text[:4000], json.dumps(msg.media),
                      json.dumps([ref.model_dump() for ref in msg.media_refs]),
-                     msg.reply.model_dump_json() if msg.reply else None, msg.album_id, key, msg.message_id),
+                     msg.reply.model_dump_json() if msg.reply else None, msg.album_id, revision, key, msg.message_id),
                 )
-                self._collect_learning(msg, int(existing[0]), int(existing[1]) + 1)
+                self._collect_learning(msg, int(existing[0]), revision)
                 return int(existing[0]), False
             seq = int(self.state(key)["next_seq"])
             self.db.execute("UPDATE scopes SET next_seq=next_seq+1 WHERE key=?", (key,))
@@ -764,7 +765,8 @@ class SocialStore:
             self.db.execute("UPDATE messages SET judge_facts=? WHERE scope=? AND seq=?",
                             (json.dumps({"eligible": judge_event, "directed": directed, "bot_username": msg.bot_username,
                                          "received_at": self.now()}), key, seq))
-            self._collect_learning(msg, seq, 1)
+            self.db.execute("UPDATE messages SET revision=? WHERE scope=? AND message_id=?", (revision, key, msg.message_id))
+            self._collect_learning(msg, seq, revision)
             self.db.execute("DELETE FROM messages WHERE scope=? AND seq<=?", (key, seq - retention))
             # Keep update dedup bounded too. Old platform replays below the retained
             # window cannot produce wakes because message timestamps expire them.

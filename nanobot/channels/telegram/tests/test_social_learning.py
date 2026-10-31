@@ -340,3 +340,18 @@ def test_coarse_filter_uses_scene_index(store):
     for table in ("expressions", "jargon"):
         plan = store.db.execute(f"EXPLAIN QUERY PLAN SELECT id FROM {table} WHERE scope=? AND status=? AND intent_category=? ORDER BY updated", (A.session_key, "candidate", "反讽")).fetchall()
         assert any(f"{table}_scene" in row[3] for row in plan)
+
+
+def test_late_edit_after_observation_and_material_eviction_keeps_monotonic_revision(store):
+    entry = jargon_record(store)
+    observe(store, 2)
+    batch = store.learning.prepare(A.session_key, "expression")
+    for message_id in range(3, 115):
+        observe(store, message_id)
+    assert store.db.execute("SELECT 1 FROM messages WHERE message_id=1").fetchone() is None
+    assert store.db.execute("SELECT 1 FROM learning_events WHERE message_id=1").fetchone() is None
+    observe(store, 1, update_id=1001, is_edit=True, text="晚来的编辑", learning_text="晚来的编辑")
+    assert store.db.execute("SELECT revision FROM messages WHERE message_id=1").fetchone()[0] == 2
+    assert store.db.execute("SELECT status FROM learning_batches WHERE id=?", (batch,)).fetchone()[0] == "cancelled"
+    assert store.db.execute("SELECT status FROM jargon WHERE id=?", (entry["id"],)).fetchone()[0] == "expired"
+    assert store.db.execute("SELECT revision FROM learning_events WHERE message_id=1").fetchone()[0] == 2

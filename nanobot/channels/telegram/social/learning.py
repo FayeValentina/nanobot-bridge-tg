@@ -35,6 +35,9 @@ def upgrade_learning_schema(store: SocialStore) -> None:
             db.execute("ALTER TABLE messages ADD COLUMN learning_text TEXT NOT NULL DEFAULT ''")
         # IF NOT EXISTS also supports the repository's partial historical-schema fixtures.
         statements = [
+            """CREATE TABLE IF NOT EXISTS learning_message_revisions (
+                scope TEXT NOT NULL REFERENCES scopes(key), message_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL, PRIMARY KEY(scope,message_id))""",
             """CREATE TABLE IF NOT EXISTS learning_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL REFERENCES scopes(key),
                 message_id INTEGER NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL,
@@ -136,6 +139,18 @@ class SocialLearning:
             self.db.execute("UPDATE learning_batches SET status='cancelled',reason='config_changed',updated=? "
                             "WHERE status IN ('ready','running','failed') AND config_revision<>?",
                             (self.store.now(), self.config_revision))
+
+    def observation_revision(self, scope: str, message_id: int, retained_revision: int | None) -> int:
+        """Retain only ID/revision metadata so late edits survive rolling text eviction.
+
+        Caller already checked the platform update ID and owns the observation
+        transaction; this is neither a transcript nor a content comparison key.
+        """
+        old = self.db.execute("SELECT revision FROM learning_message_revisions WHERE scope=? AND message_id=?", (scope, message_id)).fetchone()
+        revision = max(int(old[0]) if old else 0, retained_revision or 0) + 1
+        self.db.execute("INSERT INTO learning_message_revisions VALUES(?,?,?) ON CONFLICT(scope,message_id) "
+                        "DO UPDATE SET revision=excluded.revision", (scope, message_id, revision))
+        return revision
 
     @staticmethod
     def source(message: ObservedMessage) -> tuple[str, str]:
