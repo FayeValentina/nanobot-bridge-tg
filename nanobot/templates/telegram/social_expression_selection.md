@@ -10,6 +10,11 @@ help, distress, or a context with no fitting candidate. Do not choose memes mere
 Expressions must fit their situation and avoid their unsuitable uses. Jargon local meaning wins;
 understand_only entries explain a word the participants used, never encourage active reuse.
 Only select such explanations when their term/alias actually matters to understanding the conversation.
+A fresh explicit human correction overrides an older library meaning. Do not select a conflicting
+older explanation just because the word matches; return no jargon reference when it would mislead.
 Stickers' visual notes describe already viewed images. Choose fitting emotion/use/visible text before
 composing a textual reply. Select no sticker whose depicted words would be inappropriate here.
+known_sticker_notes describe INCOMING stickers, not requested replies. Choose a fitting response
+to them, rather than merely identifying/copying the incoming sticker. When several distinct
+reactions fit, up to three alternatives are useful; do not fill slots with unrelated reactions.
 No need to explain the picture in the reply. This selection never requires sending anything.

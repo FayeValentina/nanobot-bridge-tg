@@ -247,3 +247,18 @@ async def test_prompt_character_budget_and_final_caps(social):
     assert len(payload['expressions'])<=3 and len(payload['jargon'])<=5 and len(payload['stickers'])<=5
     assert len(chosen)==sum(map(len,payload.values()))
     assert provider.chat.await_count==1
+
+
+def test_exact_incoming_sticker_notes_are_scope_and_revision_bound(social):
+    seed(social)
+    ref=social.store.sticker(A.session_key,'s-124')
+    social.store.observe(message(seq=1,text='[non-text message]',media=('sticker',),media_refs=(ref,)),500)
+    social.store.view(A.session_key,count=30,chars=12000,turn_id='visual')
+    source=social.selector.input(A.session_key,'visual')
+    assert source[0].known_sticker_notes==['场景124：得意 自信 调侃 嘴硬 领先']
+    # Identical platform ID alone does not grant access to another scope's notes.
+    social.store.observe(message(B,seq=2,text='[non-text message]',media=('sticker',),media_refs=(ref,)),500)
+    social.store.view(B.session_key,count=30,chars=12000,turn_id='other')
+    assert social.selector.input(B.session_key,'other')[0].known_sticker_notes==[]
+    social.store.observe(replace(message(seq=1,text='changed'),update_id=201,is_edit=True),500)
+    assert social.selector.input(A.session_key,'visual')[0].known_sticker_notes==[]

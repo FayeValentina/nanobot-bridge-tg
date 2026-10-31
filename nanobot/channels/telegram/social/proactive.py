@@ -43,9 +43,15 @@ class SocialProactive:
         version = self.store.state(key)["version"]
         enabled = binding is not None and binding.proactive.enabled and not binding.paused
         row = self.db.execute("SELECT * FROM proactive_state WHERE scope=?", (key,)).fetchone()
-        if row is not None and row["version"] == version and (row["next_check"] is not None) == enabled:
+        name = f"proactive_schedule:{key}"
+        source = json.dumps({"enabled": enabled, "policy": binding.proactive.model_dump() if binding else None}, sort_keys=True)
+        previous = self.db.execute("SELECT value FROM runtime_settings WHERE name=?", (name,)).fetchone()
+        same_policy = previous is None or previous[0] == source
+        self.store.setting_revision(name, source)
+        if row is not None and row["version"] == version and (row["next_check"] is not None) == enabled and same_policy:
             return
-        due = self._next_check(binding) if enabled and binding is not None else None
+        due = (row["next_check"] if row is not None and row["next_check"] is not None and enabled and same_policy
+               else self._next_check(binding) if enabled and binding is not None else None)
         with self.db:
             self.db.execute("INSERT INTO proactive_state(scope,version,next_check,decision,tracked_since) VALUES(?,?,?,?,?) "
                             "ON CONFLICT(scope) DO UPDATE SET version=excluded.version,next_check=excluded.next_check,"

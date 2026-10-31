@@ -464,9 +464,9 @@ class SocialStore:
                             "WHERE scope=? AND version<>? AND status IN ('pending','running')",
                             (scope.session_key, version))
             self.db.execute("INSERT INTO judge_state(scope,assessed_through) SELECT key,next_seq-1 FROM scopes WHERE key=? "
-                            "ON CONFLICT(scope) DO UPDATE SET assessed_through=excluded.assessed_through,"
-                            "pending_due=NULL,pending_first=NULL,pending_last=NULL,pending_max=NULL,batch_id=NULL,"
-                            "inflight=0,opportunity=NULL", (scope.session_key,))
+                            "ON CONFLICT(scope) DO UPDATE SET "
+                            "pending_due=CASE WHEN pending_due IS NOT NULL OR batch_id IS NOT NULL THEN ? ELSE NULL END,batch_id=NULL,"
+                            "inflight=0,opportunity=NULL", (scope.session_key, self.now()))
             self.db.execute(
                 "UPDATE actions SET status='failed',error='configuration changed' "
                 "WHERE scope=? AND version<>? AND status='queued'", (scope.session_key, version),

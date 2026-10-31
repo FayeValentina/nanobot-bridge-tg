@@ -30,6 +30,7 @@ class TurnMessage(BaseModel):
     reply_to: int | None = None
     reply: dict[str, object] | None = None
     media: list[str] = Field(default_factory=list)
+    known_sticker_notes: list[str] = Field(default_factory=list)
     sender_id: str
 
 
@@ -126,12 +127,25 @@ class ContextSelector:
                 continue
             if not model_text and row[1] != turn:
                 continue
-            return SelectionInput.model_validate_json(row[0]).messages[-8:]
+            messages = SelectionInput.model_validate_json(row[0]).messages[-8:]
+            for message in messages:
+                # Already learned notes for the exact displayed sticker provide
+                # visual context without another model/image call. Never borrow
+                # another scope's notes or describe an unseen/unknown image.
+                notes = self.runtime.store.db.execute(
+                    "SELECT s.note FROM messages m JOIN json_each(m.media_refs) r "
+                    "JOIN stickers s ON s.scope=m.scope AND s.id=json_extract(r.value,'$.unique_id') "
+                    "WHERE m.scope=? AND m.message_id=? AND m.revision=? "
+                    "AND json_extract(r.value,'$.kind')='sticker' AND trim(s.note)<>'' LIMIT 2",
+                    (scope, message.message_id, message.revision),
+                ).fetchall()
+                message.known_sticker_notes = [str(note[0])[:400] for note in notes]
+            return messages
         return []
 
     def candidates(self, scope: str, messages: list[TurnMessage]) -> list[Candidate]:
         config = self.runtime.config.learning
-        text = " ".join(m.text + " " + json.dumps(m.reply or {}, ensure_ascii=False)
+        text = " ".join(m.text + " " + " ".join(m.known_sticker_notes) + " " + json.dumps(m.reply or {}, ensure_ascii=False)
                         for m in messages[-4:] if not m.is_self).casefold()[-2400:]
         terms = retrieval_terms(text)
         scenes = [scene for scene, hints in SCENE_HINTS.items() if any(w in text for w in hints.split())]

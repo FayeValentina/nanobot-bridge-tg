@@ -13,7 +13,7 @@ case "${1:-help}" in
     npm --prefix webui ci
     ;;
   test)
-    .venv/bin/python -m ruff check scripts/bridge_release.py scripts/freeze_social_v5_baseline.py scripts/evaluate_social_expressions.py scripts/evaluate_social_jargon.py scripts/evaluate_social_selection.py deploy/smoke_probe.py tests/deploy \
+    .venv/bin/python -m ruff check scripts/bridge_release.py scripts/freeze_social_v5_baseline.py scripts/evaluate_social_expressions.py scripts/evaluate_social_jargon.py scripts/evaluate_social_selection.py scripts/evaluate_social_v5.py scripts/evaluate_social_v5_sequences.py scripts/summarize_social_v5.py deploy/smoke_probe.py tests/deploy \
       nanobot/agent/autocompact.py nanobot/agent/context.py nanobot/agent/hook.py \
       nanobot/agent/loop.py nanobot/agent/memory.py nanobot/agent/runner.py \
       nanobot/agent/tools/base.py nanobot/agent/tools/context.py nanobot/agent/tools/telegram_social.py \
@@ -34,6 +34,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_expressions.py \
       nanobot/channels/telegram/tests/test_social_jargon.py \
       nanobot/channels/telegram/tests/test_social_selection.py \
+      nanobot/channels/telegram/tests/test_social_v5e_replay.py \
       nanobot/channels/telegram/tests/test_social_followups.py \
       nanobot/channels/telegram/tests/test_harness_prompts.py \
       nanobot/channels/telegram/tests/test_social_proactive.py \
