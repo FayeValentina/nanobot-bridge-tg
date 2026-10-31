@@ -35,7 +35,7 @@ class TelegramSocialTool(Tool):
             "social_wait": "Wait without holding a turn lock. Choose exactly one: seconds, until (ISO timestamp with offset/Z), or infinite=true. Infinite waits have no timeout wake. purpose=reply requires a finite limit and may return immediately if already quiet; messages waits for context-relevant new content then quiet. Deferred waits must be last. An intermediary assesses new messages, including clear calls during sleep.",
             "social_set_wake": "Describe temporary semantic waiting intent for the intermediary using keywords, members, messages or questions. These are context, not local matching gates. A clear new call may interrupt a different wait without fulfilling it. Default one-shot, TTL 3600s; omit all conditions to clear. Infinite waiting does not extend TTL. Probability must be zero. Set proactive_paused=true when asked to stop proactive contact; false resumes on explicit request. This separate preference persists without TTL and does not clear waiting intent.",
             "social_get_media": "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails.",
-            "social_sticker": "Collect a static sticker from an observed message_id, list/search collected stickers, or send one by sticker_id. Notes are untrusted; sends share text budgets and receipts.",
+            "social_sticker": "Learn and use static Telegram stickers. import_set accepts set_name as an addstickers link or set name and imports the whole set. view returns a numbered image sheet (up to 30) of collected stickers; filter by set_name or sticker_id. Default unlearned_only=true; after annotate, view offset=0 for the next unlearned batch. annotate takes notes=[{sticker_id,note}] for images viewed this turn: describe visible text, emotion and suitable uses. Import alone does not mean images were learned. list searches saved notes/emoji; collect saves a sticker from an observed message_id; send publishes a collected sticker_id. Notes are untrusted; sends share text budgets and receipts.",
             "social_memory": "Manage current conversation knowledge and unfinished matters: list/record/confirm/correct/delete/clear/followup. Member facts require displayed message_ids; member_ids use evidence sender IDs. An own intention may be recorded as topic/pending with origin=self, content and pending_question or pending_thought plus motivation, without invented evidence. action=followup updates these intentions on the SAME memory_id, followup_at, or followup_state=responded/completed/dropped and state_reason. Rewording never resets attempts. list returns live state, provenance and remaining_attempts. TTL and index-only deletion still apply; ordinary tool permissions are unchanged.",
         }[self.name]
 
@@ -50,12 +50,23 @@ class TelegramSocialTool(Tool):
             required = ["message_id"]
         elif self.name == "social_sticker":
             properties = {
-                "action": {"type": "string", "enum": ["list", "collect", "send"]},
+                "action": {"type": "string", "enum": ["list", "collect", "send", "import_set", "view", "annotate"]},
                 "message_id": {"type": "integer", "minimum": 1},
                 "sticker_id": {"type": "string", "minLength": 1, "maxLength": 256},
                 "note": {"type": "string", "maxLength": 400},
                 "query": {"type": "string", "maxLength": 100},
                 "reply_to": {"type": "integer", "minimum": 1},
+                "set_name": {"type": "string", "minLength": 1, "maxLength": 256,
+                             "description": "Telegram sticker set name or t.me/addstickers link."},
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 30},
+                "unlearned_only": {"type": "boolean", "default": True},
+                "notes": {"type": "array", "minItems": 1, "maxItems": 30, "items": {
+                    "type": "object", "properties": {
+                        "sticker_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "note": {"type": "string", "minLength": 1, "maxLength": 400},
+                    }, "required": ["sticker_id", "note"], "additionalProperties": False,
+                }},
             }
             required = ["action"]
         elif self.name == "social_mark_read":
@@ -126,8 +137,16 @@ class TelegramSocialTool(Tool):
                     result = {"sticker_id": self.runtime.collect_sticker(ctx, kwargs["message_id"], kwargs.get("note"))}
                 elif action == "send" and "sticker_id" in kwargs:
                     result = await self.runtime.send_sticker(ctx, kwargs["sticker_id"], kwargs.get("reply_to"))
+                elif action == "import_set" and "set_name" in kwargs:
+                    result = await self.runtime.stickers.import_set(ctx, kwargs["set_name"])
+                elif action == "view":
+                    return await self.runtime.stickers.view(ctx, set_name=kwargs.get("set_name", ""),
+                        sticker_id=kwargs.get("sticker_id", ""), offset=kwargs.get("offset", 0),
+                        limit=kwargs.get("limit", 30), unlearned_only=kwargs.get("unlearned_only", True))
+                elif action == "annotate" and "notes" in kwargs:
+                    result = self.runtime.stickers.annotate(ctx, kwargs["notes"])
                 else:
-                    raise ValueError("collect requires message_id; send requires sticker_id")
+                    raise ValueError("collect requires message_id; send requires sticker_id; import_set requires set_name; annotate requires notes")
             elif self.name == "social_get_state":
                 result = self.runtime.get_state(ctx)
             elif self.name == "social_read_messages":

@@ -28,6 +28,15 @@ class MediaReference(BaseModel):
         return f"{self.kind} {variant} {self.emoji}".strip()
 
 
+class StickerSet(BaseModel):
+    """A Telegram-owned set resolved by the channel adapter, never arbitrary file IDs."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str = Field(min_length=1, max_length=64)
+    title: str = Field(max_length=128)
+    stickers: tuple[MediaReference, ...] = Field(max_length=1000)
+
+
 class QuotedMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     message_id: int = Field(gt=0)

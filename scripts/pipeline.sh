@@ -28,6 +28,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_runtime.py \
       nanobot/channels/telegram/tests/test_social_scheduler.py \
       nanobot/channels/telegram/tests/test_social_media.py \
+      nanobot/channels/telegram/tests/test_social_stickers.py \
       nanobot/channels/telegram/tests/test_social_memory.py \
       nanobot/channels/telegram/tests/test_social_followups.py \
       nanobot/channels/telegram/tests/test_harness_prompts.py \
@@ -41,6 +42,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_revisions.py \
       nanobot/channels/telegram/tests/evaluate_social_judge.py \
       nanobot/channels/telegram/tests/evaluate_social_followups.py \
+      nanobot/channels/telegram/tests/evaluate_social_stickers.py \
       nanobot/channels/telegram/tests/evaluate_social_v4.py \
       nanobot/channels/telegram/tests/conftest.py \
       nanobot/channels/telegram/tests/test_stream_pacing.py \

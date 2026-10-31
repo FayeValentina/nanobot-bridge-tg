@@ -48,6 +48,7 @@ from nanobot.channels.telegram.social.models import (
     QuotedMessage,
     SocialDeliveryUnknownError,
     SocialRateLimitError,
+    StickerSet,
 )
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 from nanobot.command.builtin import build_help_text
@@ -576,7 +577,8 @@ class TelegramChannel(BaseChannel):
         if social is not None:
             social.configure(self.config.social)
             social.set_sender(self._send_social_text)
-            social.set_media_services(self._download_social_media, self._send_social_sticker)
+            social.set_media_services(self._download_social_media, self._send_social_sticker,
+                                      self._load_social_sticker_set)
         self._app: TelegramApplication | None = None
         self._typing_tasks: dict[str, asyncio.Task[None]] = {}  # chat_id -> typing loop task
         self._media_group_buffers: dict[str, dict[str, Any]] = {}
@@ -1992,6 +1994,18 @@ class TelegramChannel(BaseChannel):
 
     async def _send_social_sticker(self, scope: ConversationScope, file_id: str, reply_to: int | None) -> int:
         return await self._send_social_text(scope, file_id, reply_to, sticker=True)
+
+    async def _load_social_sticker_set(self, name: str) -> StickerSet:
+        result = await self._require_app().bot.get_sticker_set(name)
+        if result.sticker_type != "regular":
+            raise ValueError("only regular sticker sets can be imported")
+        return StickerSet(name=result.name, title=result.title, stickers=tuple(
+            MediaReference(kind="sticker", file_id=item.file_id, unique_id=item.file_unique_id,
+                size=item.file_size, width=item.width, height=item.height, emoji=item.emoji or "",
+                sticker_set=result.name, animated=item.is_animated, video=item.is_video,
+                thumbnail_id=item.thumbnail.file_id if item.thumbnail else None)
+            for item in result.stickers
+        ))
 
     async def _download_social_media(self, ref: MediaReference, limit: int) -> bytes:
         app = self._require_app()
