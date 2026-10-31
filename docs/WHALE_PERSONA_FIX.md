@@ -40,3 +40,12 @@ SOCIAL_PROTOCOL 和 social 工具执行，临时工作区保留实际共享 SOUL
 
 初版修正曾在角色玩笑中补出「太阳最毒」，据此补明天气、海况等事实边界，
 最终六个新角色场景重新执行后未再出现这条推测。提示词改善不保证所有后续措辞。
+
+## 实际实例同步
+
+2026-10-31 03:41 UTC，已将提交 `6b87d33c` 的角色正文原子替换到实际实例的
+`shared/data/telegram-social/roles/groupmate.md`，保留文件权限。旧角色保存于
+`backups/whale-persona-20261031T034139Z/groupmate.md`。
+宿主角色与仓库正文直接比较一致，容器内 `/data/telegram-social/roles/groupmate.md`
+已读到完整新正文（2672 字节），容器继续 healthy。下一轮 V3 和主模型读取新人格。
+镜像仍为 `6355b7b2`：本批只同步挂载的人格配置，没有重建或重启。
