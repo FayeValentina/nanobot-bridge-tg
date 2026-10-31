@@ -25,6 +25,8 @@ from nanobot.agent.tools.context import RequestContext, current_request_context
 from nanobot.bus.events import DeliveryReceipt, InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.expressions import ExpressionLearner
+from nanobot.channels.telegram.social.jargon import JargonRequest
+from nanobot.channels.telegram.social.jargon_learning import JargonLearner
 from nanobot.channels.telegram.social.judge import JudgeProviderSettings
 from nanobot.channels.telegram.social.judge_runtime import JudgeCoordinator
 from nanobot.channels.telegram.social.media import SocialMediaCache
@@ -59,7 +61,7 @@ from nanobot.session.manager import (
 )
 from nanobot.utils.helpers import build_image_content_blocks, strip_think
 
-SOCIAL_TOOLS = frozenset({"social_expression", "social_get_state", "social_read_messages", "social_mark_read", "social_send",
+SOCIAL_TOOLS = frozenset({"social_jargon", "social_expression", "social_get_state", "social_read_messages", "social_mark_read", "social_send",
                           "social_wait", "social_set_wake", "social_get_media", "social_sticker", "social_memory"})
 SOCIAL_PROTOCOL_VERSION = 5
 SOCIAL_PROTOCOL = """You are a guest in this authorized group/topic. Participate selectively.
@@ -237,7 +239,9 @@ class TelegramSocialRuntime:
         self._epoch = uuid4().hex
         self.config = config
         self.judging = JudgeCoordinator(self, judge_provider, judge_provider_version)
+        self.learning_task: asyncio.Task[None] | None = None
         self.expressions = ExpressionLearner(self)
+        self.jargon = JargonLearner(self)
         self.configure(config)
 
     def close(self) -> None:
@@ -245,6 +249,7 @@ class TelegramSocialRuntime:
             self.scheduler.cancel()
             self.judging.cancel()
             self.expressions.cancel()
+            self.jargon.cancel()
             self.store.close()
             self._closed = True
 
@@ -336,6 +341,13 @@ class TelegramSocialRuntime:
         scope = self.validate_context(ctx)
         assert ctx.turn_id is not None
         result = self.memory.apply(scope.session_key, ctx.turn_id, request)
+        self.scheduler.notify()
+        return result
+
+    def jargon_action(self, ctx: RequestContext, request: JargonRequest) -> dict[str, object]:
+        scope = self.validate_context(ctx)
+        assert ctx.turn_id is not None and self.memory.jargon is not None
+        result = self.jargon.jargon.apply(scope.session_key, ctx.turn_id, request, self.memory.jargon)
         self.scheduler.notify()
         return result
 
@@ -553,8 +565,14 @@ class TelegramSocialRuntime:
             await self._retry_sends()
             # Side-channel collection never wakes the agent or marks views seen/read.
             try:
-                self.store.learning.collect_due([key for key, binding in bindings.items() if not binding.paused])
-                self.expressions.start_due([key for key, binding in bindings.items() if not binding.paused])
+                scopes = [key for key, binding in bindings.items() if not binding.paused]
+                self.jargon.prepare_reviews(scopes)
+                self.store.learning.collect_due(scopes)
+                workers = sorted([self.expressions, self.jargon], key=lambda worker: self.store.db.execute(
+                    "SELECT COALESCE(MIN(created),1e30) FROM learning_batches WHERE kind=? AND status IN ('ready','failed') AND attempts<?",
+                    (worker.kind, 1 + getattr(self.config.learning, worker.kind).max_retries)).fetchone()[0])
+                for worker in workers:
+                    worker.start_due(scopes)
             except Exception:
                 logger.exception("V5 material collection failed")
 
@@ -617,6 +635,7 @@ class TelegramSocialRuntime:
                 "followups": self.store.followups.status(scope.session_key),
                 "learning": {**self.store.learning.status(scope.session_key),
                              "extractor_enabled": self.config.learning.enabled and self.expressions.provider is not None,
+                             "jargon_extractor_enabled": self.config.learning.enabled and self.jargon.provider is not None,
                              "provider_status": "configured" if self.expressions.provider is not None else "unavailable"},
                 "quiet_hours": {**binding.quiet_hours.model_dump(by_alias=True), "active": is_quiet(binding, self.now())},
                 "max_sends_per_hour": self.config.max_sends_per_hour,

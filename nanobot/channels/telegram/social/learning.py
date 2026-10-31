@@ -22,6 +22,25 @@ if TYPE_CHECKING:
 LearningKind = Literal["expression", "jargon"]
 
 
+def upgrade_jargon_schema(store: SocialStore) -> None:
+    with store.db:
+        store.db.execute("BEGIN IMMEDIATE")
+        for field in ("authority TEXT NOT NULL DEFAULT 'inference'", "authority_seq INTEGER NOT NULL DEFAULT 0",
+                      "review_requested INTEGER NOT NULL DEFAULT 0", "research_revision INTEGER NOT NULL DEFAULT 0"):
+            if field.split()[0] not in {r[1] for r in store.db.execute("PRAGMA table_info(jargon)")}:
+                store.db.execute(f"ALTER TABLE jargon ADD COLUMN {field}")
+        for field in ("purpose TEXT NOT NULL DEFAULT 'discovery'", "targets TEXT NOT NULL DEFAULT '[]'",
+                      "search_calls INTEGER NOT NULL DEFAULT 0", "fetch_calls INTEGER NOT NULL DEFAULT 0",
+                      "research_chars INTEGER NOT NULL DEFAULT 0", "documents TEXT NOT NULL DEFAULT '[]'",
+                      "model_calls INTEGER NOT NULL DEFAULT 0"):
+            if field.split()[0] not in {r[1] for r in store.db.execute("PRAGMA table_info(learning_batches)")}:
+                store.db.execute(f"ALTER TABLE learning_batches ADD COLUMN {field}")
+        store.db.execute("UPDATE jargon SET authority='human',authority_seq=COALESCE((SELECT MAX(seq) FROM jargon_evidence WHERE memory_id=jargon.id),0) WHERE status='confirmed'")
+        store.db.execute("UPDATE jargon SET status=CASE WHEN status='confirmed' THEN 'understand_only' "
+                         "WHEN status IN ('deleted','expired') THEN 'disabled' ELSE status END")
+        store.db.execute("PRAGMA user_version=16")
+
+
 def upgrade_expression_schema(store: SocialStore) -> None:
     with store.db:
         store.db.execute("BEGIN IMMEDIATE")
@@ -230,8 +249,9 @@ class SocialLearning:
         ):
             for row in self.db.execute(f"SELECT DISTINCT t.id,t.revision FROM {table} t JOIN {evidence} e ON e.{id_column}=t.id "
                                        "WHERE t.scope=? AND e.message_id=? AND (? IS NULL OR e.revision<>?) "
-                                       "AND t.status IN ('candidate','confirmed','usable','available')", (scope, message_id, revision, revision)).fetchall():
-                self.db.execute(f"UPDATE {table} SET status='expired',revision=revision+1,updated=? WHERE id=?", (self.store.now(), row["id"]))
+                                       "AND t.status IN ('candidate','confirmed','usable','available','understand_only')", (scope, message_id, revision, revision)).fetchall():
+                status = "disabled" if kind == "jargon" else "expired"
+                self.db.execute(f"UPDATE {table} SET status=?,revision=revision+1,updated=? WHERE id=?", (status, self.store.now(), row["id"]))
                 self.db.execute("INSERT INTO learning_changes(scope,kind,entry_id,revision,action,origin,reason,at) "
                                 "VALUES(?,?,?,?,'invalidate','source','source_changed_or_deleted',?)",
                                 (scope, kind, row["id"], row["revision"] + 1, self.store.now()))
@@ -320,15 +340,17 @@ class SocialLearning:
             self.db.execute("UPDATE learning_batches SET status=?,reason=?,result_count=?,updated=? WHERE id=?",
                             ("succeeded" if success else "failed", reason, result_count, self.store.now(), batch))
             self.count(str(row["scope"]), f"{row['kind']}:{'succeeded' if success else 'failed'}", 1, sources[0]["message_id"], sources[-1]["message_id"])
-            if success:
+            if success and row["purpose"] == "discovery":
                 last = sources[-1]
                 self.db.execute("UPDATE learning_cursors SET event_id=?,message_id=?,revision=?,updated=? WHERE scope=? AND kind=?",
                                 (row["through_event"], last["message_id"], last["revision"], self.store.now(), row["scope"], row["kind"]))
 
     def recover(self) -> None:
         with nullcontext() if self.db.in_transaction else self.db:
-            self.db.execute("UPDATE learning_batches SET status='ready',reason='interrupted',updated=? WHERE status='running' AND attempts<2", (self.store.now(),))
-            self.db.execute("UPDATE learning_batches SET status='failed',reason='attempt_budget_exhausted',updated=? WHERE status='running'", (self.store.now(),))
+            for kind in ("expression", "jargon"):
+                limit = 1 + getattr(self.config, kind).max_retries
+                self.db.execute("UPDATE learning_batches SET status='ready',reason='interrupted',updated=? WHERE kind=? AND status='running' AND attempts<?", (self.store.now(), kind, limit))
+                self.db.execute("UPDATE learning_batches SET status='failed',reason='attempt_budget_exhausted',updated=? WHERE kind=? AND status='running'", (self.store.now(), kind))
 
     def record_selection(self, scope: str, turn_id: str, *, target_message_id: int | None,
                          candidates: int, selected: list[tuple[str, str, int]], explanation: dict[str, object],
@@ -340,6 +362,8 @@ class SocialLearning:
                     raise ValueError("unknown selection kind")
                 if kind == "sticker":
                     valid = self.db.execute("SELECT 1 FROM stickers WHERE scope=? AND id=?", (scope, entry)).fetchone()
+                elif kind == "jargon":
+                    valid = self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status='usable'", (scope, entry, revision)).fetchone()
                 else:
                     valid = self.db.execute(f"SELECT 1 FROM {table} WHERE scope=? AND id=? AND revision=? "
                                             "AND status IN ('usable','available','confirmed','candidate')", (scope, entry, revision)).fetchone()
@@ -360,6 +384,8 @@ class SocialLearning:
         item just because some text was sent, and never increases human occurrences.
         """
         with nullcontext() if self.db.in_transaction else self.db:
+            if kind == "jargon" and not self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status='usable'", (scope, entry_id, revision)).fetchone():
+                raise ValueError("only current usable jargon can be attributed as natural use")
             receipt = self.db.execute("SELECT 1 FROM actions WHERE scope=? AND turn_id=? AND id=? AND status='sent' "
                                       "UNION ALL SELECT 1 FROM message_deliveries WHERE scope=? AND turn_id=? AND id=? "
                                       "AND (status='sent' OR json_array_length(message_ids)>0)",
@@ -375,15 +401,16 @@ class SocialLearning:
                 self.db.execute(f"UPDATE {table} SET last_confirmed=? WHERE scope=? AND id=? AND revision=?", (self.store.now(), scope, entry_id, revision))
 
     def status(self, scope: str) -> dict[str, object]:
-        return {"enabled": self.config.enabled, "stage": "expression_learning", "extractor_enabled": self.config.enabled,
+        return {"enabled": self.config.enabled, "stage": "expression_and_jargon_learning", "extractor_enabled": self.config.enabled,
                 "config": self.config.model_dump(by_alias=True), "config_revision": self.config_revision,
                 "buffered_materials": self.db.execute("SELECT COUNT(*) FROM learning_events WHERE scope=?", (scope,)).fetchone()[0],
                 "pending_by_kind": {kind: self.db.execute("SELECT COUNT(*) FROM learning_events WHERE scope=? AND id>COALESCE("
                                                          "(SELECT event_id FROM learning_cursors WHERE scope=? AND kind=?),0)", (scope, scope, kind)).fetchone()[0]
                                     for kind in ("expression", "jargon")},
                 "cursors": [dict(row) for row in self.db.execute("SELECT * FROM learning_cursors WHERE scope=?", (scope,))],
-                "batches": [dict(row) for row in self.db.execute("SELECT id,kind,status,attempts,source_count,result_count,reason,model,input_tokens,output_tokens,latency_ms,created,updated FROM learning_batches WHERE scope=? ORDER BY created DESC LIMIT 20", (scope,))],
+                "batches": [dict(row) for row in self.db.execute("SELECT id,kind,purpose,status,attempts,source_count,result_count,reason,model,model_calls,input_tokens,output_tokens,search_calls,fetch_calls,research_chars,latency_ms,created,updated FROM learning_batches WHERE scope=? ORDER BY created DESC LIMIT 20", (scope,))],
                 "counts": [dict(row) for row in self.db.execute("SELECT * FROM learning_counts WHERE scope=?", (scope,))],
                 "usable_expressions": self.db.execute("SELECT COUNT(*) FROM expressions WHERE scope=? AND status IN ('usable','available')", (scope,)).fetchone()[0],
-                "jargon_entries": self.db.execute("SELECT COUNT(*) FROM jargon WHERE scope=? AND status IN ('candidate','confirmed')", (scope,)).fetchone()[0],
+                "jargon_entries": self.db.execute("SELECT COUNT(*) FROM jargon WHERE scope=? AND status IN ('candidate','understand_only','usable')", (scope,)).fetchone()[0],
+                "jargon_states": {row[0]: row[1] for row in self.db.execute("SELECT status,COUNT(*) FROM jargon WHERE scope=? GROUP BY status", (scope,))},
                 "recent_selections": list(self.recent.get(scope, []))}

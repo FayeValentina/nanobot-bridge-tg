@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from nanobot.channels.telegram.social.learning import LearningKind
 from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import Config, ModelPresetConfig, TelegramSocialLearningModelConfig
@@ -243,6 +244,7 @@ def make_expression_provider(config: Config, settings: TelegramSocialLearningMod
 
 
 class ExpressionLearner:
+    kind: LearningKind = "expression"
     def __init__(self, runtime: TelegramSocialRuntime) -> None:
         self.runtime = runtime
         self.store = runtime.store
@@ -255,7 +257,7 @@ class ExpressionLearner:
 
     def configure_provider(self, config: Config) -> None:
         try:
-            provider, model = make_expression_provider(config, self.store.learning.config.expression)
+            provider, model = make_expression_provider(config, getattr(self.store.learning.config, self.kind))
         except (ValueError, KeyError):
             self.cancel()
             self.provider, self.model = None, ""
@@ -276,15 +278,17 @@ class ExpressionLearner:
 
     def start_due(self, scopes: list[str]) -> None:
         if (self.provider is None or not scopes or not self.store.learning.config.enabled
-                or (self.task is not None and not self.task.done()) or self.busy()):
+                or (self.runtime.learning_task is not None and not self.runtime.learning_task.done()) or self.busy()):
             return
         # Durable global start interval also covers failed/cancelled requests and restarts.
-        last = self.store.db.execute("SELECT MAX(due) FROM learning_batches WHERE kind='expression' AND attempts>0").fetchone()[0]
+        last = self.store.db.execute("SELECT MAX(due) FROM learning_batches WHERE attempts>0").fetchone()[0]
         if last is not None and self.store.now() < last:
             return
-        for row in self.store.db.execute("SELECT id,scope,attempts FROM learning_batches WHERE kind='expression' AND status IN ('ready','failed') ORDER BY created,id"):
-            if row["scope"] in scopes and row["attempts"] < 1 + self.store.learning.config.expression.max_retries:
-                self.task = asyncio.create_task(self.run(str(row["id"])), name="social-expression-learning")
+        for row in self.store.db.execute("SELECT id,scope,attempts FROM learning_batches WHERE kind=? AND status IN ('ready','failed') ORDER BY created,id", (self.kind,)):
+            settings = getattr(self.store.learning.config, self.kind)
+            if row["scope"] in scopes and row["attempts"] < 1 + settings.max_retries:
+                self.task = asyncio.create_task(self.run(str(row["id"])), name=f"social-{self.kind}-learning")
+                self.runtime.learning_task = self.task
                 return
 
     async def run(self, batch: str) -> None:
@@ -313,7 +317,7 @@ class ExpressionLearner:
                 return
             self.store.learning.start(batch)
             with self.store.db:
-                self.store.db.execute("UPDATE learning_batches SET due=?,model=? WHERE id=?", (self.store.now() + self.store.learning.config.interval_seconds, self.model, batch))
+                self.store.db.execute("UPDATE learning_batches SET due=?,model=?,model_calls=model_calls+1 WHERE id=?", (self.store.now() + self.store.learning.config.interval_seconds, self.model, batch))
             async with asyncio.timeout(settings.timeout_seconds):
                 response = await self.provider.chat(messages=[{"role": "system", "content": self.prompt}, {"role": "user", "content": content}],
                     tools=None, tool_choice="none", model=self.model, max_tokens=settings.max_tokens, temperature=0)

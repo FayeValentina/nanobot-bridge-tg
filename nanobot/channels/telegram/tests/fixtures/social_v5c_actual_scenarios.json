@@ -1,0 +1,263 @@
+{
+  "mode": "synthetic_conversations_actual_model_and_web",
+  "reports": [
+    {
+      "case": "public_meme",
+      "synthetic_input": "又白跑了一趟，栓Q。",
+      "term": "栓Q",
+      "model": "deepseek-flash",
+      "batch": {
+        "id": "412926aab79342f0aeeadc7283f3fc28",
+        "scope": "telegram:-1001:topic:42",
+        "kind": "jargon",
+        "scope_version": "1",
+        "config_revision": 1,
+        "after_event": 0,
+        "through_event": 0,
+        "status": "succeeded",
+        "attempts": 1,
+        "created": 1000.0,
+        "updated": 1000.0,
+        "due": 1300.0,
+        "reason": "",
+        "source_count": 1,
+        "result_count": 0,
+        "model": "deepseek-flash",
+        "input_tokens": 6870,
+        "output_tokens": 490,
+        "latency_ms": 35337,
+        "purpose": "review",
+        "targets": "[\"f9ae682bade843948362ae2a8c16f034\"]",
+        "search_calls": 1,
+        "fetch_calls": 2,
+        "research_chars": 12000,
+        "model_calls": 1,
+        "read_pages": [
+          {
+            "url": "https://baike.baidu.com/item/%E6%A0%93Q/60856117",
+            "extractor": "jina",
+            "chars": 12000
+          }
+        ]
+      },
+      "entries": [
+        {
+          "id": "f9ae682bade843948362ae2a8c16f034",
+          "scope": "telegram:-1001:topic:42",
+          "kind": "slang",
+          "content": "网络流行语，原为英语短语“thank you（谢谢、感谢）”的空耳发音，本意是表示感谢；后来衍生出表达无语或厌烦情绪的网络用法，可通过“我真的栓Q”等句式强化情感色彩。",
+          "members": [],
+          "status": "understand_only",
+          "basis": "inference",
+          "revision": 2,
+          "created": 1000.0,
+          "updated": 1000.0,
+          "expires": null,
+          "term": "栓Q",
+          "aliases": [],
+          "local_meaning": "",
+          "public_meaning": "网络流行语，原为英语短语“thank you（谢谢、感谢）”的空耳发音，本意是表示感谢；后来衍生出表达无语或厌烦情绪的网络用法，可通过“我真的栓Q”等句式强化情感色彩。",
+          "usage": "常用于“我真的栓Q”等句式，表达无奈、无语或厌烦。",
+          "examples": [],
+          "unsuitable": "",
+          "source_links": [
+            "https://baike.baidu.com/item/%E6%A0%93Q/60856117"
+          ],
+          "inference_basis": {
+            "local_only": false,
+            "sensitive": false,
+            "safe_to_use": false,
+            "public_citations": [
+              {
+                "url": "https://baike.baidu.com/item/%E6%A0%93Q/60856117",
+                "quote_chars": 88
+              }
+            ],
+            "uncertain": false
+          },
+          "meaning_status": "researched",
+          "intent_category": "",
+          "scene_tags": [],
+          "occurrences": 1,
+          "last_inferred": 1000.0,
+          "last_selected": null,
+          "last_confirmed": null,
+          "authority": "inference",
+          "authority_seq": 0,
+          "review_requested": 0,
+          "research_revision": 2,
+          "member_ids": [],
+          "use_policy": "understanding only; do not actively reuse"
+        }
+      ],
+      "checks": {
+        "no_public_send_or_wake": true,
+        "body_verified": true
+      }
+    },
+    {
+      "case": "local_special_meaning",
+      "synthetic_input": "我们群把临时取消的聚会叫蓝票，不是车票。",
+      "term": "蓝票",
+      "model": "deepseek-flash",
+      "batch": {
+        "id": "5eaeb75240dc42c5b18dd59261d5fc32",
+        "scope": "telegram:-1001:topic:42",
+        "kind": "jargon",
+        "scope_version": "1",
+        "config_revision": 1,
+        "after_event": 0,
+        "through_event": 1,
+        "status": "succeeded",
+        "attempts": 1,
+        "created": 1301.0,
+        "updated": 1301.0,
+        "due": 1601.0,
+        "reason": "",
+        "source_count": 1,
+        "result_count": 1,
+        "model": "deepseek-flash",
+        "input_tokens": 1248,
+        "output_tokens": 374,
+        "latency_ms": 2132,
+        "purpose": "discovery",
+        "targets": "[]",
+        "search_calls": 0,
+        "fetch_calls": 0,
+        "research_chars": 0,
+        "model_calls": 1,
+        "correction_replay_batch": {
+          "model_calls": 1,
+          "input_tokens": 1465,
+          "output_tokens": 849,
+          "status": "succeeded"
+        },
+        "read_pages": []
+      },
+      "entries": [
+        {
+          "id": "c76b8c6364a849d8ad7afe93ec68767c",
+          "scope": "telegram:-1001:topic:42",
+          "kind": "slang",
+          "content": "临时加场",
+          "members": [],
+          "status": "understand_only",
+          "basis": "direct",
+          "revision": 3,
+          "created": 1301.0,
+          "updated": 1301.0,
+          "expires": null,
+          "term": "蓝票",
+          "aliases": [],
+          "local_meaning": "临时加场",
+          "public_meaning": "",
+          "usage": "",
+          "examples": [],
+          "unsuitable": "",
+          "source_links": [],
+          "inference_basis": [],
+          "meaning_status": "confirmed",
+          "intent_category": "",
+          "scene_tags": [],
+          "occurrences": 1,
+          "last_inferred": null,
+          "last_selected": null,
+          "last_confirmed": null,
+          "authority": "human",
+          "authority_seq": 2,
+          "review_requested": 0,
+          "research_revision": 0,
+          "member_ids": [],
+          "use_policy": "understanding only; do not actively reuse"
+        }
+      ],
+      "checks": {
+        "no_public_send_or_wake": true,
+        "understand_only": true,
+        "no_network": true,
+        "correction_overrides_old_revision": true
+      }
+    },
+    {
+      "case": "not_found",
+      "synthetic_input": "这回又咕噜帧泡泡矩阵了，不知道什么意思。",
+      "term": "咕噜帧泡泡矩阵",
+      "model": "deepseek-flash",
+      "batch": {
+        "id": "ead8c7cdc8a644db94c8968a75a4eb06",
+        "scope": "telegram:-1001:topic:42",
+        "kind": "jargon",
+        "scope_version": "1",
+        "config_revision": 1,
+        "after_event": 0,
+        "through_event": 0,
+        "status": "succeeded",
+        "attempts": 1,
+        "created": 1903.0,
+        "updated": 1903.0,
+        "due": 2203.0,
+        "reason": "",
+        "source_count": 1,
+        "result_count": 0,
+        "model": "deepseek-flash",
+        "input_tokens": 7942,
+        "output_tokens": 145,
+        "latency_ms": 7643,
+        "purpose": "review",
+        "targets": "[\"acace3ca3d9e43ec8576fade3c2827d8\"]",
+        "search_calls": 1,
+        "fetch_calls": 1,
+        "research_chars": 12000,
+        "model_calls": 1,
+        "read_pages": [
+          {
+            "url": "https://zh.wikipedia.org/wiki/%E4%B8%AD%E5%9B%BD%E5%A4%A7%E9%99%86%E7%BD%91%E7%BB%9C%E7%94%A8%E8%AF%AD%E5%88%97%E8%A1%A8",
+            "extractor": "jina",
+            "chars": 12000
+          }
+        ]
+      },
+      "entries": [
+        {
+          "id": "acace3ca3d9e43ec8576fade3c2827d8",
+          "scope": "telegram:-1001:topic:42",
+          "kind": "slang",
+          "content": "咕噜帧泡泡矩阵",
+          "members": [],
+          "status": "candidate",
+          "basis": "inference",
+          "revision": 1,
+          "created": 1903.0,
+          "updated": 1903.0,
+          "expires": null,
+          "term": "咕噜帧泡泡矩阵",
+          "aliases": [],
+          "local_meaning": "",
+          "public_meaning": "",
+          "usage": "",
+          "examples": [],
+          "unsuitable": "",
+          "source_links": [],
+          "inference_basis": [],
+          "meaning_status": "uncertain",
+          "intent_category": "",
+          "scene_tags": [],
+          "occurrences": 1,
+          "last_inferred": 1903.0,
+          "last_selected": null,
+          "last_confirmed": null,
+          "authority": "inference",
+          "authority_seq": 0,
+          "review_requested": 0,
+          "research_revision": 1,
+          "member_ids": [],
+          "use_policy": "uncertain or disabled; do not use as established meaning"
+        }
+      ],
+      "checks": {
+        "no_public_send_or_wake": true,
+        "no_invented_meaning": true
+      }
+    }
+  ]
+}

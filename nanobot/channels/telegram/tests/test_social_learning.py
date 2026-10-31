@@ -171,9 +171,9 @@ def test_slang_proxy_edit_delete_and_no_legacy_rows(store):
     assert SocialMemory(store).apply(A.session_key, "turn", MemoryRequest(action="list", kind="slang"))["memories"][0]["id"] == entry["id"]
     observe(store, 1, update_id=101, is_edit=True, text="新闲聊", learning_text="新闲聊")
     assert SocialMemory(store).list(A.session_key, MemoryRequest(action="list", kind="slang")) == []
-    assert store.db.execute("SELECT status,revision FROM jargon").fetchone()[:] == ("expired", 2)
+    assert store.db.execute("SELECT status,revision FROM jargon").fetchone()[:] == ("disabled", 2)
     SocialMemory(store).apply(A.session_key, "turn", MemoryRequest(action="delete", memory_id=entry["id"]))
-    assert store.db.execute("SELECT status FROM jargon").fetchone()[0] == "deleted"
+    assert store.db.execute("SELECT status FROM jargon").fetchone()[0] == "disabled"
 
 
 def test_explicit_delete_invalidates_sources_without_rewinding_main_watermarks(store):
@@ -183,7 +183,7 @@ def test_explicit_delete_invalidates_sources_without_rewinding_main_watermarks(s
     before = store.state(A.session_key)
     store.delete_observed(A.session_key, 1)
     assert store.db.execute("SELECT status FROM learning_batches WHERE id=?", (batch,)).fetchone()[0] == "cancelled"
-    assert store.db.execute("SELECT status FROM jargon WHERE id=?", (entry["id"],)).fetchone()[0] == "expired"
+    assert store.db.execute("SELECT status FROM jargon WHERE id=?", (entry["id"],)).fetchone()[0] == "disabled"
     assert store.state(A.session_key)["seen_through"] == before["seen_through"]
 
 
@@ -263,7 +263,7 @@ def test_upgrade_schema_thirteen_preserves_all_existing_source_values(store, tmp
     store.close()
     restored = SocialStore(tmp_path, now=lambda: 1000.)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 15
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 16
         for table, values in before.items():
             actual = [tuple(row) for row in restored.db.execute(f"SELECT * FROM {table}")]
             if table == "messages":
@@ -353,5 +353,5 @@ def test_late_edit_after_observation_and_material_eviction_keeps_monotonic_revis
     observe(store, 1, update_id=1001, is_edit=True, text="晚来的编辑", learning_text="晚来的编辑")
     assert store.db.execute("SELECT revision FROM messages WHERE message_id=1").fetchone()[0] == 2
     assert store.db.execute("SELECT status FROM learning_batches WHERE id=?", (batch,)).fetchone()[0] == "cancelled"
-    assert store.db.execute("SELECT status FROM jargon WHERE id=?", (entry["id"],)).fetchone()[0] == "expired"
+    assert store.db.execute("SELECT status FROM jargon WHERE id=?", (entry["id"],)).fetchone()[0] == "disabled"
     assert store.db.execute("SELECT revision FROM learning_events WHERE message_id=1").fetchone()[0] == 2
