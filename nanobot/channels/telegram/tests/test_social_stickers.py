@@ -169,6 +169,8 @@ async def test_real_agent_learns_native_sheet_and_sends_in_same_turn(tmp_path, s
         call("send", action="send", sticker_id="sticker-0"),
         LLMResponse(content=""),
     ])
+    # Keep this native-sheet contract test clear of an unrelated archive call.
+    loop.set_runtime_context_window(32000)
     await social.observe(message(text="@bot 学一下这包，以后合适就用"), directed=True)
     await asyncio.gather(*list(social.judging.tasks.values()))
     await social.run_due()

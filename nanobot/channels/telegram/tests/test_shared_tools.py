@@ -180,6 +180,8 @@ async def test_group_goal_command_can_use_normal_tools_and_continue_until_comple
         ]),
         LLMResponse(content="internal final"),
     ])
+    # This fixture programs goal replies, not archive/compaction responses.
+    loop.set_runtime_context_window(32000)
     await loop._dispatch(InboundMessage(
         channel="telegram", sender_id="123", chat_id=str(A.chat_id),
         content="/goal Write the result file and complete this goal",
