@@ -56,3 +56,17 @@ eligible=true。V3 在 11:29:59 正常返回 observe，理由为“不是对肥�
 
 使用现有本机测试、构建、备份、健康检查和失败回滚发布。
 本批不改 WebUI；仅执行相关回归，不重复前端全量测试。
+
+## 已发布到实际实例
+
+- 运行镜像 `7b0f689c88752ad3a001967a9229f4835ee85511`，安装包提示词版本 social-judge-v8。
+  原 build/deploy、wheel/WebUI/认证/健康冒烟通过；容器 healthy，Telegram @Deep_Fat_Fish_bot 已连接。
+- 运行容器内使用实际 wheel、原模型/OAuth，原样回放相同 30 条失败输入，再次得到
+  wake、source_seqs=[61]。探针只使用临时库和直接模型调用，真实群发送数为 0。
+- 对照自动发布备份，167 条旧消息、8 条记忆、8 条证据逐行源值保留；
+  config、SOUL、USER、MEMORY 和 groupmate 原始字节一致，read/seen 水位未回退。
+  schema 13，quick_check=ok，foreign_key_check 无错误。
+- 上一镜像 `6355b7b2`；整实例自动备份 `backups/1793421517534265170/`。
+  完整私有历史输入、早期不匹配、最终报告及数据核验在实例
+  `verification/broad-v3-20261031/`，不把群聊历史提交到仓库。
+- 旧消息 6880 没有补发或伪造成新消息。新规则对后续新消息生效；主模型仍可保持沉默。
