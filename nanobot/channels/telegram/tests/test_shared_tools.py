@@ -140,7 +140,7 @@ async def test_newly_registered_mcp_tools_need_no_social_allowlist(tmp_path, soc
     loop.tools.register(ExampleMCPTool())
     await loop._dispatch(await wake(social))
     result = next(m for m in loop.provider.chat_stream_with_retry.call_args.kwargs["messages"] if m.get("tool_call_id") == "mcp")
-    assert result["content"] == "MCP result: shared"
+    assert result["content"].split("\n\nLive group memory index", 1)[0] == "MCP result: shared"
 
 
 def test_legacy_isolation_marker_is_removed_when_existing_session_is_loaded(tmp_path, social):

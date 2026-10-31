@@ -486,6 +486,7 @@ def _run_gateway(
     )
     telegram_social.expressions.configure_provider(config)
     telegram_social.jargon.configure_provider(config)
+    telegram_social.selector.configure_provider(config)
 
     turn_delivery_factory = TurnDeliveryFactory(
         bus,
@@ -748,6 +749,7 @@ def _run_gateway(
         telegram_social.judging.set_provider(fresh_judge, fresh_judge_version)
         telegram_social.expressions.configure_provider(fresh_config)
         telegram_social.jargon.configure_provider(fresh_config)
+        telegram_social.selector.configure_provider(fresh_config)
 
     def _webui_skill_state_action(disabled_skills: set[str]) -> None:
         config.agents.defaults.disabled_skills = sorted(disabled_skills)

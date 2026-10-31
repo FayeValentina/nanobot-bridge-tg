@@ -354,7 +354,8 @@ class SocialLearning:
 
     def record_selection(self, scope: str, turn_id: str, *, target_message_id: int | None,
                          candidates: int, selected: list[tuple[str, str, int]], explanation: dict[str, object],
-                         status: str = "selected", input_tokens: int = 0, output_tokens: int = 0, latency_ms: int = 0) -> None:
+                         status: str = "selected", input_tokens: int = 0, output_tokens: int = 0, latency_ms: int = 0,
+                         calls: int = 1) -> None:
         with nullcontext() if self.db.in_transaction else self.db:
             for kind, entry, revision in selected:
                 table = {"expression": "expressions", "jargon": "jargon", "sticker": "stickers"}.get(kind)
@@ -363,17 +364,23 @@ class SocialLearning:
                 if kind == "sticker":
                     valid = self.db.execute("SELECT 1 FROM stickers WHERE scope=? AND id=?", (scope, entry)).fetchone()
                 elif kind == "jargon":
-                    valid = self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status='usable'", (scope, entry, revision)).fetchone()
+                    valid = self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status IN ('usable','understand_only')", (scope, entry, revision)).fetchone()
                 else:
                     valid = self.db.execute(f"SELECT 1 FROM {table} WHERE scope=? AND id=? AND revision=? "
                                             "AND status IN ('usable','available','confirmed','candidate')", (scope, entry, revision)).fetchone()
                 if valid is None:
                     raise ValueError("selected entry is missing, inactive, changed or outside this scope")
-            self.db.execute("INSERT INTO expression_turns VALUES(?,?,?,1,?,?,?,?,?,?)",
-                            (scope, turn_id, target_message_id, candidates, input_tokens, output_tokens, latency_ms, status, self.store.now()))
+            self.db.execute("INSERT INTO expression_turns VALUES(?,?,?,?,?,?,?,?,?,?)",
+                            (scope, turn_id, target_message_id, calls, candidates, input_tokens, output_tokens, latency_ms, status, self.store.now()))
             self.db.executemany("INSERT INTO expression_selections(scope,turn_id,kind,entry_id,revision) VALUES(?,?,?,?,?)",
                                 [(scope, turn_id, kind, entry, revision) for kind, entry, revision in selected])
-        detail = {"turn_id": turn_id, "target_message_id": target_message_id, "selected": selected, **explanation}
+            for kind, entry, revision in selected:
+                if kind in {'expression', 'jargon'}:
+                    table = 'expressions' if kind == 'expression' else 'jargon'
+                    self.db.execute(f"UPDATE {table} SET last_selected=? WHERE scope=? AND id=? AND revision=?",
+                                    (self.store.now(), scope, entry, revision))
+        detail = {"turn_id": turn_id, "target_message_id": target_message_id, "selected": selected,
+                  "status": status, "calls": calls, "latency_ms": latency_ms, **explanation}
         self.recent.setdefault(scope, deque(maxlen=self.config.selection_history_turns)).append(detail)
         logger.bind(v5_selection={"scope": scope, **detail}).info("V5 turn selection {}", json.dumps({"scope": scope, **detail}, ensure_ascii=False))
 

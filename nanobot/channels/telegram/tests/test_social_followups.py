@@ -56,7 +56,8 @@ def test_own_intentions_have_turn_provenance_without_inventing_member_evidence(s
     assert item["origin"] == "self" and item["origin_turn"] == "idea-origin"
     assert item["evidence"] == [] and item["member_ids"] == []
     assert item["remaining_attempts"] == 2
-    live = json.loads(social.memory.context(A.session_key))["memories"]
+    assert json.loads(social.memory.context(A.session_key))["pending_matters"] == []
+    live = json.loads(social.memory.context(A.session_key, topic_text="旅行实际体验"))["pending_matters"]
     assert live[0]["pending_thought"] == item["pending_thought"]
     with pytest.raises(ValidationError, match="message_ids"):
         MemoryRequest(action="record", kind="preference", content="A member loves tea")
@@ -101,6 +102,12 @@ def test_retired_intentions_do_not_reappear_in_context_or_probability(social, ac
 async def test_compaction_rebuild_keeps_trusted_protocol_and_injects_only_live_intentions(tmp_path, social):
     item = own(social)
     ctx = context(social)
+    # V5-D does not inject every unfinished intention into an unrelated wake.
+    # An explicit V4 opportunity still supplies its source through compaction.
+    with social.store.db:
+        social.store.db.execute("UPDATE wakes SET proactive_source=? WHERE id=?", (
+            json.dumps({"kind":"memory", "seq":0, "expires_at":social.now()+120,
+                        "memory_id":item["id"], "revision":item["revision"]}), ctx.metadata["_social_job"]))
     persona, _ = social._persona(A)
     builder = ContextBuilder(tmp_path)
     raw, compaction = ContextCompactionState.from_transcript(

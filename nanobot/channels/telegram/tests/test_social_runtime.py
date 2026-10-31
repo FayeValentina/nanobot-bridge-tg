@@ -309,7 +309,7 @@ async def test_persona_source_is_available_in_scoped_state_tool(tmp_path, social
     await loop._dispatch(await wake(social, scope, text="Where is your personality configuration file?"))
     request = loop.provider.chat_stream_with_retry.await_args.kwargs
     result = next(m for m in request["messages"] if m.get("tool_call_id") == "state")
-    state = json.loads(result["content"])
+    state = json.loads(result["content"].split("\n\nLive group memory index", 1)[0])
     assert state["role_id"] == role_id
     assert state["role_file"] == str((social.roles / f"{role_id}.md").resolve())
     assert state["tool_permissions"] == "shared_with_normal_chat"
