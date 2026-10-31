@@ -72,6 +72,7 @@ class MemoryEvidence(BaseModel):
     sender_id: str
     timestamp: float
     excerpt: str
+    revision: int = 1
 
 
 class MemoryEntry(FollowupFields):
@@ -95,12 +96,19 @@ class SocialMemory:
     CONTEXT_CHARS = 5000
     CONTEXT_ITEMS = 8
 
-    def __init__(self, store: SocialStore) -> None:
+    def __init__(self, store: SocialStore, *, jargon: bool = False) -> None:
         self.store = store
         self.db = store.db  # The existing store remains the sole connection owner.
+        self.is_jargon = jargon
+        self.table = "jargon" if jargon else "memories"
+        self.evidence_table = "jargon_evidence" if jargon else "memory_evidence"
+        self.suppressions_table = "jargon_suppressions" if jargon else "memory_suppressions"
+        self.resets_table = "jargon_resets" if jargon else "memory_resets"
+        self.jargon = None if jargon else SocialMemory(store, jargon=True)
 
     def has_records(self, scope: str) -> bool:
-        return self.db.execute("SELECT 1 FROM memories WHERE scope=? LIMIT 1", (scope,)).fetchone() is not None
+        return (self.db.execute(f"SELECT 1 FROM {self.table} WHERE scope=? LIMIT 1", (scope,)).fetchone() is not None
+                or self.jargon is not None and self.jargon.has_records(scope))
 
     @staticmethod
     def _normalize(value: str) -> str:
@@ -110,11 +118,12 @@ class SocialMemory:
         evidence = [MemoryEvidence(
             message_id=int(item["message_id"]), seq=int(item["seq"]), sender_id=str(item["sender_id"]),
             timestamp=float(item["at"]), excerpt=str(item["excerpt"]),
+            revision=int(item["revision"]) if self.is_jargon else 1,
         ) for item in self.db.execute(
-            "SELECT * FROM memory_evidence WHERE memory_id=? ORDER BY seq", (row["id"],),
+            f"SELECT * FROM {self.evidence_table} WHERE memory_id=? ORDER BY seq", (row["id"],),
         )]
         return MemoryEntry.model_validate({
-            **self.store.followups.describe(str(row["id"])).model_dump(),
+            **({} if self.is_jargon else self.store.followups.describe(str(row["id"])).model_dump()),
             "id": row["id"], "scope": row["scope"], "kind": row["kind"], "content": row["content"],
             "member_ids": json.loads(row["members"]), "status": row["status"], "basis": row["basis"],
             "revision": row["revision"], "created": row["created"], "updated": row["updated"],
@@ -122,20 +131,20 @@ class SocialMemory:
         })
 
     def _get(self, scope: str, memory_id: str) -> MemoryEntry:
-        row = self.db.execute("SELECT * FROM memories WHERE scope=? AND id=?", (scope, memory_id)).fetchone()
+        row = self.db.execute(f"SELECT * FROM {self.table} WHERE scope=? AND id=?", (scope, memory_id)).fetchone()
         if row is None:
             raise ValueError("memory_id does not exist in this source conversation")
         return self._entry(row)
 
     def _expire(self, scope: str) -> None:
-        for row in self.db.execute("SELECT id FROM memories WHERE scope=? "
+        for row in self.db.execute(f"SELECT id FROM {self.table} WHERE scope=? "
                                    "AND status IN ('candidate','confirmed') AND expires<=?", (scope, self.store.now())).fetchall():
-            self.db.executemany("INSERT OR IGNORE INTO memory_suppressions VALUES(?,?,?)", [
+            self.db.executemany(f"INSERT OR IGNORE INTO {self.suppressions_table} VALUES(?,?,?)", [
                 (scope, "message", str(item[0])) for item in self.db.execute(
-                    "SELECT message_id FROM memory_evidence WHERE memory_id=?", (row[0],),
+                    f"SELECT message_id FROM {self.evidence_table} WHERE memory_id=?", (row[0],),
                 )
             ])
-        self.db.execute("UPDATE memories SET status='expired' WHERE scope=? "
+        self.db.execute(f"UPDATE {self.table} SET status='expired' WHERE scope=? "
                         "AND status IN ('candidate','confirmed') AND expires<=?", (scope, self.store.now()))
 
     def _evidence(self, scope: str, turn_id: str, ids: list[int]) -> list[MemoryEvidence]:
@@ -151,11 +160,11 @@ class SocialMemory:
                 item = MemoryEvidence.model_validate({
                     "message_id": message["message_id"], "seq": message["seq"],
                     "sender_id": message["sender_id"], "timestamp": message["timestamp"],
-                    "excerpt": message["text"],
+                    "excerpt": message["text"], "revision": message.get("revision", 0),
                 })
                 if not message["is_self"]:
                     shown[item.message_id] = item
-        cutoff = self.db.execute("SELECT through_seq FROM memory_resets WHERE scope=?", (scope,)).fetchone()
+        cutoff = self.db.execute(f"SELECT through_seq FROM {self.resets_table} WHERE scope=?", (scope,)).fetchone()
         result: list[MemoryEvidence] = []
         for message_id in dict.fromkeys(ids):
             if message_id not in shown:
@@ -165,28 +174,49 @@ class SocialMemory:
                 raise ValueError("evidence predates the last memory clear; use new evidence")
             if self._suppressed(scope, "message", str(message_id)):
                 raise ValueError("evidence was retired by a correction/deletion; use new evidence")
+            if self.is_jargon:
+                current = self.db.execute("SELECT revision,learning_source,learning_text FROM messages WHERE scope=? AND message_id=?",
+                                          (scope, message_id)).fetchone()
+                if (current is None or current["revision"] != item.revision or current["learning_source"] != "human_text"
+                        or not current["learning_text"].startswith(item.excerpt)):
+                    raise ValueError("slang evidence requires retained human top-level text")
+                item = item.model_copy(update={"revision": int(current["revision"])})
             result.append(item)
         return result
 
     def _suppressed(self, scope: str, kind: str, value: str) -> bool:
-        return self.db.execute("SELECT 1 FROM memory_suppressions WHERE scope=? AND kind=? AND value=?",
+        return self.db.execute(f"SELECT 1 FROM {self.suppressions_table} WHERE scope=? AND kind=? AND value=?",
                                (scope, kind, value)).fetchone() is not None
 
     def _retire(self, entry: MemoryEntry) -> None:
         values = [("content", self._normalize(entry.content)),
                   *(("message", str(item.message_id)) for item in entry.evidence)]
-        self.db.executemany("INSERT OR IGNORE INTO memory_suppressions VALUES(?,?,?)",
+        self.db.executemany(f"INSERT OR IGNORE INTO {self.suppressions_table} VALUES(?,?,?)",
                             [(entry.scope, kind, value) for kind, value in values])
 
     def _save_evidence(self, memory_id: str, evidence: list[MemoryEvidence]) -> None:
         if len(evidence) > self.MAX_EVIDENCE:
             raise ValueError("a memory supports at most 10 distinct evidence messages")
-        self.db.executemany("INSERT OR IGNORE INTO memory_evidence VALUES(?,?,?,?,?,?)", [
+        if self.is_jargon:
+            self.db.executemany("INSERT OR IGNORE INTO jargon_evidence(memory_id,message_id,seq,sender_id,at,excerpt,revision,source) "
+                                "VALUES(?,?,?,?,?,?,?,'human_text')", [
+                                    (memory_id, item.message_id, item.seq, item.sender_id, item.timestamp, item.excerpt, item.revision)
+                                    for item in evidence])
+            return
+        self.db.executemany(f"INSERT OR IGNORE INTO {self.evidence_table} VALUES(?,?,?,?,?,?)", [
             (memory_id, item.message_id, item.seq, item.sender_id, item.timestamp, item.excerpt)
             for item in evidence
         ])
 
     def apply(self, scope: str, turn_id: str, request: MemoryRequest) -> dict[str, object]:
+        if self.jargon is not None and (request.kind == "slang" or request.memory_id is not None and self.db.execute(
+            "SELECT 1 FROM jargon WHERE scope=? AND id=?", (scope, request.memory_id)).fetchone()):
+            if request.kind not in {None, "slang"}:
+                raise ValueError("a jargon entry must keep kind=slang")
+            self.jargon.MAX_ACTIVE = self.MAX_ACTIVE
+            return self.jargon.apply(scope, turn_id, request)
+        if self.is_jargon and (request.kind not in {None, "slang"} or request.action == "followup"):
+            raise ValueError("jargon entries do not support follow-ups or other memory kinds")
         with self.db:
             self._expire(scope)
             if request.action == "list":
@@ -199,14 +229,19 @@ class SocialMemory:
                     records.append(record)
                 return {"memories": records, "next_offset": request.offset + len(records) if len(records) < len(items) or len(items) == request.limit else None}
             if request.action == "clear":
-                entries = self.list(scope, MemoryRequest(action="list", include_inactive=True, limit=50), all_rows=True)
+                entries = self._list_local(scope, MemoryRequest(action="list", kind=request.kind, include_inactive=True, limit=50), all_rows=True)
                 for entry in entries:
                     if entry.status != "deleted":
                         self._delete(entry)
-                self.db.execute("INSERT INTO memory_resets VALUES(?,?) ON CONFLICT(scope) "
+                self.db.execute(f"INSERT INTO {self.resets_table} VALUES(?,?) ON CONFLICT(scope) "
                                 "DO UPDATE SET through_seq=excluded.through_seq",
                                 (scope, self.store.state(scope)["next_seq"] - 1))
-                return {"cleared": sum(entry.status != "deleted" for entry in entries),
+                jargon_count = 0
+                if self.jargon is not None and request.kind is None:
+                    cleared = self.jargon.apply(scope, turn_id, request)["cleared"]
+                    assert isinstance(cleared, int)
+                    jargon_count = cleared
+                return {"cleared": sum(entry.status != "deleted" for entry in entries) + jargon_count,
                         "deletion_scope": "M4 index only; original messages/shared memory/Dream are unchanged"}
             entry = self._get(scope, request.memory_id) if request.memory_id is not None else None
             if request.action == "delete":
@@ -224,7 +259,7 @@ class SocialMemory:
                 current = self.store.followups.describe(entry.id)
                 if current.pending_thought and not current.motivation:
                     raise ValueError("pending_thought requires motivation")
-                self.db.execute("UPDATE memories SET revision=revision+1,updated=? WHERE id=?", (self.store.now(), entry.id))
+                self.db.execute(f"UPDATE {self.table} SET revision=revision+1,updated=? WHERE id=?", (self.store.now(), entry.id))
                 return {"memory": self._get(scope, entry.id).model_dump()}
             evidence = self._evidence(scope, turn_id, request.message_ids)
             members = sorted(set(request.member_ids if "member_ids" in request.model_fields_set and request.action != "confirm"
@@ -232,6 +267,8 @@ class SocialMemory:
             content = request.content.strip() if request.content else (entry.content if entry else "")
             kind = request.kind or (entry.kind if entry else None)
             assert kind is not None
+            if kind == "slang" and not self.is_jargon:
+                raise ValueError("use record(kind=slang) to create a jargon entry")
             if self._suppressed(scope, "content", self._normalize(content)):
                 raise ValueError("this content was corrected/deleted; record the updated fact instead")
             if request.action == "correct" and entry is not None:
@@ -245,7 +282,7 @@ class SocialMemory:
             elif request.action == "record":
                 # Repeated learning of the same fact adds unique evidence to the
                 # same ID; it cannot multiply facts or auto-promote candidates.
-                for row in self.db.execute("SELECT * FROM memories WHERE scope=? AND kind=? "
+                for row in self.db.execute(f"SELECT * FROM {self.table} WHERE scope=? AND kind=? "
                                            "AND members=? AND status IN ('candidate','confirmed')",
                                            (scope, kind, json.dumps(members))):
                     existing = self._entry(row)
@@ -271,18 +308,19 @@ class SocialMemory:
             if entry is not None and request.action == "record" and request.ttl_seconds is None:
                 expires = entry.expires
             if entry is None:
-                count = self.db.execute("SELECT COUNT(*) FROM memories WHERE scope=? AND status IN ('candidate','confirmed')", (scope,)).fetchone()[0]
+                count = self.db.execute("SELECT SUM(n) FROM (SELECT COUNT(*) n FROM memories WHERE scope=? AND status IN ('candidate','confirmed') "
+                                        "UNION ALL SELECT COUNT(*) n FROM jargon WHERE scope=? AND status IN ('candidate','confirmed'))", (scope, scope)).fetchone()[0]
                 if count >= self.MAX_ACTIVE:
                     raise ValueError("memory index is full; correct or delete an existing entry")
                 memory_id = uuid4().hex
-                self.db.execute("INSERT INTO memories(id,scope,kind,content,members,status,basis,revision,created,updated,expires) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                self.db.execute(f"INSERT INTO {self.table}(id,scope,kind,content,members,status,basis,revision,created,updated,expires) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                                 (memory_id, scope, kind, content, json.dumps(members), status, basis, 1, now, now, expires))
             else:
                 memory_id = entry.id
                 if request.action == "correct":
                     self._retire(entry)
-                    self.db.execute("DELETE FROM memory_evidence WHERE memory_id=?", (memory_id,))
-                self.db.execute("UPDATE memories SET kind=?,content=?,members=?,status=?,basis=?,"
+                    self.db.execute(f"DELETE FROM {self.evidence_table} WHERE memory_id=?", (memory_id,))
+                self.db.execute(f"UPDATE {self.table} SET kind=?,content=?,members=?,status=?,basis=?,"
                                 "revision=revision+1,updated=?,expires=? WHERE id=?",
                                 (kind, content, json.dumps(members), status, basis, now, expires, memory_id))
             self._save_evidence(memory_id, evidence)
@@ -290,24 +328,50 @@ class SocialMemory:
                 if kind not in {"topic", "pending"}:
                     raise ValueError("follow-up intentions belong to topic or pending memories")
                 self.store.followups.update(memory_id, turn_id, request, own_intent=request.origin == "self")
+            if self.is_jargon:
+                self.db.execute("UPDATE jargon SET occurrences=(SELECT COUNT(*) FROM jargon_evidence WHERE memory_id=?) WHERE id=?", (memory_id, memory_id))
+                if request.action == "correct":
+                    self.db.execute("UPDATE jargon SET term='',aliases='[]',local_meaning='',public_meaning='',usage='',examples='[]',"
+                                    "unsuitable='',source_links='[]',inference_basis='[]',meaning_status='uncertain',last_inferred=NULL WHERE id=?", (memory_id,))
+                self._change(scope, memory_id, request.action, turn_id)
             return {"memory": self._get(scope, memory_id).model_dump()}
 
     def _delete(self, entry: MemoryEntry) -> None:
         if entry.status == "deleted":
             return
         self._retire(entry)
-        self.db.execute("DELETE FROM memory_evidence WHERE memory_id=?", (entry.id,))
-        self.db.execute("UPDATE memories SET content='',members='[]',status='deleted',basis='inference',"
+        self.db.execute(f"DELETE FROM {self.evidence_table} WHERE memory_id=?", (entry.id,))
+        self.db.execute(f"UPDATE {self.table} SET content='',members='[]',status='deleted',basis='inference',"
                         "revision=revision+1,updated=?,expires=NULL WHERE id=?", (self.store.now(), entry.id))
+        if self.is_jargon:
+            self.db.execute("UPDATE jargon SET term='',aliases='[]',local_meaning='',public_meaning='',usage='',examples='[]',"
+                            "unsuitable='',source_links='[]',inference_basis='[]',scene_tags='[]',intent_category='',meaning_status='uncertain' WHERE id=?", (entry.id,))
+            self._change(entry.scope, entry.id, "delete", "social_memory")
+            return
         self.db.execute("UPDATE memory_followups SET pending_question='',pending_thought='',motivation='',"
                         "followup_state='dropped',state_reason='deleted' WHERE memory_id=?", (entry.id,))
 
+    def _change(self, scope: str, memory_id: str, action: str, origin: str) -> None:
+        revision = self.db.execute("SELECT revision FROM jargon WHERE id=?", (memory_id,)).fetchone()[0]
+        self.db.execute("INSERT INTO learning_changes(scope,kind,entry_id,revision,action,origin,reason,at) "
+                        "VALUES(?,'jargon',?,?,?,?,?,?)", (scope, memory_id, revision, action, origin, action, self.store.now()))
+
     def list(self, scope: str, request: MemoryRequest, *, all_rows: bool = False) -> list[MemoryEntry]:
+        if self.jargon is None:
+            return self._list_local(scope, request, all_rows=all_rows)
+        unpaged = request.model_copy(update={"offset": 0})
+        result = [] if request.kind == "slang" else self._list_local(scope, unpaged, all_rows=True)
+        if request.kind in {None, "slang"}:
+            result.extend(self.jargon._list_local(scope, unpaged, all_rows=True))
+        result.sort(key=lambda entry: (-entry.updated, entry.id))
+        return result if all_rows else result[request.offset:request.offset + request.limit]
+
+    def _list_local(self, scope: str, request: MemoryRequest, *, all_rows: bool = False) -> list[MemoryEntry]:
         self._expire(scope)
         result: list[MemoryEntry] = []
         skipped = 0
         active_filter = "" if request.include_inactive else " AND status IN ('candidate','confirmed')"
-        for row in self.db.execute("SELECT * FROM memories WHERE scope=?" + active_filter + " ORDER BY updated DESC,id", (scope,)):
+        for row in self.db.execute(f"SELECT * FROM {self.table} WHERE scope=?" + active_filter + " ORDER BY updated DESC,id", (scope,)):
             item = self._entry(row)
             if request.memory_id is not None and item.id != request.memory_id:
                 continue

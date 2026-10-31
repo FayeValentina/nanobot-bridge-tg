@@ -234,12 +234,66 @@ class TelegramSocialJudgeConfig(Base):
         return value
 
 
+class TelegramSocialLearningModelConfig(Base):
+    """Reserved model contract; None reuses the ordinary provider/preset in later batches."""
+
+    model_config = ConfigDict(extra="forbid")
+    provider: str | None = Field(default=None, min_length=1, max_length=80)
+    model: str | None = Field(default=None, min_length=1, max_length=160)
+    max_tokens: int = Field(default=2048, ge=128, le=8192)
+    timeout_seconds: float = Field(default=30, ge=1, le=120, allow_inf_nan=False)
+    max_retries: int = Field(default=1, ge=0, le=1)
+
+    @field_validator("model", "provider")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str | None:
+        if value is not None and (not value.strip() or value != value.strip()):
+            raise ValueError("learning model/provider must be nonempty without surrounding whitespace")
+        return value
+
+
+class TelegramSocialLearningConfig(Base):
+    """V5-A collects bounded material only; extraction/selection arrive in B/C/D."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    window_messages: int = Field(default=80, ge=10, le=200)
+    min_messages: int = Field(default=10, ge=1, le=80)
+    interval_seconds: float = Field(default=300, ge=300, le=86400, allow_inf_nan=False)
+    concurrency: Literal[1] = 1
+    excerpt_chars: int = Field(default=1000, ge=100, le=4000)
+    context_messages: int = Field(default=2, ge=0, le=4)
+    context_chars: int = Field(default=600, ge=0, le=2000)
+    expression_candidates: int = Field(default=10, ge=1, le=10)
+    jargon_candidates: int = Field(default=20, ge=1, le=20)
+    expression: TelegramSocialLearningModelConfig = Field(default_factory=TelegramSocialLearningModelConfig)
+    jargon: TelegramSocialLearningModelConfig = Field(default_factory=TelegramSocialLearningModelConfig)
+    selection: TelegramSocialLearningModelConfig = Field(default_factory=TelegramSocialLearningModelConfig)
+    selection_expressions: int = Field(default=3, ge=0, le=3)
+    selection_jargon: int = Field(default=5, ge=0, le=5)
+    selection_stickers: int = Field(default=5, ge=0, le=5)
+    selection_chars: int = Field(default=4000, ge=500, le=8000)
+    selection_calls_per_turn: Literal[1] = 1
+    selection_history_turns: int = Field(default=25, ge=20, le=30)
+    research_max_searches: int = Field(default=3, ge=0, le=5)
+    research_max_fetches: int = Field(default=3, ge=0, le=5)
+    research_max_chars: int = Field(default=12000, ge=1000, le=24000)
+    review_after_seconds: int = Field(default=604800, ge=3600, le=31536000)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> TelegramSocialLearningConfig:
+        if self.min_messages > self.window_messages:
+            raise ValueError("minMessages exceeds windowMessages")
+        return self
+
+
 class TelegramSocialConfig(Base):
     """Opt-in Telegram group/topic social mode; runtime state is stored outside config."""
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     scopes: list[TelegramSocialScopeConfig] = Field(default_factory=list, max_length=100)
+    learning: TelegramSocialLearningConfig = Field(default_factory=TelegramSocialLearningConfig)
     repair_unsent_final: bool = True
     snapshot_messages: int = Field(default=30, ge=2, le=100)
     snapshot_chars: int = Field(default=12000, ge=2000, le=32000)

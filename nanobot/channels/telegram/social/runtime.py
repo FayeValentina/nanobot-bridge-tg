@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
 
+from loguru import logger
+
 from nanobot.agent.hook import (
     AgentHook,
     AgentHookContext,
@@ -336,6 +338,7 @@ class TelegramSocialRuntime:
 
     def configure(self, config: TelegramSocialConfig) -> None:
         self.config = config
+        self.store.learning.configure(config.learning)
         self.judging.configure()
         for scope in self.store.scopes():
             if self.binding(scope) is None:
@@ -381,7 +384,7 @@ class TelegramSocialRuntime:
         assembled = f"{SOCIAL_PROTOCOL}\n\n# Operator persona\n{persona}\n\n# Operator group background\n{binding.background}"
         version = str(self.store.setting_revision(f"scope:{scope.session_key}", json.dumps({
             "protocol": SOCIAL_PROTOCOL_VERSION, "binding": binding.model_dump(),
-            "config": self.config.model_dump(exclude={"scopes"}),
+            "config": self.config.model_dump(exclude={"scopes", "learning"}),
         }, sort_keys=True)))
         self.store.bind(scope, version)
         if binding.paused:
@@ -501,8 +504,8 @@ class TelegramSocialRuntime:
                                       judge_event=eligible, directed=directed,
                                       judge_delay=self.judging.coalesce_delay(message.scope),
                                       max_delay=self.config.dynamic_wait.max_seconds)
+        self.scheduler.notify()
         if new and eligible:
-            self.scheduler.notify()
             if self.config.coalesce_seconds == 0:
                 await self.run_due()
 
@@ -545,6 +548,11 @@ class TelegramSocialRuntime:
                                               (self.now() + 1, job["id"]))
                     raise
             await self._retry_sends()
+            # Side-channel collection never wakes the agent or marks views seen/read.
+            try:
+                self.store.learning.collect_due([key for key, binding in bindings.items() if not binding.paused])
+            except Exception:
+                logger.exception("V5 material collection failed")
 
     async def _publish_wake(self, scope: ConversationScope, job: str, seq: int) -> None:
         view = self.store.view(
@@ -565,6 +573,7 @@ class TelegramSocialRuntime:
         self._recovered = True
         self.store.recovery_jobs()
         self.store.recover_judge_batches()
+        self.store.learning.recover()
         await self.run_due()
         self.scheduler.start()
         self.scheduler.notify()
@@ -602,6 +611,7 @@ class TelegramSocialRuntime:
                                     "sleep_observation": self.config.sleep_observation.model_dump()},
                 "proactive": {**binding.proactive.model_dump(by_alias=True), **self.proactive.status(scope.session_key)},
                 "followups": self.store.followups.status(scope.session_key),
+                "learning": self.store.learning.status(scope.session_key),
                 "quiet_hours": {**binding.quiet_hours.model_dump(by_alias=True), "active": is_quiet(binding, self.now())},
                 "max_sends_per_hour": self.config.max_sends_per_hour,
                 "remaining_wakes": max(0, self.config.max_requests_per_hour - int(requests[0])),

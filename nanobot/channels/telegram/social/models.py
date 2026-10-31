@@ -73,6 +73,7 @@ class SocialState(TypedDict):
 
 
 class SnapshotMessage(TypedDict):
+    revision: int
     seq: int
     message_id: int
     sender_id: str
@@ -194,6 +195,8 @@ class ObservedMessage:
     album_id: str | None = None
     bot_username: str | None = None
     is_edit: bool = False
+    learning_text: str | None = None
+    is_forwarded: bool = False
 
 
 class SocialDeliveryUnknownError(RuntimeError):

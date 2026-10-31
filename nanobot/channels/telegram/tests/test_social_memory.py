@@ -254,7 +254,7 @@ def test_schema_three_upgrade_preserves_observations_views_and_watermarks(social
     social.close()
     store = SocialStore(social.root)
     try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 14
         assert store.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert store.state(A.session_key)["read_through"] == 1
         assert store.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
@@ -329,7 +329,7 @@ async def test_delete_refreshes_live_index_on_next_iteration_and_next_wake(tmp_p
                 "action": "record", "kind": "slang", "content": "乌龙指乌龙茶", "message_ids": [1], "basis": "direct",
             })])
         if len(calls) == 2:
-            memory_id = social.store.db.execute("SELECT id FROM memories").fetchone()[0]
+            memory_id = social.store.db.execute("SELECT id FROM jargon").fetchone()[0]
             return LLMResponse(content=None, tool_calls=[ToolCallRequest(id="delete", name="social_memory", arguments={
                 "action": "delete", "memory_id": memory_id,
             })])

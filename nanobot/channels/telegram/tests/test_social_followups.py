@@ -365,7 +365,7 @@ def test_schema_twelve_upgrade_preserves_sources(social):
     social.close()
     restored = SocialStore(social.root, now=social.now)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 14
         assert [tuple(row) for row in restored.db.execute("SELECT * FROM messages")] == messages
         assert restored.state(A.session_key) == state
         assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []

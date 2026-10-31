@@ -11,6 +11,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from uuid import uuid4
 
+from loguru import logger
+
 from nanobot.channels.telegram.social.followups import SocialFollowups
 from nanobot.channels.telegram.social.judge_models import (
     JUDGE_PROMPT_VERSION,
@@ -18,6 +20,7 @@ from nanobot.channels.telegram.social.judge_models import (
     JudgeRecord,
     JudgeSnapshot,
 )
+from nanobot.channels.telegram.social.learning import SocialLearning, upgrade_learning_schema
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
     DialogueContext,
@@ -46,7 +49,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -328,6 +331,9 @@ class SocialStore:
                 PRAGMA user_version=13;
                 COMMIT;
                 """)
+        if version < 14:
+            upgrade_learning_schema(self)
+        self.learning = SocialLearning(self)
         self.followups = SocialFollowups(self)
         self.closed = False
         path.chmod(0o600)
@@ -695,6 +701,24 @@ class SocialStore:
             self.db.execute("UPDATE judge_state SET assessed_through=MAX(assessed_through,?) WHERE scope=?",
                             (snapshot.through_seq, key))
 
+    def _collect_learning(self, message: ObservedMessage, seq: int, revision: int) -> None:
+        # A collector fault must not roll back the ordinary observation or V3 event.
+        self.db.execute("SAVEPOINT learning_collection")
+        try:
+            self.learning.observe(message, seq, revision)
+        except Exception:
+            self.db.execute("ROLLBACK TO learning_collection")
+            logger.exception("V5 material capture failed for message {}", message.message_id)
+            self.learning.count(message.scope.session_key, "capture_error", 1, message.message_id, message.message_id)
+        finally:
+            self.db.execute("RELEASE learning_collection")
+
+    def delete_observed(self, key: str, message_id: int) -> None:
+        """Explicit source deletion; ordinary rolling retention is not a deletion event."""
+        with self.db:
+            self.learning.invalidate(key, message_id, None)
+            self.db.execute("DELETE FROM messages WHERE scope=? AND message_id=?", (key, message_id))
+
     def observe(self, msg: ObservedMessage, retention: int, *, reason: str | None = None,
                 delay: float = 0, quiet_seconds: float | None = None,
                 max_delay: float = 12, fresh: bool = False, wait_relevant: bool = True,
@@ -703,7 +727,7 @@ class SocialStore:
         key = msg.scope.session_key
         with self.db:
             existing = self.db.execute(
-                "SELECT seq FROM messages WHERE scope=? AND message_id=?", (key, msg.message_id),
+                "SELECT seq,revision FROM messages WHERE scope=? AND message_id=?", (key, msg.message_id),
             ).fetchone()
             if msg.update_id >= 0 and self.db.execute(
                 "SELECT 1 FROM updates WHERE channel=? AND id=?", (msg.scope.channel, msg.update_id),
@@ -719,6 +743,7 @@ class SocialStore:
                      json.dumps([ref.model_dump() for ref in msg.media_refs]),
                      msg.reply.model_dump_json() if msg.reply else None, msg.album_id, key, msg.message_id),
                 )
+                self._collect_learning(msg, int(existing[0]), int(existing[1]) + 1)
                 return int(existing[0]), False
             seq = int(self.state(key)["next_seq"])
             self.db.execute("UPDATE scopes SET next_seq=next_seq+1 WHERE key=?", (key,))
@@ -739,6 +764,7 @@ class SocialStore:
             self.db.execute("UPDATE messages SET judge_facts=? WHERE scope=? AND seq=?",
                             (json.dumps({"eligible": judge_event, "directed": directed, "bot_username": msg.bot_username,
                                          "received_at": self.now()}), key, seq))
+            self._collect_learning(msg, seq, 1)
             self.db.execute("DELETE FROM messages WHERE scope=? AND seq<=?", (key, seq - retention))
             # Keep update dedup bounded too. Old platform replays below the retained
             # window cannot produce wakes because message timestamps expire them.
@@ -788,7 +814,7 @@ class SocialStore:
             if quoted is not None:
                 quoted["text"] = str(quoted["text"])[:max(0, min(400, remaining // 8))]
             record: SnapshotMessage = {
-                "seq": int(row["seq"]), "message_id": int(row["message_id"]),
+                "seq": int(row["seq"]), "message_id": int(row["message_id"]), "revision": int(row["revision"]),
                 "sender_id": str(row["sender_id"]), "name": str(row["display_name"]),
                 "timestamp": float(row["at"]), "age_seconds": max(0, int(now - float(row["at"]))),
                 "text": row["text"][:max(0, min(1200, remaining // (4 if quoted else 2)))],

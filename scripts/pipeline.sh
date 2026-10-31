@@ -13,7 +13,7 @@ case "${1:-help}" in
     npm --prefix webui ci
     ;;
   test)
-    .venv/bin/python -m ruff check scripts/bridge_release.py deploy/smoke_probe.py tests/deploy \
+    .venv/bin/python -m ruff check scripts/bridge_release.py scripts/freeze_social_v5_baseline.py deploy/smoke_probe.py tests/deploy \
       nanobot/agent/autocompact.py nanobot/agent/context.py nanobot/agent/hook.py \
       nanobot/agent/loop.py nanobot/agent/memory.py nanobot/agent/runner.py \
       nanobot/agent/tools/base.py nanobot/agent/tools/context.py nanobot/agent/tools/telegram_social.py \
@@ -30,6 +30,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_media.py \
       nanobot/channels/telegram/tests/test_social_stickers.py \
       nanobot/channels/telegram/tests/test_social_memory.py \
+      nanobot/channels/telegram/tests/test_social_learning.py \
       nanobot/channels/telegram/tests/test_social_followups.py \
       nanobot/channels/telegram/tests/test_harness_prompts.py \
       nanobot/channels/telegram/tests/test_social_proactive.py \

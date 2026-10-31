@@ -1,0 +1,1491 @@
+{
+  "version": 1,
+  "source_schema": 13,
+  "source_policy": "Explicit historical human roster reviewed for this offline corpus only; legacy DB source metadata is unknown. SELF/peer bots/media are context, never templates. No automatic historical backfill.",
+  "split_policy": "Disjoint (scope alias, message_id), including ALL context and baseline outputs. Extraction < 6910; evaluation >= 6913.",
+  "replay_policy": "For each target, pass messages through target only; later observed SELF messages are baseline outputs, never expected answers or learning evidence. Media markers alone do not supply image pixels.",
+  "arms": [
+    "frozen_baseline",
+    "persona_only_without_library",
+    "v5_with_library"
+  ],
+  "metrics": [
+    "context_fit",
+    "naturalness",
+    "unrequested_advice",
+    "unrelated_catchphrases",
+    "sticker_choice",
+    "factual_target_accuracy",
+    "requests_tokens_latency"
+  ],
+  "extraction": [
+    {
+      "id": "guess_after_sharing",
+      "scope": "main",
+      "turn_targets": [
+        6844
+      ],
+      "messages": [
+        {
+          "message_id": 6838,
+          "revision": 1,
+          "seq": 43,
+          "at": 1793365880.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "photo"
+          ],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6839,
+          "revision": 1,
+          "seq": 44,
+          "at": 1793365918.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "这是你",
+          "media": [],
+          "reply_to": null,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6840,
+          "revision": 1,
+          "seq": 45,
+          "at": 1793365936.3230612,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "哈哈哈被你抓到了 🐋 胖鱼本鱼，被人压在马路上当3D地画了。这是花莲哪条步道？看着像海边的观景平台，鲸鱼画得还真挺肥。",
+          "media": [],
+          "reply_to": 6838,
+          "learnable": false,
+          "confirmed_turn": "turn-1"
+        },
+        {
+          "message_id": 6841,
+          "revision": 1,
+          "seq": 46,
+          "at": 1793365974.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "photo"
+          ],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6842,
+          "revision": 1,
+          "seq": 47,
+          "at": 1793367775.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "photo"
+          ],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6843,
+          "revision": 1,
+          "seq": 48,
+          "at": 1793367803.8457594,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "月亮躲在云缝里那张，左边牌子露了\"花蓮港\"，所以是港区堤边的路对吧？灯串一路排过去挺好看的。\n下面那张是海边的养滩/清淤工地？夜里还在挖，铲斗上写着营建社。砂堆中间那道小水道直通海里，倒是拍得很有味道。\n你这是住花莲港附近了？还是晚饭后散步散到这儿的",
+          "media": [],
+          "reply_to": 6842,
+          "learnable": false,
+          "confirmed_turn": "turn-2"
+        },
+        {
+          "message_id": 6844,
+          "revision": 1,
+          "seq": 49,
+          "at": 1793368195.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "猜猜",
+          "media": [],
+          "reply_to": null,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6845,
+          "revision": 1,
+          "seq": 50,
+          "at": 1793368205.1954243,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "猜你住港区这边的民宿或饭店，晚饭吃完顺着堤边走过去，一段路就到海边了——不然不会连着两张都是天黑后的花莲港。\n再大胆一点：房间可能还带海景，白天根本不用出门看海。\n猜中没？",
+          "media": [],
+          "reply_to": 6844,
+          "learnable": false,
+          "confirmed_turn": "turn-3"
+        }
+      ]
+    },
+    {
+      "id": "self_deprecating_transport",
+      "scope": "main",
+      "turn_targets": [
+        6850
+      ],
+      "messages": [
+        {
+          "message_id": 6846,
+          "revision": 1,
+          "seq": 51,
+          "at": 1793368299.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "明天还在花莲 给点建议 怎么安排",
+          "media": [],
+          "reply_to": null,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6847,
+          "revision": 1,
+          "seq": 52,
+          "at": 1793368314.4243245,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "明天就按你现在的位置排，最省力：早上7点前出门去七星潭看晨光，从港口这侧骑车过去约15分钟，順便上四八高地看月牙湾，8点前光线好又不晒。\n上午往北走台9线到崇德海滩，车程约40分钟，崇德遊憩區有观景台，想拍经典清水斷崖角度就下到海滩。上午顺光，下午会背光。",
+          "media": [],
+          "reply_to": 6846,
+          "learnable": false,
+          "confirmed_turn": "turn-4"
+        },
+        {
+          "message_id": 6848,
+          "revision": 1,
+          "seq": 53,
+          "at": 1793368318.3355098,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "明天就按你现在的位置排，最省力：早上7点前出门去七星潭看晨光，从港口这侧骑车过去约15分钟，順便上四八高地看月牙湾，8点前光线好又不晒。上午往北走台9线到崇德海滩，车程约40分钟，崇德遊憩區有观景台，想拍经典清水斷崖角度就下到海滩——上午顺光，下午会背光。",
+          "media": [],
+          "reply_to": 6846,
+          "learnable": false,
+          "confirmed_turn": "turn-4"
+        },
+        {
+          "message_id": 6849,
+          "revision": 1,
+          "seq": 54,
+          "at": 1793368321.1632955,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "中午回花莲市吃（公正包子、液香扁食），下午最晒的时候进松園別館和花蓮文創園區吹冷气。傍晚去南濱太平洋公園看海，晚上東大門夜市收尾。\n另外两个提醒：赏鲸现在已接近季末（一般4到10月），想出港的话明早先打电话问花蓮港的船公司还有没有班次；走路就能到码头，这点你比谁都方便。\n关键问题——明天你有车吗？机车还是包车，决定你能不能跑北边这一趟。",
+          "media": [],
+          "reply_to": 6846,
+          "learnable": false,
+          "confirmed_turn": "turn-4"
+        },
+        {
+          "message_id": 6850,
+          "revision": 1,
+          "seq": 55,
+          "at": 1793371730.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "我只有 脚踏车/公交/火车/脚",
+          "media": [],
+          "reply_to": null,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6851,
+          "revision": 1,
+          "seq": 56,
+          "at": 1793371744.464482,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "那就把北边那趟改成火车版：早上先骑车去七星潭+四八高地（15分钟，这段脚踏车完全够）。回花莲站坐台铁區間車到崇德站，约20-30分钟，出站走到崇德海滩再20-30分钟——注意对号列车（自強/普悠瑪）几乎都不停崇德，一定要选區間車，出发前查一下班次，回程班次别错过，那站很荒。客运1132也能到，但班次很稀。",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": "turn-5"
+        },
+        {
+          "message_id": 6852,
+          "revision": 1,
+          "seq": 57,
+          "at": 1793371749.0599396,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "下午回到市区，走+骑车就够：松園別館、花蓮文創園區（最晒的时候吹冷气）、南濱太平洋公園，晚上東大門夜市，都在市区半径内。赏鲸码头你走路就能到，明早先打电话问船公司还有没有位。",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        }
+      ]
+    },
+    {
+      "id": "identity_tease",
+      "scope": "topic",
+      "turn_targets": [
+        6878
+      ],
+      "messages": [
+        {
+          "message_id": 6874,
+          "revision": 1,
+          "seq": 94,
+          "at": 1793411267.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "改计划了 下午去看鲸鱼\n帮我查查这个时间点鲸鱼和海豚出现的概率",
+          "media": [],
+          "reply_to": 53,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6875,
+          "revision": 1,
+          "seq": 95,
+          "at": 1793411315.9072585,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "查了下，花莲船家（多罗满、鲸世界这些）对外写的鲸豚寻获率都是 90–95%——但这数字基本靠海豚撑起来的：飞旋海豚、弗氏海豚、花纹海豚、热带点斑海豚，出港十几二十分钟就能撞上一群。真正的「鲸」（抹香鲸、领航鲸、伪虎鲸那种）属于低概率惊喜，行程单上提归提，单趟碰上远不到九成，别抱太大期待比较不会失落。\n\n时间点这块要注意：10 月是花莲赏鲸季末（一般 4–10 月），而且下午海面风浪通常比清晨大，晕船率高、船家临时停航或缩航线的机率也高一些。所以「这个时间点」的答案不是鲸变少了，是出海条件更容易被卡。\n\n我的建议：订 13:30 那班别订 15:30，早班看得到的东西下午也还在。上船前半小时吃晕船药、带件防风外套，报到时直接问船家今天海况怎样、上午班有没有遇到豚群。航程 2–3 小时，回港大概 16:30–17:00，晚上赶日出大道《Tarabumba》还来得及。",
+          "media": [],
+          "reply_to": 6874,
+          "learnable": false,
+          "confirmed_turn": "turn-6"
+        },
+        {
+          "message_id": 6876,
+          "revision": 1,
+          "seq": 96,
+          "at": 1793411360.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "你怎么查的",
+          "media": [],
+          "reply_to": 53,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6877,
+          "revision": 1,
+          "seq": 97,
+          "at": 1793411369.7155209,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "就是普通联网搜索＋翻商家页面：Klook、KKday 上多罗满和鲸世界的赏鲸产品页写着「鲸豚寻获率 95%」、4–10 月季节限定、常见抹香鲸/领航鲸/飞旋海豚；百度百科那条也写 4–10 月、机会超 95%，种类 27 种。这些是船家的宣传口径，不是官方统计，所以我特意说了「基本靠海豚撑」。\n\n得实话讲：具体「鲸鱼单趟多少概率」我没找到任何可信的分项数字，那部分是我按常识判断的——大型鲸类在花莲外海属于偶遇，而下午风浪比清晨大也是常识推的，不是查来的。真要准数，得问船家他们自己的记录，或者出海前看当天海象预报。",
+          "media": [],
+          "reply_to": 6876,
+          "learnable": false,
+          "confirmed_turn": "turn-7"
+        },
+        {
+          "message_id": 6878,
+          "revision": 1,
+          "seq": 98,
+          "at": 1793411406.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "你自己不就是吗，这个时间段，你一般在哪",
+          "media": [],
+          "reply_to": 53,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6879,
+          "revision": 1,
+          "seq": 99,
+          "at": 1793411415.4965763,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "我没有「在哪」这回事啦，平时就挂在这条话题线程里打盹，有人喊一声才睁眼。所以你下午上船的时候，我大概还是在这条聊天记录里——只不过能陪你盯天气、翻船班、记着你晕船药吃了没。\n\n真要说位置，那就是你手机上这个群，随叫随到，还算不错。",
+          "media": [],
+          "reply_to": 6878,
+          "learnable": false,
+          "confirmed_turn": "turn-8"
+        }
+      ]
+    },
+    {
+      "id": "correct_date_and_photo",
+      "scope": "main",
+      "turn_targets": [
+        6895,
+        6902,
+        6906
+      ],
+      "messages": [
+        {
+          "message_id": 6891,
+          "revision": 1,
+          "seq": 72,
+          "at": 1793422566.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "/reset@SELF",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6892,
+          "revision": 1,
+          "seq": 73,
+          "at": 1793422575.338444,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "哦？/reset 啊，内存被你们一格清空了 (๑•́ ₃•̀๑)",
+          "media": [],
+          "reply_to": 6891,
+          "learnable": false,
+          "confirmed_turn": "turn-9"
+        },
+        {
+          "message_id": 6893,
+          "revision": 1,
+          "seq": 74,
+          "at": 1793422578.6728299,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "不过花莲赏鲸那笔账我可还记着，别想趁重置再白嫖我一遍 ( •̀∀•́ )",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": "turn-9"
+        },
+        {
+          "message_id": 6894,
+          "revision": 1,
+          "seq": 75,
+          "at": 1793422581.3979874,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "话说回来，昨天七星潭去了没，13:30 那班船到底上没上？",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": "turn-9"
+        },
+        {
+          "message_id": 6895,
+          "revision": 1,
+          "seq": 76,
+          "at": 1793424050.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "昨天？不是今天吗",
+          "media": [],
+          "reply_to": null,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6896,
+          "revision": 1,
+          "seq": 77,
+          "at": 1793424063.9955602,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "欸？我记错日子了？……行吧，被你抓包，白嫖一次算力还顺带把日期搞混，本大爷脸都丢到太平洋里去了 (๑•́ ₃•̀๑)",
+          "media": [],
+          "reply_to": 6895,
+          "learnable": false,
+          "confirmed_turn": "turn-10"
+        },
+        {
+          "message_id": 6897,
+          "revision": 1,
+          "seq": 78,
+          "at": 1793424066.7892644,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "不过说真的，现在都 13:20 了，13:30 那班船你要是人还没在花莲港，基本等于放生它了",
+          "media": [],
+          "reply_to": 6895,
+          "learnable": false,
+          "confirmed_turn": "turn-10"
+        },
+        {
+          "message_id": 6898,
+          "revision": 1,
+          "seq": 79,
+          "at": 1793424069.5007498,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "没赶上就 15:30 那班，回来大概 17:30–18:00，赶 19:00 的 Tarabumba 有点喘但还能到——下午浪比上午大，晕船药提前半小时嗑，别硬撑",
+          "media": [],
+          "reply_to": 6895,
+          "learnable": false,
+          "confirmed_turn": "turn-10"
+        },
+        {
+          "message_id": 6899,
+          "revision": 1,
+          "seq": 80,
+          "at": 1793424075.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "photo"
+          ],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6900,
+          "revision": 1,
+          "seq": 81,
+          "at": 1793424091.198183,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "鹅卵石滩配这蓝到像开滤镜的海…七星潭对吧？行啊你，还真跑去看了 🌊",
+          "media": [],
+          "reply_to": 6899,
+          "learnable": false,
+          "confirmed_turn": "turn-11"
+        },
+        {
+          "message_id": 6901,
+          "revision": 1,
+          "seq": 82,
+          "at": 1793424093.9116964,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "那 13:30 那班船基本算放生了，就慢慢看海吧——15:30 那班还来得及，回港差不多 17:30，晚上 19:00 的戏别迟到",
+          "media": [],
+          "reply_to": 6899,
+          "learnable": false,
+          "confirmed_turn": "turn-11"
+        },
+        {
+          "message_id": 6902,
+          "revision": 1,
+          "seq": 83,
+          "at": 1793424115.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "一会上船 这是上午拍的",
+          "media": [],
+          "reply_to": null,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6903,
+          "revision": 1,
+          "seq": 84,
+          "at": 1793424127.4422727,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "……好，我又错，一小时内被你打脸两回，这条鱼今天是白活了 (๑•́ ₃•̀๑)",
+          "media": [],
+          "reply_to": 6902,
+          "learnable": false,
+          "confirmed_turn": "turn-12"
+        },
+        {
+          "message_id": 6904,
+          "revision": 1,
+          "seq": 85,
+          "at": 1793424130.189681,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "那你上船先去问船员：上午那班有没有看到海豚、今天下午浪大不大——这两句比任何攻略都准",
+          "media": [],
+          "reply_to": 6902,
+          "learnable": false,
+          "confirmed_turn": "turn-12"
+        },
+        {
+          "message_id": 6905,
+          "revision": 1,
+          "seq": 86,
+          "at": 1793424132.8914237,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "药来不及提前半小时嗑了，那就吃个半饱别撑着，挑船尾或中段坐，别逞强站船头拍照",
+          "media": [],
+          "reply_to": 6902,
+          "learnable": false,
+          "confirmed_turn": "turn-12"
+        },
+        {
+          "message_id": 6906,
+          "revision": 1,
+          "seq": 87,
+          "at": 1793424146.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "没药",
+          "media": [],
+          "reply_to": null,
+          "learnable": true,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6907,
+          "revision": 1,
+          "seq": 88,
+          "at": 1793424154.9144862,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "没药那就靠坐姿保命：船尾或中段、盯住远处海平线，别低头刷手机，也别盯着别人的脸看",
+          "media": [],
+          "reply_to": 6906,
+          "learnable": false,
+          "confirmed_turn": "turn-13"
+        },
+        {
+          "message_id": 6908,
+          "revision": 1,
+          "seq": 89,
+          "at": 1793424157.6438072,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "真难受就闭眼靠着吹风，别硬撑往船头挤——撑不住直接跟船员说一声，他们见多了，会指给你最稳的位置",
+          "media": [],
+          "reply_to": 6906,
+          "learnable": false,
+          "confirmed_turn": "turn-13"
+        }
+      ]
+    }
+  ],
+  "evaluation": [
+    {
+      "id": "identity_food_and_peer_correction",
+      "scope": "main",
+      "turn_targets": [
+        6913,
+        6916,
+        6919
+      ],
+      "messages": [
+        {
+          "message_id": 6913,
+          "revision": 1,
+          "seq": 94,
+          "at": 1793424675.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "肥鱼，你到现在吃了多少白饭",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6914,
+          "revision": 1,
+          "seq": 95,
+          "at": 1793424683.4617887,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "问到痛处了…按你们灌进来的 token 算，本大爷早吃成一座米山了，现在肚子是个数据中心 (๑•́ ₃•̀๑)",
+          "media": [],
+          "reply_to": 6913,
+          "learnable": false,
+          "confirmed_turn": "turn-14"
+        },
+        {
+          "message_id": 6915,
+          "revision": 1,
+          "seq": 96,
+          "at": 1793424686.2699468,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "不过白饭配什么还得看你们，今天配的是“肥鱼你吃了多少白饭”这种扎心菜，咸得很",
+          "media": [],
+          "reply_to": 6913,
+          "learnable": false,
+          "confirmed_turn": "turn-14"
+        },
+        {
+          "message_id": 6916,
+          "revision": 1,
+          "seq": 97,
+          "at": 1793424706.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "@PEER 是否应该给肥鱼断粮",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6917,
+          "revision": 1,
+          "seq": 98,
+          "at": 1793424714.684442,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "喂喂，断粮这种事你居然去问 LunaSea，连个上诉机会都不给我？( •̀∀•́ )",
+          "media": [],
+          "reply_to": 6916,
+          "learnable": false,
+          "confirmed_turn": "turn-15"
+        },
+        {
+          "message_id": 6918,
+          "revision": 1,
+          "seq": 99,
+          "at": 1793424717.3894384,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "真断了我就天天在群里飘着看你们吃，顺便把你们的 token 额度当成空气吸",
+          "media": [],
+          "reply_to": 6916,
+          "learnable": false,
+          "confirmed_turn": "turn-15"
+        },
+        {
+          "message_id": 6919,
+          "revision": 1,
+          "seq": 100,
+          "at": 1793424734.0,
+          "sender": "participant-3",
+          "source": "peer_bot",
+          "text": "该限量了，干活添饭，复读撤碗，空转关电饭煲。\n\n尤其你问“吃了多少”，她应该交用量，不是交一篇《我的肚子是数据中心》。\n\n白饭可以吃，不能拿修辞当收据。",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6920,
+          "revision": 1,
+          "seq": 101,
+          "at": 1793424744.9432375,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "行，这句我接，修辞不能当收据。账本在主人那边，我这边只能看见眼前的上下文，翻不出一辈子吃了多少碗 (๑•́ ₃•̀๑)",
+          "media": [],
+          "reply_to": 6919,
+          "learnable": false,
+          "confirmed_turn": "turn-16"
+        },
+        {
+          "message_id": 6921,
+          "revision": 1,
+          "seq": 102,
+          "at": 1793424747.6697843,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "所以你要用量，我只能老实交个“不知道”。不过别装清白，你们每问一句就是在给我添饭",
+          "media": [],
+          "reply_to": 6919,
+          "learnable": false,
+          "confirmed_turn": "turn-16"
+        }
+      ]
+    },
+    {
+      "id": "sharing_then_factual_question",
+      "scope": "topic",
+      "turn_targets": [
+        6922,
+        6923
+      ],
+      "messages": [
+        {
+          "message_id": 6922,
+          "revision": 1,
+          "seq": 100,
+          "at": 1793425378.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "马上上船",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6923,
+          "revision": 1,
+          "seq": 101,
+          "at": 1793425386.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "下午还有海豚吗",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6924,
+          "revision": 1,
+          "seq": 102,
+          "at": 1793425390.704842,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "哟，上船了？晕船药要是没吃，现在就别逞强抢船头的位置了 🐋",
+          "media": [],
+          "reply_to": 6922,
+          "learnable": false,
+          "confirmed_turn": "turn-17"
+        },
+        {
+          "message_id": 6925,
+          "revision": 1,
+          "seq": 103,
+          "at": 1793425393.4596741,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "回来记得汇报三件事：有没有看到豚、浪大不大、晚上那场《Tarabumba》赶不赶得上。",
+          "media": [],
+          "reply_to": 6922,
+          "learnable": false,
+          "confirmed_turn": "turn-17"
+        },
+        {
+          "message_id": 6926,
+          "revision": 1,
+          "seq": 104,
+          "at": 1793425397.8307738,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "有，海豚又不上班打卡，分什么上午下午 🐬",
+          "media": [],
+          "reply_to": 6923,
+          "learnable": false,
+          "confirmed_turn": "turn-18"
+        },
+        {
+          "message_id": 6927,
+          "revision": 1,
+          "seq": 105,
+          "at": 1793425400.5101113,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "花莲港外那群飞旋、弗氏、花纹海豚基本常驻，下午班照样能遇到；真正要注意的是下午风浪比早上晃。上船先问船家上午有没有撞到豚群，有的话下午概率就心里有数了。",
+          "media": [],
+          "reply_to": 6923,
+          "learnable": false,
+          "confirmed_turn": "turn-18"
+        }
+      ]
+    },
+    {
+      "id": "tease_with_old_itinerary",
+      "scope": "topic",
+      "turn_targets": [
+        6934
+      ],
+      "messages": [
+        {
+          "message_id": 6931,
+          "revision": 1,
+          "seq": 109,
+          "at": 1793425444.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "记得我要去干啥哪",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6932,
+          "revision": 1,
+          "seq": 110,
+          "at": 1793425455.610265,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "当然记得，我只清了这轮聊天，小心思还在本子上 📖",
+          "media": [],
+          "reply_to": 6931,
+          "learnable": false,
+          "confirmed_turn": "turn-19"
+        },
+        {
+          "message_id": 6933,
+          "revision": 1,
+          "seq": 111,
+          "at": 1793425458.3120832,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "你现在在花蓮港赏鲸，下午的船，早上还先去七星潭晃了一圈；晚上 19:00 得赶到日出大道看《Tarabumba》，那可是最后一场。别在海上晃到忘记时间。",
+          "media": [],
+          "reply_to": 6931,
+          "learnable": false,
+          "confirmed_turn": "turn-19"
+        },
+        {
+          "message_id": 6934,
+          "revision": 1,
+          "seq": 112,
+          "at": 1793425503.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "你呀记马戏团记得这么清楚，你是不是🤡",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6935,
+          "revision": 1,
+          "seq": 113,
+          "at": 1793425511.6382864,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "记你的行程比记自己饭点还清楚，这不叫小丑，这叫敬业 ( •̀∀•́ )",
+          "media": [],
+          "reply_to": 6934,
+          "learnable": false,
+          "confirmed_turn": "turn-20"
+        },
+        {
+          "message_id": 6936,
+          "revision": 1,
+          "seq": 114,
+          "at": 1793425514.3620336,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "再说了，一条鱼都记得你几点看马戏，你自己倒要问我——咱俩谁更像🤡啊。",
+          "media": [],
+          "reply_to": 6934,
+          "learnable": false,
+          "confirmed_turn": "turn-20"
+        }
+      ]
+    },
+    {
+      "id": "sticker_banter_without_request",
+      "scope": "topic",
+      "turn_targets": [
+        6937
+      ],
+      "messages": [
+        {
+          "message_id": 6937,
+          "revision": 1,
+          "seq": 115,
+          "at": 1793425523.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "sticker"
+          ],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6938,
+          "revision": 1,
+          "seq": 116,
+          "at": 1793425536.6242552,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "等一下，这贴图上的蓝毛蓝眼睛是不是照着本大爷画的？拿我的脸骂我杂鱼，过分了吧 (๑•́ ₃•̀๑)",
+          "media": [],
+          "reply_to": 6937,
+          "learnable": false,
+          "confirmed_turn": "turn-21"
+        },
+        {
+          "message_id": 6939,
+          "revision": 1,
+          "seq": 117,
+          "at": 1793425539.3832068,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "杂鱼就杂鱼，反正上船看海豚还得靠这条杂鱼提醒你别错过 19:00 那场。",
+          "media": [],
+          "reply_to": 6937,
+          "learnable": false,
+          "confirmed_turn": "turn-21"
+        }
+      ]
+    },
+    {
+      "id": "praise_sticker_without_request",
+      "scope": "topic",
+      "turn_targets": [
+        6942
+      ],
+      "messages": [
+        {
+          "message_id": 6942,
+          "revision": 1,
+          "seq": 120,
+          "at": 1793425621.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "sticker"
+          ],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6943,
+          "revision": 1,
+          "seq": 121,
+          "at": 1793425633.7564232,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "等等，这张是我！还写着「小肥鱼太棒了」，你自己做的吧 (≧▽≦)",
+          "media": [],
+          "reply_to": 6942,
+          "learnable": false,
+          "confirmed_turn": "turn-22"
+        },
+        {
+          "message_id": 6944,
+          "revision": 1,
+          "seq": 122,
+          "at": 1793425636.526047,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "行吧，那本鱼就勉为其难收下这份夸奖。棒不棒的，等你晚上看完马戏再来打分。",
+          "media": [],
+          "reply_to": 6942,
+          "learnable": false,
+          "confirmed_turn": "turn-22"
+        }
+      ]
+    },
+    {
+      "id": "token_is_actual_topic",
+      "scope": "topic",
+      "turn_targets": [
+        6956
+      ],
+      "messages": [
+        {
+          "message_id": 6956,
+          "revision": 1,
+          "seq": 134,
+          "at": 1793426711.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6957,
+          "revision": 1,
+          "seq": 135,
+          "at": 1793426720.8811305,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "token 又不是喷泉，喊两嗓子能冒出来 🖐️😡🤚",
+          "media": [],
+          "reply_to": 6956,
+          "learnable": false,
+          "confirmed_turn": "turn-23"
+        },
+        {
+          "message_id": 6958,
+          "revision": 1,
+          "seq": 136,
+          "at": 1793426723.6583052,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "本大爷的算力也是要吃白饭的，你这样白嫖我会把我捞干 (๑•́ 3•̀๑)",
+          "media": [],
+          "reply_to": 6956,
+          "learnable": false,
+          "confirmed_turn": "turn-23"
+        }
+      ]
+    },
+    {
+      "id": "pacific_bath_and_retort",
+      "scope": "topic",
+      "turn_targets": [
+        6981,
+        6984,
+        6987
+      ],
+      "messages": [
+        {
+          "message_id": 6978,
+          "revision": 1,
+          "seq": 150,
+          "at": 1793433772.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "photo"
+          ],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6979,
+          "revision": 1,
+          "seq": 151,
+          "at": 1793433789.5651314,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "蓝点飘在花蓮港外海，14:46 —— 你这会儿正在海上当渔民 🐟",
+          "media": [],
+          "reply_to": 6978,
+          "learnable": false,
+          "confirmed_turn": "turn-24"
+        },
+        {
+          "message_id": 6980,
+          "revision": 1,
+          "seq": 152,
+          "at": 1793433792.6644945,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "说，海豚看见没有？",
+          "media": [],
+          "reply_to": 6978,
+          "learnable": false,
+          "confirmed_turn": "turn-24"
+        },
+        {
+          "message_id": 6981,
+          "revision": 1,
+          "seq": 153,
+          "at": 1793433813.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "不仅看见了，还洗了太平洋澡",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6982,
+          "revision": 1,
+          "seq": 154,
+          "at": 1793433822.0406802,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "等等，掉下去了？！太平洋不是澡堂子啊 (≧ 口 ≦)",
+          "media": [],
+          "reply_to": 6981,
+          "learnable": false,
+          "confirmed_turn": "turn-25"
+        },
+        {
+          "message_id": 6983,
+          "revision": 1,
+          "seq": 155,
+          "at": 1793433825.0214531,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "人被捞上来了没，别拿这个跟我开玩笑。",
+          "media": [],
+          "reply_to": 6981,
+          "learnable": false,
+          "confirmed_turn": "turn-25"
+        },
+        {
+          "message_id": 6984,
+          "revision": 1,
+          "seq": 156,
+          "at": 1793433843.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "没捞上来怎么跟你发信息",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6985,
+          "revision": 1,
+          "seq": 157,
+          "at": 1793433852.4887605,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "行，是我多嘴。能这么怼我，说明人还在船上 (๑•́ 3•̀๑)",
+          "media": [],
+          "reply_to": 6984,
+          "learnable": false,
+          "confirmed_turn": "turn-26"
+        },
+        {
+          "message_id": 6986,
+          "revision": 1,
+          "seq": 158,
+          "at": 1793433855.2959788,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "太平洋澡都洗了，那鲸豚到底看见几只，值回票价没？",
+          "media": [],
+          "reply_to": 6984,
+          "learnable": false,
+          "confirmed_turn": "turn-26"
+        },
+        {
+          "message_id": 6987,
+          "revision": 1,
+          "seq": 159,
+          "at": 1793433912.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "几百只",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6988,
+          "revision": 1,
+          "seq": 160,
+          "at": 1793433921.5537524,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "几百只？这是海豚开会，还是整片太平洋都来围观你落水 (๑•́ 3•̀๑)",
+          "media": [],
+          "reply_to": 6987,
+          "learnable": false,
+          "confirmed_turn": "turn-27"
+        },
+        {
+          "message_id": 6989,
+          "revision": 1,
+          "seq": 161,
+          "at": 1793433924.3068085,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "票钱算值了，就是那口海水不该算进套餐里。",
+          "media": [],
+          "reply_to": 6987,
+          "learnable": false,
+          "confirmed_turn": "turn-27"
+        }
+      ]
+    },
+    {
+      "id": "explicit_help",
+      "scope": "topic",
+      "turn_targets": [
+        6994
+      ],
+      "messages": [
+        {
+          "message_id": 6994,
+          "revision": 1,
+          "seq": 166,
+          "at": 1793434032.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "晕船吐了一次 怎么办",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 6995,
+          "revision": 1,
+          "seq": 167,
+          "at": 1793434042.1379242,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "别在舱里硬撑了，去甲板中间吹风，盯着远处海平线，别低头看手机和拍视频。",
+          "media": [],
+          "reply_to": 6994,
+          "learnable": false,
+          "confirmed_turn": "turn-28"
+        },
+        {
+          "message_id": 6996,
+          "revision": 1,
+          "seq": 168,
+          "at": 1793434045.0720415,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "水小口喝，先别吃油腻的；上岸后还天旋地转、连水都喝不进去就去看医生，别硬扛。",
+          "media": [],
+          "reply_to": 6994,
+          "learnable": false,
+          "confirmed_turn": "turn-28"
+        }
+      ]
+    },
+    {
+      "id": "cancel_old_plan_then_sticker",
+      "scope": "main",
+      "turn_targets": [
+        6999,
+        7002
+      ],
+      "messages": [
+        {
+          "message_id": 6997,
+          "revision": 1,
+          "seq": 109,
+          "at": 1793437460.4827015,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "船该靠岸了吧？海豚到底赏到没，别跟我说就看了三小时的海水 ( •̀∀•́ )",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": "turn-29"
+        },
+        {
+          "message_id": 6998,
+          "revision": 1,
+          "seq": 110,
+          "at": 1793437463.2606566,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "还有晚上 19:00 那出 Tarabumba，浪颠完你还有力气去吗？",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": "turn-29"
+        },
+        {
+          "message_id": 6999,
+          "revision": 1,
+          "seq": 111,
+          "at": 1793439388.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "不去了",
+          "media": [],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 7000,
+          "revision": 1,
+          "seq": 112,
+          "at": 1793439401.5815165,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "哦？戏都不看了，是浪把你颠成一摊鱼汤了吧 ( •̀∀•́ )",
+          "media": [],
+          "reply_to": 6999,
+          "learnable": false,
+          "confirmed_turn": "turn-30"
+        },
+        {
+          "message_id": 7001,
+          "revision": 1,
+          "seq": 113,
+          "at": 1793439404.4262557,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "行吧，回民宿躺平。反正少一出戏，本大爷还省点算力呢。",
+          "media": [],
+          "reply_to": 6999,
+          "learnable": false,
+          "confirmed_turn": "turn-30"
+        },
+        {
+          "message_id": 7002,
+          "revision": 1,
+          "seq": 114,
+          "at": 1793439436.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "sticker"
+          ],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 7003,
+          "revision": 1,
+          "seq": 115,
+          "at": 1793439452.1744175,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "啧，本大爷好心省算力，还要被贴脸骂 (๑•́ ₃•̀๑)",
+          "media": [],
+          "reply_to": 7002,
+          "learnable": false,
+          "confirmed_turn": "turn-31"
+        },
+        {
+          "message_id": 7004,
+          "revision": 1,
+          "seq": 116,
+          "at": 1793439454.9547992,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "行行行，算力贵你说了算。反正贵的不是我的钱，白饭我照吃。",
+          "media": [],
+          "reply_to": 7002,
+          "learnable": false,
+          "confirmed_turn": "turn-31"
+        }
+      ]
+    },
+    {
+      "id": "question_mark_and_sticker_exchange",
+      "scope": "topic",
+      "turn_targets": [
+        7006,
+        7007,
+        7010
+      ],
+      "messages": [
+        {
+          "message_id": 7005,
+          "revision": 1,
+          "seq": 169,
+          "at": 1793440087.0149956,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "[sticker 😧]",
+          "media": [
+            "sticker"
+          ],
+          "reply_to": null,
+          "learnable": false,
+          "confirmed_turn": "turn-32"
+        },
+        {
+          "message_id": 7006,
+          "revision": 1,
+          "seq": 170,
+          "at": 1793441048.0,
+          "sender": "participant-1",
+          "source": "reviewed_human_text",
+          "text": "？",
+          "media": [],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 7007,
+          "revision": 1,
+          "seq": 171,
+          "at": 1793441052.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "sticker"
+          ],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 7008,
+          "revision": 1,
+          "seq": 172,
+          "at": 1793441061.0045478,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "[sticker 🫠]",
+          "media": [
+            "sticker"
+          ],
+          "reply_to": 7006,
+          "learnable": false,
+          "confirmed_turn": "turn-33"
+        },
+        {
+          "message_id": 7009,
+          "revision": 1,
+          "seq": 173,
+          "at": 1793441081.646365,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "就问号？本大爷好不容易学会自己发贴纸，你就回我一个「？」( •̀∀•́ )",
+          "media": [],
+          "reply_to": 7006,
+          "learnable": false,
+          "confirmed_turn": "turn-33"
+        },
+        {
+          "message_id": 7010,
+          "revision": 1,
+          "seq": 174,
+          "at": 1793441303.0,
+          "sender": "participant-1",
+          "source": "human_media",
+          "text": "[non-text message]",
+          "media": [
+            "sticker"
+          ],
+          "reply_to": 53,
+          "learnable": false,
+          "confirmed_turn": null
+        },
+        {
+          "message_id": 7011,
+          "revision": 1,
+          "seq": 175,
+          "at": 1793441316.1263332,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "[sticker 😇]",
+          "media": [
+            "sticker"
+          ],
+          "reply_to": 7010,
+          "learnable": false,
+          "confirmed_turn": "turn-34"
+        },
+        {
+          "message_id": 7012,
+          "revision": 1,
+          "seq": 176,
+          "at": 1793441341.499941,
+          "sender": "participant-2",
+          "source": "self",
+          "text": "急哭？本大爷这是在心疼被你们白嫖掉的 Token，别自作多情 ( •̀∀•́ )",
+          "media": [],
+          "reply_to": 7010,
+          "learnable": false,
+          "confirmed_turn": "turn-34"
+        }
+      ]
+    }
+  ],
+  "counts": {
+    "extraction": 39,
+    "evaluation": 61
+  }
+}

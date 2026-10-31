@@ -67,7 +67,7 @@ def social(tmp_path):
 def message(scope=A, *, seq=1, text="member text", **kwargs):
     return ObservedMessage(
         scope=scope, update_id=seq, message_id=seq, sender_id="123",
-        display_name="Member", timestamp=time.time(), text=text, **kwargs,
+        display_name="Member", timestamp=time.time(), text=text, learning_text=text, **kwargs,
     )
 
 
@@ -844,4 +844,30 @@ def test_group_wide_role_and_existing_topic_history_survive_reconfiguration(soci
     social.configure(social.config)
     assert social.binding(other) is None
     assert social.store.state(other.session_key)["version"] == "disabled"
+    assert social.store.state(A.session_key)["next_seq"] == 2
+
+
+@pytest.mark.parametrize("variant,expected", [
+    ("human", 1), ("self", 0), ("bot", 0), ("forwarded", 0), ("via_bot", 0),
+    ("blockquote", 0), ("caption", 0),
+])
+async def test_v5_material_sources_at_telegram_boundary(social, variant, expected):
+    tg = channel(social)
+    update = telegram_update(text="ordinary top-level text", user=999 if variant == "self" else 123,
+                             is_bot=variant in {"self", "bot"})
+    raw = update.to_dict()
+    body = raw["message"]
+    if variant == "forwarded":
+        body["forward_origin"] = {"type": "hidden_user", "date": int(time.time()), "sender_user_name": "Someone"}
+    elif variant == "via_bot":
+        body["via_bot"] = {"id": 456, "first_name": "Other Bot", "is_bot": True}
+    elif variant == "blockquote":
+        body["entities"] = [{"type": "blockquote", "offset": 0, "length": 8}]
+    elif variant == "caption":
+        body["caption"] = body.pop("text")
+        body["photo"] = [{"file_id": "photo", "file_unique_id": "unique", "width": 1, "height": 1}]
+    await tg._observe_social(Update.de_json(raw, None))
+    assert social.store.learning.status(A.session_key)["buffered_materials"] == expected
+    assert social.store.state(A.session_key)["seen_through"] == social.store.state(A.session_key)["read_through"] == 0
+    # All sources still reach ordinary observation; source filtering adds no bot admission gate.
     assert social.store.state(A.session_key)["next_seq"] == 2

@@ -2108,6 +2108,8 @@ class TelegramChannel(BaseChannel):
             media_refs=self._social_media_refs(message), reply=quoted,
             album_id=message.media_group_id,
             bot_username=bot_username, is_edit=update.edited_message is not None,
+            learning_text=None if any(entity.type in {"blockquote", "expandable_blockquote"} for entity in (message.entities or ())) else message.text,
+            is_forwarded=message.forward_origin is not None or message.via_bot is not None,
         )
         await social.observe(observed, directed=bool(directed and update.edited_message is None))
         return True
