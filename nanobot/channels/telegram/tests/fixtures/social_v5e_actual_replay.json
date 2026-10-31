@@ -22167,5 +22167,285 @@
       },
       "selector_usage": {}
     }
-  ]
+  ],
+  "deployment": {
+    "revision": "2b652535e014acab2017b48e71c78032e602f5c3",
+    "previous_revision": "3464b7f30142558aeefdcde65b57ceac5ef6f4f4",
+    "backup_id": "1793461703759410759",
+    "schema": 16,
+    "protocol": 7,
+    "tables": {
+      "messages": {
+        "before": 349,
+        "after": 354,
+        "all_old_values_preserved": true,
+        "exact_equal": false
+      },
+      "memories": {
+        "before": 12,
+        "after": 12,
+        "all_old_values_preserved": true,
+        "exact_equal": true
+      },
+      "memory_evidence": {
+        "before": 4,
+        "after": 4,
+        "all_old_values_preserved": true,
+        "exact_equal": true
+      },
+      "stickers": {
+        "before": 240,
+        "after": 240,
+        "all_old_values_preserved": true,
+        "exact_equal": true
+      },
+      "expressions": {
+        "before": 0,
+        "after": 2,
+        "all_old_values_preserved": true,
+        "exact_equal": false
+      },
+      "expression_evidence": {
+        "before": 0,
+        "after": 2,
+        "all_old_values_preserved": true,
+        "exact_equal": false
+      },
+      "jargon": {
+        "before": 0,
+        "after": 0,
+        "all_old_values_preserved": true,
+        "exact_equal": true
+      },
+      "jargon_evidence": {
+        "before": 0,
+        "after": 0,
+        "all_old_values_preserved": true,
+        "exact_equal": true
+      },
+      "learning_events": {
+        "before": 9,
+        "after": 11,
+        "all_old_values_preserved": true,
+        "exact_equal": false
+      },
+      "learning_cursors": {
+        "before": 6,
+        "after": 6,
+        "all_old_values_preserved": false,
+        "exact_equal": false
+      },
+      "learning_batches": {
+        "before": 0,
+        "after": 2,
+        "all_old_values_preserved": true,
+        "exact_equal": false
+      },
+      "memory_followups": {
+        "before": 2,
+        "after": 2,
+        "all_old_values_preserved": true,
+        "exact_equal": true
+      },
+      "followup_attempts": {
+        "before": 2,
+        "after": 2,
+        "all_old_values_preserved": true,
+        "exact_equal": true
+      }
+    },
+    "files_equal": {
+      "config.json": true,
+      "telegram-social/roles/groupmate.md": true,
+      "workspace/SOUL.md": true,
+      "workspace/USER.md": false,
+      "workspace/memory/MEMORY.md": false
+    },
+    "watermarks": [
+      {
+        "scope": "main",
+        "scope_version": [
+          "36",
+          "38"
+        ],
+        "main_before": [
+          131,
+          131
+        ],
+        "main_after": [
+          132,
+          132
+        ],
+        "v3_before": 131,
+        "v3_after": 131,
+        "v4_before": {
+          "next_check": 1793462379.5445004,
+          "last_check": 1793459405.224921,
+          "opportunity_seq": 22,
+          "tracked_since": 1793361172.24653
+        },
+        "v4_after": {
+          "next_check": 1793482320.617626,
+          "last_check": 1793477190.5303767,
+          "opportunity_seq": 28,
+          "tracked_since": 1793361172.24653
+        },
+        "all_watermark_values_equal": false
+      },
+      {
+        "scope": "daily_topic",
+        "scope_version": [
+          "36",
+          "38"
+        ],
+        "main_before": [
+          213,
+          213
+        ],
+        "main_after": [
+          221,
+          221
+        ],
+        "v3_before": 215,
+        "v3_after": 220,
+        "v4_before": {
+          "next_check": 1793464196.9428031,
+          "last_check": 1793461391.5832644,
+          "opportunity_seq": 20,
+          "tracked_since": 1793361172.24653
+        },
+        "v4_after": {
+          "next_check": 1793483840.02491,
+          "last_check": 1793478704.4793158,
+          "opportunity_seq": 25,
+          "tracked_since": 1793361172.24653
+        },
+        "all_watermark_values_equal": false
+      },
+      {
+        "scope": "other_topic",
+        "scope_version": [
+          "36",
+          "38"
+        ],
+        "main_before": [
+          1,
+          1
+        ],
+        "main_after": [
+          1,
+          1
+        ],
+        "v3_before": 1,
+        "v3_after": 1,
+        "v4_before": {
+          "next_check": 1793463632.2261984,
+          "last_check": 1793461556.725506,
+          "opportunity_seq": 22,
+          "tracked_since": 1793361172.24653
+        },
+        "v4_after": {
+          "next_check": 1793483079.3406594,
+          "last_check": 1793478580.7536027,
+          "opportunity_seq": 27,
+          "tracked_since": 1793361172.24653
+        },
+        "all_watermark_values_equal": false
+      }
+    ],
+    "exact_backup_rebind_preservation": true,
+    "dream_file_audit": {
+      "USER.md": {
+        "backup_matches_pre_release_dream_commit": true,
+        "current_matches_dream_head": true
+      },
+      "memory/MEMORY.md": {
+        "backup_matches_pre_release_dream_commit": true,
+        "current_matches_dream_head": true
+      }
+    },
+    "dream_head": "7902798",
+    "integrity": "ok",
+    "foreign_key_errors": 0,
+    "preservation_pass": true,
+    "actual_batch_statuses": [
+      {
+        "kind": "expression",
+        "status": "succeeded",
+        "attempts": 1,
+        "source_count": 10,
+        "result_count": 2,
+        "reason": ""
+      },
+      {
+        "kind": "jargon",
+        "status": "failed",
+        "attempts": 2,
+        "source_count": 10,
+        "result_count": 0,
+        "reason": "invalid_or_changed_input"
+      }
+    ],
+    "health": {
+      "status": "ok",
+      "process": "alive",
+      "ready": true,
+      "websocket": "running"
+    },
+    "tests": {
+      "backend": 1318,
+      "provider": 155,
+      "frontend": 1553,
+      "frontend_files": 96
+    },
+    "main_temperature": 0.1,
+    "learning_config": {
+      "enabled": true,
+      "window_messages": 80,
+      "min_messages": 10,
+      "interval_seconds": 300,
+      "concurrency": 1,
+      "excerpt_chars": 1000,
+      "context_messages": 2,
+      "context_chars": 600,
+      "expression_candidates": 10,
+      "jargon_candidates": 20,
+      "expression": {
+        "provider": null,
+        "model": null,
+        "max_tokens": 2048,
+        "timeout_seconds": 30,
+        "max_retries": 1
+      },
+      "jargon": {
+        "provider": null,
+        "model": null,
+        "max_tokens": 2048,
+        "timeout_seconds": 30,
+        "max_retries": 1
+      },
+      "selection": {
+        "provider": null,
+        "model": null,
+        "max_tokens": 2048,
+        "timeout_seconds": 30,
+        "max_retries": 1
+      },
+      "selection_expressions": 3,
+      "selection_jargon": 5,
+      "selection_stickers": 5,
+      "selection_chars": 4000,
+      "selection_calls_per_turn": 1,
+      "selection_history_turns": 25,
+      "selection_timeout_seconds": 2,
+      "selection_sticker_candidates": 40,
+      "recent_usage_turns": 6,
+      "research_max_searches": 3,
+      "research_max_fetches": 3,
+      "research_max_chars": 12000,
+      "review_after_seconds": 604800
+    },
+    "quality_acceptance": "partial",
+    "jargon_queue_acceptance": "attached_but_exhausted_batch_blocks_scope_chain"
+  }
 }
