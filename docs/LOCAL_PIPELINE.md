@@ -22,6 +22,14 @@ GitHub Actions 工作流和社区 Issue 模板已移除，所有测试、构建�
 
 ## 当前生产状态
 
+2026-10-31 V5-A 已发布，镜像 `df7348a6a8aff4dad470462c8c083e09a9243c5d`，**schema 14**，social-judge-v8、主协议 5 保持。
+已启用旁路真人文字采集、独立表达/黑话游标和有界批次；slang 直接代理新表，尚无模型提取/研究/选择调用。
+完整管线通过后端 1235 项、provider/OAuth 155 项、前端 1553 项、lint/build、隔离冒烟与健康检查；V5-A 专项 40 项通过。
+安装包临时库验证通过。308 条旧消息、12 条记忆、4 条证据、240 张贴纸、config.json 字节和 8 份 Markdown 原值保留；主 seen/read 未推进。
+实际启动的 scope 版本 +2 与 V3 最新序号刷新已在上一镜像复现；既有启动行为与学习水位分开记录。
+容器 healthy、Telegram 已连接。上一镜像 `41a25e72`，备份 `backups/1793446761114327544/`。
+固定真实提取/评估语料 39/61 条消息，ID 无交叉；B/C/D/E 仍未实施。详见 [V5-A](V5A_IMPLEMENTATION.md)。
+
 2026-10-31 表情包链接与看图学习已发布，镜像 `41a25e72cbb9e1637034109218409574a618d017`，
 schema 13，主协议 5。主模型可自行导入整包、分批看图标注语义、搜索并发送。
 实际 `deepseek-flash` 已完成用户提供的 LLM_Moe 全部 120 张学习；源端及安装容器内
@@ -237,6 +245,7 @@ Python 部分打包为 wheel，WebUI 由前端构建阶段编译并打入 wheel�
 
 `scripts/` 仅保留本机管线入口 `pipeline.sh`、部署入口 `deploy-local.sh`、发布实现 `bridge_release.py`，
 以及开发环境和 Docker 构建必需的 `install_channel_dependencies.py`。
+V5-A 另外保留只读的真实片段导出脚本 `freeze_social_v5_baseline.py`，不用于历史 slang 迁移或实际群发送。
 上游的通用安装脚本、TUI 平台 wheel 打包器和贡献者列表更新脚本已移除。
 
 可以拆开执行：
@@ -343,4 +352,4 @@ BRIDGE_DEPLOY_ROOT=/home/ubuntu/.local/share/nanobot-bridge-tg-staging ./scripts
 - 独立测试实例已验证真实升级、手动回滚，以及通过预检后故意失败的升级能自动恢复旧容器和数据。
 - 模型与 Telegram 的最终业务体验由管理员发送测试消息确认，管线不会向真实群自动发送测试消息。
 
-本机开发发布基础设施、M0–M3 首批、完整 M4、V2-A/B、V3 和 V4-A/B 已完成，验收随 `test` 执行；详见 [M0](M0_CONTRACTS.md)、[M1](M1_IMPLEMENTATION.md)、[M2](M2_IMPLEMENTATION.md)、[M3](M3_IMPLEMENTATION.md)、[M4a](M4A_IMPLEMENTATION.md)、[M4b](M4B_IMPLEMENTATION.md)、[V2-A](V2A_IMPLEMENTATION.md)、[V2-B](V2B_IMPLEMENTATION.md)、[V3-B](V3B_IMPLEMENTATION.md)、[V4-A](V4A_IMPLEMENTATION.md) 与 [V4-B](V4B_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色、SQLite、独立 OAuth 与有界媒体缓存，随整实例备份保存，不替换 JSONL 会话。当前实际库 schema 13；旧程序不接受新版本，降级需同时恢复对应数据备份。软件默认关闭仿真；本人实际实例已启用整群仿真、冷场自主机会及 V3 统一判断，quietHours 仍关闭，M5 暂缓。实际部署版本以实例 `state.json` 和上方发布记录为准。
+本机开发发布基础设施、M0–M3 首批、完整 M4、V2-A/B、V3 和 V4-A/B 已完成，验收随 `test` 执行；详见 [M0](M0_CONTRACTS.md)、[M1](M1_IMPLEMENTATION.md)、[M2](M2_IMPLEMENTATION.md)、[M3](M3_IMPLEMENTATION.md)、[M4a](M4A_IMPLEMENTATION.md)、[M4b](M4B_IMPLEMENTATION.md)、[V2-A](V2A_IMPLEMENTATION.md)、[V2-B](V2B_IMPLEMENTATION.md)、[V3-B](V3B_IMPLEMENTATION.md)、[V4-A](V4A_IMPLEMENTATION.md) 与 [V4-B](V4B_IMPLEMENTATION.md)。`telegram-social/` 数据位于实例配置目录，包含角色、SQLite、独立 OAuth 与有界媒体缓存，随整实例备份保存，不替换 JSONL 会话。当前实际库 schema 14；旧程序不接受新版本，降级需同时恢复对应数据备份。软件默认关闭仿真；本人实际实例已启用整群仿真、冷场自主机会及 V3 统一判断，quietHours 仍关闭，M5 暂缓。实际部署版本以实例 `state.json` 和上方发布记录为准。
