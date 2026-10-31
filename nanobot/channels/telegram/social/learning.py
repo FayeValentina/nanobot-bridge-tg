@@ -1,4 +1,4 @@
-"""V5 bounded material collection on the SocialStore connection, without model calls.
+"""V5 bounded material collection on the SocialStore connection.
 
 Events are the durable best-effort queue. A ready batch freezes bounded source text;
 there are no leases, backlog snapshots, content keys, or main-model exposure calls.
@@ -20,6 +20,18 @@ if TYPE_CHECKING:
     from nanobot.channels.telegram.social.store import SocialStore
 
 LearningKind = Literal["expression", "jargon"]
+
+
+def upgrade_expression_schema(store: SocialStore) -> None:
+    with store.db:
+        store.db.execute("BEGIN IMMEDIATE")
+        store.db.execute("""CREATE TABLE IF NOT EXISTS expression_guards (
+            id INTEGER PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
+            entry_id TEXT NOT NULL REFERENCES expressions(id), revision INTEGER NOT NULL,
+            situation TEXT NOT NULL, expression TEXT NOT NULL, intent_category TEXT NOT NULL,
+            scene_tags TEXT NOT NULL, created REAL NOT NULL)""")
+        store.db.execute("CREATE INDEX IF NOT EXISTS expression_guards_scope ON expression_guards(scope)")
+        store.db.execute("PRAGMA user_version=15")
 
 
 def upgrade_learning_schema(store: SocialStore) -> None:
@@ -218,7 +230,7 @@ class SocialLearning:
         ):
             for row in self.db.execute(f"SELECT DISTINCT t.id,t.revision FROM {table} t JOIN {evidence} e ON e.{id_column}=t.id "
                                        "WHERE t.scope=? AND e.message_id=? AND (? IS NULL OR e.revision<>?) "
-                                       "AND t.status IN ('candidate','confirmed','usable')", (scope, message_id, revision, revision)).fetchall():
+                                       "AND t.status IN ('candidate','confirmed','usable','available')", (scope, message_id, revision, revision)).fetchall():
                 self.db.execute(f"UPDATE {table} SET status='expired',revision=revision+1,updated=? WHERE id=?", (self.store.now(), row["id"]))
                 self.db.execute("INSERT INTO learning_changes(scope,kind,entry_id,revision,action,origin,reason,at) "
                                 "VALUES(?,?,?,?,'invalidate','source','source_changed_or_deleted',?)",
@@ -246,7 +258,7 @@ class SocialLearning:
             self.db.execute("INSERT OR IGNORE INTO learning_cursors(scope,kind) VALUES(?,?)", (scope, kind))
             after = self.db.execute("SELECT event_id FROM learning_cursors WHERE scope=? AND kind=?", (scope, kind)).fetchone()[0]
             rows = self.db.execute("SELECT * FROM learning_events WHERE scope=? AND id>? ORDER BY id LIMIT ?",
-                                   (scope, after, self.config.window_messages)).fetchall()
+                                   (scope, after, min(80, self.config.window_messages))).fetchall()
             if len(rows) < self.config.min_messages:
                 return None
             batch = uuid4().hex
@@ -330,7 +342,7 @@ class SocialLearning:
                     valid = self.db.execute("SELECT 1 FROM stickers WHERE scope=? AND id=?", (scope, entry)).fetchone()
                 else:
                     valid = self.db.execute(f"SELECT 1 FROM {table} WHERE scope=? AND id=? AND revision=? "
-                                            "AND status IN ('usable','confirmed','candidate')", (scope, entry, revision)).fetchone()
+                                            "AND status IN ('usable','available','confirmed','candidate')", (scope, entry, revision)).fetchone()
                 if valid is None:
                     raise ValueError("selected entry is missing, inactive, changed or outside this scope")
             self.db.execute("INSERT INTO expression_turns VALUES(?,?,?,1,?,?,?,?,?,?)",
@@ -363,15 +375,15 @@ class SocialLearning:
                 self.db.execute(f"UPDATE {table} SET last_confirmed=? WHERE scope=? AND id=? AND revision=?", (self.store.now(), scope, entry_id, revision))
 
     def status(self, scope: str) -> dict[str, object]:
-        return {"enabled": self.config.enabled, "stage": "collection_only", "extractor_enabled": False,
+        return {"enabled": self.config.enabled, "stage": "expression_learning", "extractor_enabled": self.config.enabled,
                 "config": self.config.model_dump(by_alias=True), "config_revision": self.config_revision,
                 "buffered_materials": self.db.execute("SELECT COUNT(*) FROM learning_events WHERE scope=?", (scope,)).fetchone()[0],
                 "pending_by_kind": {kind: self.db.execute("SELECT COUNT(*) FROM learning_events WHERE scope=? AND id>COALESCE("
                                                          "(SELECT event_id FROM learning_cursors WHERE scope=? AND kind=?),0)", (scope, scope, kind)).fetchone()[0]
                                     for kind in ("expression", "jargon")},
                 "cursors": [dict(row) for row in self.db.execute("SELECT * FROM learning_cursors WHERE scope=?", (scope,))],
-                "batches": [dict(row) for row in self.db.execute("SELECT id,kind,status,attempts,source_count,result_count,reason,created,updated FROM learning_batches WHERE scope=? ORDER BY created DESC LIMIT 20", (scope,))],
+                "batches": [dict(row) for row in self.db.execute("SELECT id,kind,status,attempts,source_count,result_count,reason,model,input_tokens,output_tokens,latency_ms,created,updated FROM learning_batches WHERE scope=? ORDER BY created DESC LIMIT 20", (scope,))],
                 "counts": [dict(row) for row in self.db.execute("SELECT * FROM learning_counts WHERE scope=?", (scope,))],
-                "usable_expressions": self.db.execute("SELECT COUNT(*) FROM expressions WHERE scope=? AND status='usable'", (scope,)).fetchone()[0],
+                "usable_expressions": self.db.execute("SELECT COUNT(*) FROM expressions WHERE scope=? AND status IN ('usable','available')", (scope,)).fetchone()[0],
                 "jargon_entries": self.db.execute("SELECT COUNT(*) FROM jargon WHERE scope=? AND status IN ('candidate','confirmed')", (scope,)).fetchone()[0],
                 "recent_selections": list(self.recent.get(scope, []))}

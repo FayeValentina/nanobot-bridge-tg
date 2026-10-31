@@ -24,6 +24,7 @@ from nanobot.agent.hook import (
 from nanobot.agent.tools.context import RequestContext, current_request_context
 from nanobot.bus.events import DeliveryReceipt, InboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.expressions import ExpressionLearner
 from nanobot.channels.telegram.social.judge import JudgeProviderSettings
 from nanobot.channels.telegram.social.judge_runtime import JudgeCoordinator
 from nanobot.channels.telegram.social.media import SocialMediaCache
@@ -58,7 +59,7 @@ from nanobot.session.manager import (
 )
 from nanobot.utils.helpers import build_image_content_blocks, strip_think
 
-SOCIAL_TOOLS = frozenset({"social_get_state", "social_read_messages", "social_mark_read", "social_send",
+SOCIAL_TOOLS = frozenset({"social_expression", "social_get_state", "social_read_messages", "social_mark_read", "social_send",
                           "social_wait", "social_set_wake", "social_get_media", "social_sticker", "social_memory"})
 SOCIAL_PROTOCOL_VERSION = 5
 SOCIAL_PROTOCOL = """You are a guest in this authorized group/topic. Participate selectively.
@@ -236,12 +237,14 @@ class TelegramSocialRuntime:
         self._epoch = uuid4().hex
         self.config = config
         self.judging = JudgeCoordinator(self, judge_provider, judge_provider_version)
+        self.expressions = ExpressionLearner(self)
         self.configure(config)
 
     def close(self) -> None:
         if not self._closed:
             self.scheduler.cancel()
             self.judging.cancel()
+            self.expressions.cancel()
             self.store.close()
             self._closed = True
 
@@ -551,6 +554,7 @@ class TelegramSocialRuntime:
             # Side-channel collection never wakes the agent or marks views seen/read.
             try:
                 self.store.learning.collect_due([key for key, binding in bindings.items() if not binding.paused])
+                self.expressions.start_due([key for key, binding in bindings.items() if not binding.paused])
             except Exception:
                 logger.exception("V5 material collection failed")
 
@@ -611,7 +615,9 @@ class TelegramSocialRuntime:
                                     "sleep_observation": self.config.sleep_observation.model_dump()},
                 "proactive": {**binding.proactive.model_dump(by_alias=True), **self.proactive.status(scope.session_key)},
                 "followups": self.store.followups.status(scope.session_key),
-                "learning": self.store.learning.status(scope.session_key),
+                "learning": {**self.store.learning.status(scope.session_key),
+                             "extractor_enabled": self.config.learning.enabled and self.expressions.provider is not None,
+                             "provider_status": "configured" if self.expressions.provider is not None else "unavailable"},
                 "quiet_hours": {**binding.quiet_hours.model_dump(by_alias=True), "active": is_quiet(binding, self.now())},
                 "max_sends_per_hour": self.config.max_sends_per_hour,
                 "remaining_wakes": max(0, self.config.max_requests_per_hour - int(requests[0])),

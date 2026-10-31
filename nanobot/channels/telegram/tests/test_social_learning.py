@@ -263,7 +263,7 @@ def test_upgrade_schema_thirteen_preserves_all_existing_source_values(store, tmp
     store.close()
     restored = SocialStore(tmp_path, now=lambda: 1000.)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 15
         for table, values in before.items():
             actual = [tuple(row) for row in restored.db.execute(f"SELECT * FROM {table}")]
             if table == "messages":

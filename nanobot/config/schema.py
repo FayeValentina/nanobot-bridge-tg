@@ -253,7 +253,7 @@ class TelegramSocialLearningModelConfig(Base):
 
 
 class TelegramSocialLearningConfig(Base):
-    """V5-A collects bounded material only; extraction/selection arrive in B/C/D."""
+    """Bounded V5 learning budgets; jargon research/selection arrive in C/D."""
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool = True

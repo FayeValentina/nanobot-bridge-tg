@@ -1,0 +1,157 @@
+{
+  "model": "deepseek-flash",
+  "corpus": "nanobot/channels/telegram/tests/fixtures/social_v5_baseline.json",
+  "mode": "actual_provider_offline_historical_extraction",
+  "sent_messages": 0,
+  "reviewed_human_messages": 10,
+  "checks": {
+    "evidence_lookup": 3,
+    "self_exclusion": true,
+    "disable_no_revival": 3,
+    "similar_no_revival": 3
+  },
+  "results": [
+    {
+      "scope": "main",
+      "batch": {
+        "id": "73cb2f6e9a4d404498cdbe5a99faa5b1",
+        "scope": "telegram:-1001",
+        "kind": "expression",
+        "scope_version": "1",
+        "config_revision": 1,
+        "after_event": 0,
+        "through_event": 10,
+        "status": "succeeded",
+        "attempts": 1,
+        "created": 1793424158.6438072,
+        "updated": 1793424158.6438072,
+        "due": 1793424458.6438072,
+        "reason": "",
+        "source_count": 7,
+        "result_count": 2,
+        "model": "deepseek-flash",
+        "input_tokens": 3302,
+        "output_tokens": 1397,
+        "latency_ms": 10114
+      },
+      "entries": [
+        {
+          "id": "6b08e28a80c849b49e5a531a40752267",
+          "scope": "telegram:-1001",
+          "situation": "对方把时间或事实记错（例如把今天说成昨天），不直接否定，而是先重复那个词再加一句反问来纠正。",
+          "expression": "昨天？不是今天吗",
+          "tone": "疑惑、轻反问",
+          "intent_category": "reaction",
+          "scene_tags": "[\"correction\", \"disagreement\"]",
+          "suitable": "双方关系轻松、对方明显记错时间或小事实时，用短问句纠正",
+          "unsuitable": "需要正式确认记录、对方在认真道歉或情绪低落时",
+          "status": "available",
+          "revision": 1,
+          "occurrences": 1,
+          "last_selected": null,
+          "last_confirmed": null,
+          "created": 1793424158.6438072,
+          "updated": 1793424158.6438072,
+          "evidence": [
+            {
+              "expression_id": "6b08e28a80c849b49e5a531a40752267",
+              "message_id": 6895,
+              "seq": 20,
+              "sender_id": "participant-1",
+              "at": 1793424050.0,
+              "excerpt": "昨天？不是今天吗",
+              "revision": 1,
+              "source": "human_text"
+            }
+          ]
+        },
+        {
+          "id": "d6cfe2d2d9424b77a8c1366b3ee7f4c0",
+          "scope": "telegram:-1001",
+          "situation": "对方已经做出猜测或追问答案，自己不想直接揭晓，就逗对方继续猜。",
+          "expression": "猜猜",
+          "tone": "俏皮、卖关子",
+          "intent_category": "playful_challenge",
+          "scene_tags": "[\"guessing\", \"banter\"]",
+          "suitable": "轻松猜谜、猜地点等玩闹语境，对方乐意配合猜",
+          "unsuitable": "对方认真求助、时间紧迫或需要明确信息时",
+          "status": "available",
+          "revision": 1,
+          "occurrences": 1,
+          "last_selected": null,
+          "last_confirmed": null,
+          "created": 1793424158.6438072,
+          "updated": 1793424158.6438072,
+          "evidence": [
+            {
+              "expression_id": "d6cfe2d2d9424b77a8c1366b3ee7f4c0",
+              "message_id": 6844,
+              "seq": 7,
+              "sender_id": "participant-1",
+              "at": 1793368195.0,
+              "excerpt": "猜猜",
+              "revision": 1,
+              "source": "human_text"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scope": "topic",
+      "batch": {
+        "id": "d0504f4a84514c9d81e3b283b6ebeee8",
+        "scope": "telegram:-1001:topic:42",
+        "kind": "expression",
+        "scope_version": "1",
+        "config_revision": 1,
+        "after_event": 0,
+        "through_event": 7,
+        "status": "succeeded",
+        "attempts": 1,
+        "created": 1793424158.6438072,
+        "updated": 1793424158.6438072,
+        "due": 1793424458.6438072,
+        "reason": "",
+        "source_count": 3,
+        "result_count": 1,
+        "model": "deepseek-flash",
+        "input_tokens": 2470,
+        "output_tokens": 927,
+        "latency_ms": 6434
+      },
+      "entries": [
+        {
+          "id": "5a38f9dc515d4c6fb25b7e91f783ff85",
+          "scope": "telegram:-1001:topic:42",
+          "situation": "对方刚查完某类事物的信息或概率，而对方本身也算那类事物（或说话者故意把它算进去）时，顺势把问题反问回对方身上。",
+          "expression": "你自己不就是吗，这个时间段，你一般在哪",
+          "tone": "调侃、顺势反问",
+          "intent_category": "playful_challenge",
+          "scene_tags": "[\"banter\"]",
+          "suitable": "气氛轻松、双方能接玩笑时，把对方也算进所追问的对象里来制造笑点。",
+          "unsuitable": "对方在认真求助、明显焦虑或话题严肃，需要实际信息时不适合。",
+          "status": "candidate",
+          "revision": 1,
+          "occurrences": 1,
+          "last_selected": null,
+          "last_confirmed": null,
+          "created": 1793424158.6438072,
+          "updated": 1793424158.6438072,
+          "evidence": [
+            {
+              "expression_id": "5a38f9dc515d4c6fb25b7e91f783ff85",
+              "message_id": 6878,
+              "seq": 5,
+              "sender_id": "participant-1",
+              "at": 1793411406.0,
+              "excerpt": "你自己不就是吗，这个时间段，你一般在哪",
+              "revision": 1,
+              "source": "human_text"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

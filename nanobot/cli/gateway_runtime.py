@@ -484,6 +484,7 @@ def _run_gateway(
         social_config, Path(config_path).parent / "telegram-social", bus,
         judge_provider=social_judge_provider, judge_provider_version=social_judge_version,
     )
+    telegram_social.expressions.configure_provider(config)
 
     turn_delivery_factory = TurnDeliveryFactory(
         bus,
@@ -522,6 +523,7 @@ def _run_gateway(
         session_policy_resolver=telegram_social.policy_for_session,
         request_admission=telegram_social.admit_request,
     )
+    telegram_social.expressions.main_busy = lambda: bool(agent._active_tasks)  # pyright: ignore[reportPrivateUsage]
     def _schedule_webui_background(awaitable: Awaitable[None]) -> None:
         agent.schedule_background(cast(Coroutine[Any, Any, None], awaitable))
 
@@ -741,6 +743,7 @@ def _run_gateway(
         telegram_social.configure(fresh_social)
         fresh_judge, fresh_judge_version = make_judge_provider(fresh_config, telegram_social.config.judge)
         telegram_social.judging.set_provider(fresh_judge, fresh_judge_version)
+        telegram_social.expressions.configure_provider(fresh_config)
 
     def _webui_skill_state_action(disabled_skills: set[str]) -> None:
         config.agents.defaults.disabled_skills = sorted(disabled_skills)

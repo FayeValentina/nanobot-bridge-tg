@@ -20,7 +20,11 @@ from nanobot.channels.telegram.social.judge_models import (
     JudgeRecord,
     JudgeSnapshot,
 )
-from nanobot.channels.telegram.social.learning import SocialLearning, upgrade_learning_schema
+from nanobot.channels.telegram.social.learning import (
+    SocialLearning,
+    upgrade_expression_schema,
+    upgrade_learning_schema,
+)
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
     DialogueContext,
@@ -49,7 +53,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -333,6 +337,8 @@ class SocialStore:
                 """)
         if version < 14:
             upgrade_learning_schema(self)
+        if version < 15:
+            upgrade_expression_schema(self)
         self.learning = SocialLearning(self)
         self.followups = SocialFollowups(self)
         self.closed = False

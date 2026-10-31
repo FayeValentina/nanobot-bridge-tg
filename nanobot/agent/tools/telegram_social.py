@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.agent.tools.context import current_request_context
+from nanobot.channels.telegram.social.expressions import ExpressionEdit
 from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.config.schema import TelegramSocialSleepInterruptConfig
 
@@ -28,6 +29,7 @@ class TelegramSocialTool(Tool):
     @property
     def description(self) -> str:
         return {
+            "social_expression": "Inspect learned contextual expressions and their original message evidence in this scope. list/get/modify/disable/enable; writes require entry_id and expected_revision. Corrections and disables preserve a stable ID and block automatic relearning. Only enable explicitly reactivates an entry. This manages the library silently; it does not publish or trigger a reply.",
             "social_get_state": "Read the current role_id, role_file path inside this runtime, group/topic watermarks and behavior limits.",
             "social_read_messages": "Read bounded unread/recent messages in the current group/topic.",
             "social_mark_read": "Acknowledge continuously displayed messages through a seq from this turn.",
@@ -41,6 +43,8 @@ class TelegramSocialTool(Tool):
 
     @property
     def parameters(self) -> dict[str, Any]:
+        if self.name == "social_expression":
+            return ExpressionEdit.model_json_schema()
         if self.name == "social_memory":
             return MemoryRequest.model_json_schema()
         properties: dict[str, Any] = {}
@@ -125,7 +129,10 @@ class TelegramSocialTool(Tool):
         if ctx is None:
             return ToolResult.error("social tools require an active group/topic turn")
         try:
-            if self.name == "social_memory":
+            if self.name == "social_expression":
+                scope = self.runtime.validate_context(ctx)
+                result = self.runtime.expressions.library.change(scope.session_key, ExpressionEdit.model_validate(kwargs))
+            elif self.name == "social_memory":
                 result = self.runtime.memory_action(ctx, MemoryRequest.model_validate(kwargs))
             elif self.name == "social_get_media":
                 return await self.runtime.get_media(ctx, kwargs["message_id"])
