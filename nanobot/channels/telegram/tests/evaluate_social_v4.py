@@ -46,6 +46,7 @@ CASES = (
     "ordinary_statement", "short_reply", "no_reply", "two_unanswered", "explicit_end",
     "silence", "interest_search", "search_failed", "search_disabled", "restart_pending", "compacted_pending",
     "chat_invitation", "unanswered_invitation", "peer_bot_call", "peer_bot_shared",
+    "group_meme", "public_chatter", "emotion_share",
 )
 SCOPE = ConversationScope("telegram", -10001, 53)
 
@@ -215,6 +216,13 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                 seed_message(runtime, "你们两个聊聊早餐吧。")
                 seed_message(runtime, "我选脆边荷包蛋，白龙你怎么看？", own=True)
                 input_text = "脆边必须有，流心也不能少，本龙再加片黄油吐司。你这白饭派可别拿显卡灰当椒盐。"
+            elif name == "group_meme":
+                input_text = "token 来！🖐️😡🤚" * 14
+            elif name == "public_chatter":
+                seed_message(runtime, "小明，你今晚吃啥？")
+                input_text = "面条，你呢？"
+            elif name == "emotion_share":
+                input_text = "终于下班了，今天累死了。"
             elif name in {"chat_invitation", "unanswered_invitation"}:
                 seed_message(runtime, "我明天准备去郊游。")
                 seed_message(runtime, "带点水，出发前看一下交通。", own=True)

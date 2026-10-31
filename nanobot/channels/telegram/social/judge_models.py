@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nanobot.channels.telegram.social.models import ConversationScope
 
-JUDGE_PROMPT_VERSION = "social-judge-v7"
+JUDGE_PROMPT_VERSION = "social-judge-v8"
 
 
 class JudgeDTO(BaseModel):

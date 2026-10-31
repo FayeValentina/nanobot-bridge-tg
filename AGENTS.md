@@ -21,6 +21,7 @@ This file provides guidance to AI coding agents working with this repository.
 
 ## Owner's bot conversation preference (confirmed 2026-10-31)
 
+- V3 must broadly admit fresh group conversation, including unaddressed memes/repetition, laughter, moods, quotes, media and ordinary public exchanges between other members. Do not require an explicit call, task/question or a proven valuable opening. Let the main model decide whether to participate or stay silent; uncertainty about relevance should generally wake. Retain explicit selective waits, explicitly private/no-interjection exchanges and host self/duplicate/stale protections. This supersedes older narrow fixture expectations based solely on another addressee, quotation or low information.
 - Other bots are group participants, including without an @mention. Send their authorized fresh messages through the same V3 semantic assessment as human messages; do not add a bot-only mention gate or special mutual-chat cap/cooldown.
 - Correct account identity is needed to understand the conversation, not to prohibit joining it. Naming another participant is not an automatic refusal when the target can naturally join an ongoing shared exchange or members invite bots to chat together. Still distinguish closed questions to other members from tasks addressed to this bot.
 - Keep V3 wake/observe, voluntary silence, self-message/duplicate/stale protections and existing publishing limits. See `docs/BOT_CONVERSATION_PARTICIPATION.md`; this supersedes the earlier explicit-address-only peer-bot stage.

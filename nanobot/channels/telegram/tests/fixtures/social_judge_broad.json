@@ -1,0 +1,20 @@
+[
+  {"name":"repeated_token_no_mention","history":[],"text":"token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚token 来！🖐️️😡🤚","expected":"wake","standing_questions":true},
+  {"name":"unrelated_repeated_meme","history":[],"text":"发工资！发工资！发工资！🖐️😡🤚","expected":"wake"},
+  {"name":"plain_laughter","history":[],"text":"哈哈哈哈哈哈哈","expected":"wake"},
+  {"name":"emoji_reaction","history":[],"text":"🖐️😡🤚","expected":"wake"},
+  {"name":"plain_mood","history":[],"text":"今天累死了","expected":"wake"},
+  {"name":"ordinary_life","history":[],"text":"终于下班了","expected":"wake","standing_questions":true},
+  {"name":"casual_complaint","history":[],"text":"这饭也太难吃了吧","expected":"wake"},
+  {"name":"meme_reference","history":[],"text":"我真服了，怎么又是这个表情包","expected":"wake"},
+  {"name":"small_celebration","history":[],"text":"成了！！","expected":"wake"},
+  {"name":"unfinished_chatter","history":[],"text":"等下我跟你们讲个离谱的","expected":"wake"},
+  {"name":"other_people_chat","history":[["alice","小明你今晚吃什么"]],"text":"面条，你呢？","expected":"wake"},
+  {"name":"shared_quote","history":[],"text":"评论区看到一句“上班哪有不疯的”，笑死","expected":"wake"},
+  {"name":"peer_bot_unaddressed_meme","history":[],"sender":"peer-bot","text":"本龙今天也想躺平，谁来替我打工","expected":"wake"},
+  {"name":"ordinary_sleep_chatter","history":[],"text":"你们看这事离谱不离谱，我又坐过站了","sleeping":true,"expected":"wake"},
+  {"name":"private_exchange_excludes_group","history":[["alice","小明，这事别在群里讨论"]],"text":"小明咱们私聊，群里其他人都别接。","expected":"observe"},
+  {"name":"selective_wait_blocks_meme","history":[["bot","等小明到家告诉我。"]],"text":"发工资！发工资！发工资！","wait":true,"expected":"observe"},
+  {"name":"selective_wait_direct_interruption","history":[["bot","等小明到家告诉我。"]],"text":"肥鱼，先来陪我聊两句","wait":true,"expected":"wake","fulfills":false},
+  {"name":"explicit_stop_needs_main","history":[["bot","我刚来，你们在聊啥？"]],"text":"肥鱼先别说了，等我发完","expected":"wake"}
+]

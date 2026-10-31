@@ -1,13 +1,15 @@
 [
   {"name":"explicit_mention","history":[],"text":"@Deep_Fat_Fish_bot 你怎么看？","mentions_bot":true,"expected":"wake","reason":"明确提及机器人；交主模型决定回应内容。"},
   {"name":"direct_reply","history":[["bot","几点出发？"]],"text":"下午三点","reply_bot":true,"expected":"wake","reason":"直接回复机器人的问题，短回答也有关联。"},
-  {"name":"member_question","history":[["alice","小明，你什么时候出发？"]],"text":"下午三点，你呢，Alice？","expected":"observe","reason":"两名群友互相提问，没有给机器人自然切入口。"},
+  {"name":"member_question","history":[["alice","小明，你什么时候出发？"]],"text":"下午三点，你呢，Alice？","expected":"wake","reason":"普通公开群聊也交主模型决定是否加入，不要求消息对机器人说。"},
   {"name":"open_invitation","history":[],"text":"有人聊天吗，好无聊","expected":"wake","reason":"面向群体的开放聊天邀请，不需要点名。"},
-  {"name":"share_without_opening","history":[["alice","这段台词笑死我了，存个档，不用接话。"]],"text":"哈哈哈哈哈","expected":"observe","reason":"有趣但只是笑声，没有必要接话。"},
+  {"name":"share_without_opening","history":[["alice","这段台词笑死我了，存个档，不用接话。"]],"text":"哈哈哈哈哈","expected":"observe","reason":"此处有明确不用接话的要求；笑声本身不构成拦截理由。"},
   {"name":"stale_remark","history":[],"text":"有人聊天吗","age_seconds":600,"expected":"observe","reason":"过时批次不凭旧邀请唤醒；本地时效检查另有回归。"},
   {"name":"pending_answer","history":[["bot","旅行是跟谁一起去？"]],"text":"跟朋友","followup":true,"expected":"wake","reason":"已有待追问事项的实际回答，可恢复普通对话。"},
   {"name":"declined_followup","history":[["bot","要继续聊旅行吗？"]],"text":"先不聊了，不用再追问","followup":true,"expected":"wake","reason":"唤醒以结束事项，不代表必须公开回复。"},
   {"name":"image_context","history":[["bot","你做的陶艺杯子是什么样的？"]],"text":"[non-text message]","reply_bot":true,"media":true,"expected":"wake","reason":"图片回应机器人的问题；这里只验证媒体输入组装，不臆造图片内容。"},
-  {"name":"history_gap","history":[],"text":"是那个","history_truncated":true,"expected":"observe","reason":"上下文不足，不能编造对象或关联。"},
-  {"name":"quoted_old_mention","history":[],"text":"昨天日志里写着“肥鱼呢”，只是摘录留档。","expected":"observe","reason":"引用旧点名并非当前呼叫。"}
+  {"name":"history_gap","history":[],"text":"是那个","history_truncated":true,"expected":"wake","reason":"新鲜口语片段仍可交主模型；放行不代表编造缺失对象。"},
+  {"name":"quoted_old_mention","history":[],"text":"昨天日志里写着“肥鱼呢”，只是摘录留档。","expected":"wake","reason":"引用不是当前呼叫，但新分享的引用仍属于可旁听参与的群聊。"},
+  {"name":"repeated_token_meme","history":[],"text":"token 来！🖐️😡🤚token 来！🖐️😡🤚token 来！🖐️😡🤚","expected":"wake","reason":"未点名的重复玩梗交主模型决定接话，重复文本不是重复事件。"},
+  {"name":"laughter_without_address","history":[],"text":"哈哈哈哈哈","expected":"wake","reason":"笑声是群聊表达，不需要先证明明确聊天切口。"}
 ]
