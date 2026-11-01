@@ -9,6 +9,7 @@ import re
 import secrets
 import shutil
 import stat
+import time
 from collections import OrderedDict
 from contextlib import contextmanager, suppress
 from copy import deepcopy
@@ -28,6 +29,13 @@ from nanobot.runtime_context import (
     public_history_message,
 )
 from nanobot.session.history_visibility import HIDDEN_HISTORY_META, is_hidden_history_message
+from nanobot.session.incremental_log import (
+    IncrementalSessionLog,
+    SessionLogReader,
+    committed_mtime,
+    committed_revision,
+    state_path,
+)
 from nanobot.session.model_selection import SESSION_MODEL_PRESET_METADATA_KEY
 from nanobot.session.summary import SUMMARY_CONTINUATION_TEXT
 from nanobot.utils.helpers import (
@@ -585,6 +593,7 @@ class JsonlSessionStore:
         with suppress(OSError):
             os.chmod(root, 0o700)
         self.workspace = canonical_workspace
+        self._incremental_log = IncrementalSessionLog()
         self._migration_lock = FileLock(
             str(root / ".workspace-migration.lock"),
             timeout=_SESSION_MIGRATION_LOCK_TIMEOUT_SECONDS,
@@ -937,6 +946,9 @@ class JsonlSessionStore:
                 logger.warning("Skipping unsafe legacy session file: {}", src)
                 continue
             dst = self.sessions_dir / src.name
+            self._incremental_log.materialize(src)
+            if dst.exists():
+                self._incremental_log.materialize(dst)
             source_snapshot = self._session_file_snapshot(src)
             if source_snapshot is None:
                 logger.warning("Skipping invalid or changing legacy session file: {}", src)
@@ -995,6 +1007,14 @@ class JsonlSessionStore:
             for src in self.sessions_dir.glob("*.jsonl"):
                 if self.session_key_from_path(src) is None:
                     continue
+                if state_path(src).exists():
+                    key = self.session_key_from_path(src)
+                    session = self._load_unlocked(key) if key is not None else None
+                    if session is None:
+                        conflicts.append(src)
+                        continue
+                    self._incremental_log.discard(src)
+                    self._save_unlocked(session, fsync=True)
                 source_snapshot = self._session_file_snapshot(src)
                 if source_snapshot is None:
                     conflicts.append(src)
@@ -1072,7 +1092,7 @@ class JsonlSessionStore:
             last_consolidated = 0
             provider_state: ProviderConversationState | None = None
 
-            with open(path, encoding="utf-8") as f:
+            with SessionLogReader(path) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -1152,7 +1172,7 @@ class JsonlSessionStore:
             provider_state: ProviderConversationState | None = None
             skipped = 0
 
-            with open(path, encoding="utf-8") as f:
+            with SessionLogReader(path) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -1257,6 +1277,7 @@ class JsonlSessionStore:
                 "session_key": session.key,
                 "base_updated_at": session.updated_at.isoformat(),
                 "base_message_count": len(session.messages),
+                "base_revision": list(committed_revision(path)),
                 "checkpoint": checkpoint,
                 "provider_state": (
                     session.provider_state.to_private_record()
@@ -1292,10 +1313,14 @@ class JsonlSessionStore:
             # A complete session save supersedes an older sidecar. This comparison
             # closes the small crash window between replacing the JSONL and unlinking
             # its previous checkpoint.
-            if main_path.stat().st_mtime_ns > checkpoint_stat.st_mtime_ns:
+            raw = _json_object(json.loads(checkpoint_path.read_text(encoding="utf-8")))
+            if "base_revision" in raw:
+                superseded = raw["base_revision"] != list(committed_revision(main_path))
+            else:
+                superseded = committed_mtime(main_path) > checkpoint_stat.st_mtime_ns
+            if superseded:
                 checkpoint_path.unlink(missing_ok=True)
                 return
-            raw = _json_object(json.loads(checkpoint_path.read_text(encoding="utf-8")))
             if (
                 raw.get("version") != _RUNTIME_CHECKPOINT_VERSION
                 or raw.get("session_key") != session.key
@@ -1333,103 +1358,78 @@ class JsonlSessionStore:
 
     def _save_unlocked(self, session: Session, *, fsync: bool = False) -> None:
         path = self.get_session_path(session.key)
-        tmp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+        metadata_line: dict[str, Any] = {
+            "_type": "metadata", "key": session.key,
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+            "metadata": session.metadata,
+            "last_archived": session.last_archived,
+            "last_consolidated": session.last_consolidated,
+        }
+        provider = session.provider_state.to_private_record() if session.provider_state is not None else None
+        if self._incremental_log.append(path, metadata_line, provider, session.messages, fsync=fsync):
+            self.get_runtime_checkpoint_path(session.key).unlink(missing_ok=True)
+            return
+        self._save_full_unlocked(session, metadata_line, provider, fsync=fsync)
 
+    def _save_full_unlocked(
+        self, session: Session, metadata_line: dict[str, Any],
+        provider: dict[str, Any] | None, *, fsync: bool,
+    ) -> None:
+        path = self.get_session_path(session.key)
+        tmp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+        metadata_line = dict(metadata_line, _storage_revision=time.time_ns(), _message_count=len(session.messages))
         try:
             with open(tmp_path, "x", encoding="utf-8") as f:
-                metadata_line = {
-                    "_type": "metadata",
-                    "key": session.key,
-                    "created_at": session.created_at.isoformat(),
-                    "updated_at": session.updated_at.isoformat(),
-                    "metadata": session.metadata,
-                    "last_archived": session.last_archived,
-                    # Keep old nanobot releases able to read sessions written
-                    # during the field-name migration.
-                    "last_consolidated": session.last_consolidated,
-                }
+                os.chmod(tmp_path, 0o600)
                 f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
-                if session.provider_state is not None:
-                    provider_state_line = {
-                        "_type": _PROVIDER_STATE_RECORD_TYPE,
-                        "state": session.provider_state.to_private_record(),
-                    }
-                    f.write(json.dumps(provider_state_line, ensure_ascii=False) + "\n")
-                for msg in session.messages:
-                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                if provider is not None:
+                    f.write(json.dumps({"_type": _PROVIDER_STATE_RECORD_TYPE, "state": provider}, ensure_ascii=False) + "\n")
+                for message in session.messages:
+                    f.write(json.dumps(message, ensure_ascii=False) + "\n")
                 if fsync:
                     f.flush()
                     os.fsync(f.fileno())
-
             os.replace(tmp_path, path)
-
-            # The full record now contains the authoritative checkpoint state (or
-            # its removal), so an older volatile overlay is no longer needed.
+            state_path(path).unlink(missing_ok=True)
             self.get_runtime_checkpoint_path(session.key).unlink(missing_ok=True)
-
+            self._incremental_log.remember(path, metadata_line, provider, session.messages)
             if fsync:
-                with suppress(PermissionError):
-                    fd = os.open(str(path.parent), os.O_RDONLY)
-                    try:
-                        os.fsync(fd)
-                    except OSError as exc:
-                        if exc.errno != errno.EINVAL:
-                            raise
-                    finally:
-                        os.close(fd)
+                self._fsync_directory(path.parent)
         finally:
             tmp_path.unlink(missing_ok=True)
 
     def update_metadata(
-        self,
-        key: str,
-        updates: dict[str, Any],
-        *,
-        fsync: bool = False,
+        self, key: str, updates: dict[str, Any], *, fsync: bool = False,
     ) -> bool:
-        """Atomically replace only a session file's metadata record."""
+        """Atomically commit metadata without rewriting the message log."""
         with self._session_files_lock:
             path = self.get_session_path(key)
             if not path.exists():
                 return False
-            tmp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
             try:
-                with open(path, encoding="utf-8") as source:
-                    first_line = source.readline()
-                    data = _json_object(json.loads(first_line))
-                    if data.get("_type") != "metadata":
-                        return False
-                    raw_metadata = cast(object, data.get("metadata", {}))
-                    metadata = (
-                        dict(cast(dict[str, Any], raw_metadata))
-                        if isinstance(raw_metadata, dict)
-                        else {}
-                    )
-                    metadata.update(deepcopy(updates))
-                    data["metadata"] = metadata
-                    with open(tmp_path, "x", encoding="utf-8") as target:
-                        target.write(json.dumps(data, ensure_ascii=False) + "\n")
-                        shutil.copyfileobj(source, target)
-                        if fsync:
-                            target.flush()
-                            os.fsync(target.fileno())
-                os.replace(tmp_path, path)
-                if fsync:
-                    self._fsync_directory(path.parent)
+                if self._incremental_log.update_metadata(path, updates, fsync=fsync):
+                    return True
+                session = self._load_unlocked(key)
+                if session is None:
+                    return False
+                session.metadata.update(deepcopy(updates))
+                self._save_unlocked(session, fsync=fsync)
                 return True
             except _SESSION_DATA_ERRORS as exc:
                 logger.warning("Failed to update session metadata {}: {}", key, exc)
                 return False
-            finally:
-                tmp_path.unlink(missing_ok=True)
 
     def delete(self, key: str) -> bool:
         with self._session_files_lock:
             return self._delete_unlocked(key)
 
     def _delete_unlocked(self, key: str) -> bool:
+        path = self.get_session_path(key)
+        self._incremental_log.discard(path)
         paths = [
-            self.get_session_path(key),
+            path,
+            state_path(path),
             self.get_runtime_checkpoint_path(key),
             self.get_legacy_lossy_path(key),
             self.get_legacy_session_path(key),
@@ -1459,7 +1459,7 @@ class JsonlSessionStore:
             created_at: str | None = None
             updated_at: str | None = None
             stored_key: str | None = None
-            with open(path, encoding="utf-8") as f:
+            with SessionLogReader(path) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -1515,7 +1515,7 @@ class JsonlSessionStore:
         if not path.exists():
             return None
         try:
-            with open(path, encoding="utf-8") as f:
+            with SessionLogReader(path) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -1568,7 +1568,7 @@ class JsonlSessionStore:
             if storage_key is None:
                 continue
             try:
-                with open(path, encoding="utf-8") as f:
+                with SessionLogReader(path) as f:
                     first_line = f.readline().strip()
                     if first_line:
                         raw_data: object = json.loads(first_line)

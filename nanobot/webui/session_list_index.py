@@ -20,6 +20,7 @@ from loguru import logger
 from nanobot.config.paths import get_webui_dir
 from nanobot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
 from nanobot.session.history_visibility import is_hidden_history_message
+from nanobot.session.incremental_log import SessionLogReader, state_path
 from nanobot.session.manager import (
     _PROVIDER_STATE_RECORD_TYPE,  # pyright: ignore[reportPrivateUsage]
     _SESSION_LIST_PREVIEW_MAX_CHARS,  # pyright: ignore[reportPrivateUsage]
@@ -190,7 +191,15 @@ def _write_index_rows(sessions_dir: Path, rows: list[dict[str, Any]]) -> None:
 
 def _file_signature(path: Path) -> dict[str, int]:
     stat = path.stat()
-    return {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+    try:
+        saved_state = state_path(path).stat()
+        state_mtime, state_size = saved_state.st_mtime_ns, saved_state.st_size
+    except FileNotFoundError:
+        state_mtime, state_size = 0, 0
+    return {
+        "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
+        "state_mtime_ns": state_mtime, "state_size": state_size,
+    }
 
 
 def _indexed_row_matches_file(row: dict[str, Any], path: Path, webui_dir: Path) -> bool:
@@ -210,6 +219,8 @@ def _indexed_row_matches_file(row: dict[str, Any], path: Path, webui_dir: Path) 
     return (
         row.get("mtime_ns") == signature["mtime_ns"]
         and row.get("size") == signature["size"]
+        and row.get("state_mtime_ns") == signature["state_mtime_ns"]
+        and row.get("state_size") == signature["state_size"]
         and row.get(_WEBUI_ACTIVITY_MTIME_NS) == activity_signature[_WEBUI_ACTIVITY_MTIME_NS]
         and row.get(_WEBUI_ACTIVITY_SIZE) == activity_signature[_WEBUI_ACTIVITY_SIZE]
         and row.get(_WEBUI_ACTIVITY_FILES) == activity_signature[_WEBUI_ACTIVITY_FILES]
@@ -499,6 +510,8 @@ def _indexed_row_for_session(session: Session, path: Path, webui_dir: Path) -> d
         "file": path.name,
         "mtime_ns": signature["mtime_ns"],
         "size": signature["size"],
+        "state_mtime_ns": signature["state_mtime_ns"],
+        "state_size": signature["state_size"],
         **activity_signature,
     }
 
@@ -632,7 +645,7 @@ def _scan_session_row(
         return None
     try:
         signature = _file_signature(path)
-        with open(path, encoding="utf-8") as f:
+        with SessionLogReader(path) as f:
             first_line = f.readline().strip()
             if not first_line:
                 return None
@@ -705,6 +718,8 @@ def _scan_session_row(
                 "file": path.name,
                 "mtime_ns": signature["mtime_ns"],
                 "size": signature["size"],
+                "state_mtime_ns": signature["state_mtime_ns"],
+                "state_size": signature["state_size"],
                 **activity_signature,
             }
     except Exception:
