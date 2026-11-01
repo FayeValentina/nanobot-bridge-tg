@@ -35,7 +35,8 @@ COPY deploy/smoke_probe.py /opt/smoke_probe.py
 # Keep the matching repository available for the bot to inspect alongside its wheel.
 COPY . /opt/nanobot-source/
 ARG SOURCE_REVISION=unknown
-RUN printf '%s\n' "$SOURCE_REVISION" > /opt/nanobot-source/SOURCE_REVISION
+RUN chmod -R a+rX,go-w /opt/nanobot-source && \
+    printf '%s\n' "$SOURCE_REVISION" > /opt/nanobot-source/SOURCE_REVISION
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     NANOBOT_SOURCE_DIR=/opt/nanobot-source
 WORKDIR /home/nanobot
