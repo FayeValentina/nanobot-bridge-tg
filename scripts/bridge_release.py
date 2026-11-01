@@ -168,6 +168,7 @@ class ReleaseManager:
     def _compose(self, revision: str, *args: str) -> str:
         _, metadata = self.release(revision)
         values = dict(BRIDGE_IMAGE=metadata["image"], BRIDGE_DATA_DIR=str(self.data),
+                      BRIDGE_CHECKOUT_DIR=str(REPO),
                       BRIDGE_UID=str(os.getuid()), BRIDGE_GID=str(os.getgid()),
                       BRIDGE_WEB_PORT=str(self.settings["web_port"]),
                       BRIDGE_HEALTH_PORT=str(self.settings["health_port"]))

@@ -179,6 +179,7 @@ def test_sudo_compose_receives_an_explicit_non_secret_env_file(tmp_path, monkeyp
         env_path = Path(args[args.index("--env-file") + 1])
         assert 'BRIDGE_IMAGE="nanobot-bridge-tg:sha-' in env_path.read_text()
         assert "BRIDGE_DATA_DIR=" in env_path.read_text()
+        assert f"BRIDGE_CHECKOUT_DIR={json.dumps(str(bridge_release.REPO))}" in env_path.read_text()
         assert env_path.stat().st_mode & 0o077 == 0
         return "validated"
 

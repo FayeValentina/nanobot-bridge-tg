@@ -174,6 +174,7 @@ class ContextBuilder:
             agent_workspace_path=agent_workspace_path,
             runtime=runtime,
             source_dir=os.environ.get("NANOBOT_SOURCE_DIR", ""),
+            checkout_dir=os.environ.get("NANOBOT_CHECKOUT_DIR", ""),
             platform_policy=render_template("agent/platform_policy.md", system=system),
             channel=channel or "",
         )

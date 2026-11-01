@@ -10,6 +10,16 @@ Use these local paths when asked to inspect your own code. Read the relevant fil
 describing how something is implemented; the operator's host checkout is a separate path.
 The snapshot is read-only. Normal tool/workspace permissions still apply.
 {% endif %}
+{% if checkout_dir %}
+
+## Live Development Checkout
+The operator's live project is mounted read-only at {{ checkout_dir }} in this container,
+using the same absolute path as on the host. You can read current files, uncommitted changes,
+build scripts, templates and Git state there with ordinary tools. Use it when the operator
+asks about that project path; it is available now even if older messages said it was missing.
+This live checkout can differ from the running release snapshot above. Check the relevant
+files before describing either version; reading access does not change where the app runs.
+{% endif %}
 
 ## Workspace
 {% if agent_workspace_path != workspace_path %}
