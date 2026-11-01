@@ -35,6 +35,8 @@ class SocialProactive:
 
     def _next_check(self, binding: TelegramSocialScopeConfig) -> float:
         policy = binding.proactive
+        if policy.activity_enabled:
+            return self.store.now() + policy.activity_interval_seconds
         return self.store.now() + policy.min_interval_seconds + self.random_value() * (
             policy.max_interval_seconds - policy.min_interval_seconds)
 
@@ -126,7 +128,9 @@ class SocialProactive:
             row = self.db.execute("SELECT at FROM messages WHERE scope=? AND seq=?", (key, candidate.seq)).fetchone()
             if row is None or (not for_send and state["read_through"] >= candidate.seq) or not 0 <= now - float(row[0]) < binding.proactive.context_max_age_seconds:
                 return "context_expired"
-        elif candidate.kind == "idle":
+        elif candidate.kind in {"idle", "activity"}:
+            if candidate.kind == "activity" and not binding.proactive.activity_enabled:
+                return "disabled"
             if not for_send:
                 state = self.db.execute("SELECT last_member_at FROM scopes WHERE key=?", (key,)).fetchone()
                 if state[0] is not None and now - float(state[0]) < binding.proactive.idle_seconds:
@@ -152,7 +156,8 @@ class SocialProactive:
         member_at = self.db.execute("SELECT last_member_at FROM scopes WHERE key=?", (key,)).fetchone()[0]
         idle = now - float(member_at if member_at is not None else row["tracked_since"])
         metrics.update({"last_member_at": member_at, "idle_seconds": idle, "base_probability": policy.probability})
-        if now >= float(row["next_check"]) + binding.proactive.ttl_seconds:
+        ttl = policy.activity_ttl_seconds if policy.activity_enabled else policy.ttl_seconds
+        if now >= float(row["next_check"]) + ttl:
             decision = "missed"
         elif row["stopped"]:
             decision = "stopped"
@@ -170,6 +175,20 @@ class SocialProactive:
             decision = "busy"
         elif idle < policy.idle_seconds:
             decision = "member_active"
+        elif policy.activity_enabled:
+            # Work is independent of the probability and budget for public speech.
+            # With allTopics, use the conversation members most recently used rather
+            # than running identical idle projects in every dormant topic.
+            target = self.db.execute("SELECT key FROM scopes WHERE channel=? AND chat_id=? "
+                                     "ORDER BY last_member_at DESC,key LIMIT 1", (scope.channel, scope.chat_id)).fetchone()
+            if binding.all_topics and target is not None and target[0] != key:
+                decision = "other_topic_active"
+            elif self.db.execute("SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_requests_per_hour:
+                decision = "request_budget"
+            else:
+                decision = "scheduled"
+                candidate = ProactiveCandidate(kind="activity", seq=0, expires_at=now + ttl,
+                                               opportunity_id=int(row["opportunity_seq"]) + 1)
         elif (self.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_sends_per_hour
               or (isinstance(hourly, int) and hourly >= config.max_sends_per_hour)):
             decision = "send_budget"
@@ -197,7 +216,7 @@ class SocialProactive:
             self.db.execute("UPDATE proactive_state SET next_check=?,last_check=?,decision=?,opportunity_seq=opportunity_seq+1,"
                             "probability=?,sample=?,selected=?,metrics=? WHERE scope=?",
                             (self._next_check(binding), now, decision, probability, sample,
-                             int(candidate is not None) if sample is not None else None, json.dumps(metrics), key))
+                             int(candidate is not None) if sample is not None or policy.activity_enabled else None, json.dumps(metrics), key))
             if candidate is not None:
                 # A configured timer event has no source member message or read credit.
                 self.db.execute("INSERT INTO wakes(id,scope,version,trigger_seq,source_seq,status,created,expires,due,reason,proactive_source) "

@@ -121,7 +121,7 @@ class Snapshot(TypedDict):
 
 class ProactiveCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    kind: Literal["memory", "unread", "configured", "idle"]
+    kind: Literal["memory", "unread", "configured", "idle", "activity"]
     seq: int = Field(ge=0)
     expires_at: float
     memory_id: str | None = None

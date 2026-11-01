@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.agent.tools.context import current_request_context
+from nanobot.channels.telegram.social.activity import ActivityRequest
 from nanobot.channels.telegram.social.expressions import ExpressionEdit
 from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.memory import MemoryRequest
@@ -30,6 +31,7 @@ class TelegramSocialTool(Tool):
     @property
     def description(self) -> str:
         return {
+            "social_activity": "A private notebook for what you are exploring, playing with or curious about. list shows current/recent activities. start only needs title; goal, motivation and next_step are optional thoughts, not commitments. Starting something new sets the previous interest aside. progress saves a short checkpoint; pause/resume/complete/block/abandon can switch or leave an interest whenever you want. Existing entries need activity_id and expected_revision. No deliverable, verification, progress quota or public report is required. artifacts are optional real paths or source references. These notes do not publish; share interesting experiences separately with normal sending tools.",
             "social_jargon": "Silently query/submit/explain/correct/review current-scope jargon. States: candidate (uncertain), understand_only (meaning only; do NOT actively reuse), usable (may use when relevant), disabled (do not use). Query/submission never requires a public question. submit requires human message_ids and a short term; research=true only for a genuinely unclear new public meme. explain quotes an explicit human explanation; correct may use origin=operator with reason for an explicit operator correction. Existing writes require expected_revision. review queues one bounded background recheck, never a foreground web/model call. Preserve local/public meanings separately; do not invent meanings or promote private nicknames to usable.",
             "social_expression": "Inspect learned contextual expressions and their original message evidence in this scope. list/get/modify/disable/enable; writes require entry_id and expected_revision. Corrections and disables preserve a stable ID and block automatic relearning. Only enable explicitly reactivates an entry. This manages the library silently; it does not publish or trigger a reply.",
             "social_get_state": "Read the current role_id, role_file path inside this runtime, group/topic watermarks and behavior limits.",
@@ -45,6 +47,8 @@ class TelegramSocialTool(Tool):
 
     @property
     def parameters(self) -> dict[str, Any]:
+        if self.name == "social_activity":
+            return ActivityRequest.model_json_schema()
         if self.name == "social_jargon":
             return JargonRequest.model_json_schema()
         if self.name == "social_expression":
@@ -133,7 +137,11 @@ class TelegramSocialTool(Tool):
         if ctx is None:
             return ToolResult.error("social tools require an active group/topic turn")
         try:
-            if self.name == "social_jargon":
+            if self.name == "social_activity":
+                scope = self.runtime.validate_context(ctx)
+                assert ctx.turn_id is not None
+                result = self.runtime.store.activities.apply(scope.session_key, ctx.turn_id, ActivityRequest.model_validate(kwargs))
+            elif self.name == "social_jargon":
                 result = self.runtime.jargon_action(ctx, JargonRequest.model_validate(kwargs))
             elif self.name == "social_expression":
                 scope = self.runtime.validate_context(ctx)

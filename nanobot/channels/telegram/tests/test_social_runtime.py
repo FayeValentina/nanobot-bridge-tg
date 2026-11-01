@@ -85,7 +85,7 @@ def agent(tmp_path, social, responses, *, tools_config=None):
         tools.register(TelegramSocialTool(social, name))
     loop = AgentLoop(
         bus=social.bus, provider=provider, workspace=workspace,
-        context_window_tokens=20000, model="m1-offline", cron_service=MagicMock(),
+        context_window_tokens=32000, model="m1-offline", cron_service=MagicMock(),
         session_manager=SessionManager(workspace, sessions_root=tmp_path / "sessions"),
         session_policy_resolver=social.policy_for_session, request_admission=social.admit_request,
         hook_factories=[social.hook_factory], tool_registry=tools,

@@ -38,6 +38,7 @@ case "${1:-help}" in
       nanobot/channels/telegram/tests/test_social_followups.py \
       nanobot/channels/telegram/tests/test_harness_prompts.py \
       nanobot/channels/telegram/tests/test_social_proactive.py \
+      nanobot/channels/telegram/tests/test_social_activity.py \
       nanobot/channels/telegram/tests/test_shared_tools.py \
       nanobot/channels/telegram/tests/test_reply_reliability.py \
       nanobot/channels/telegram/tests/test_social_dialogue.py \

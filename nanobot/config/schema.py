@@ -42,6 +42,10 @@ class TelegramSocialProactiveConfig(Base):
     ttl_seconds: int = Field(default=120, ge=30, le=600)
     context_max_age_seconds: int = Field(default=1800, ge=60, le=86400)
     require_context: bool = True
+    activity_enabled: bool = False
+    activity_interval_seconds: int = Field(default=600, ge=60, le=86400)
+    activity_ttl_seconds: int = Field(default=300, ge=30, le=600)
+    activity_max_iterations: int = Field(default=8, ge=1, le=30)
 
     @field_validator("interval_seconds")
     @classmethod

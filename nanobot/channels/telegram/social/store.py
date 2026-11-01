@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from nanobot.channels.telegram.social.activity import SocialActivity, upgrade_activity_schema
 from nanobot.channels.telegram.social.followups import SocialFollowups
 from nanobot.channels.telegram.social.judge_models import (
     JUDGE_PROMPT_VERSION,
@@ -54,7 +55,7 @@ class SocialStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+        if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
             self.db.close()
             raise ValueError(f"unsupported social schema version: {version}")
         if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
@@ -342,6 +343,9 @@ class SocialStore:
             upgrade_expression_schema(self)
         if version < 16:
             upgrade_jargon_schema(self)
+        if version < 17:
+            upgrade_activity_schema(self)
+        self.activities = SocialActivity(self)
         self.learning = SocialLearning(self)
         self.followups = SocialFollowups(self)
         self.closed = False
@@ -1031,7 +1035,7 @@ class SocialStore:
             # An idle opportunity already claimed by the main model is consumed.
             # Recover only unclaimed events, never ask again after a silent/interrupted run.
             self.db.execute("UPDATE wakes SET status='cancelled' WHERE reason='proactive' AND status='running' "
-                            "AND json_extract(proactive_source,'$.kind')='idle'")
+                            "AND json_extract(proactive_source,'$.kind') IN ('idle','activity')")
             # A durable wait decision is already the end of that run, even if
             # shutdown happened before the runner's completion hook.
             self.db.execute("UPDATE wakes SET status='completed' WHERE status='running' AND scope IN "
