@@ -13,13 +13,17 @@ import os
 import re
 import secrets
 import stat
+import sys
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import suppress
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Any, BinaryIO, cast
+
+from nanobot.session.storage_format import SESSION_STORAGE_VERSION
 
 _PROVIDER_LINE = re.compile(rb'^\s*\{\s*"_type"\s*:\s*"provider_state"\s*(?:,|\})')
 _STAMP = tuple[int, int, int, int]
@@ -53,7 +57,7 @@ def _fsync_directory(path: Path) -> None:
             os.close(descriptor)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Commit:
     header: dict[str, Any]
     provider_state: dict[str, Any] | None
@@ -83,7 +87,7 @@ def _read_commit(path: Path, handle: BinaryIO, base: dict[str, Any]) -> _Commit 
     provider = raw.get("provider_state")
     save_revision = raw.get("save_revision", 0)
     if (
-        raw.get("version") != 1
+        raw.get("version") != SESSION_STORAGE_VERSION
         or type(revision) is not int
         or type(offset) is not int
         or type(count) is not int
@@ -182,7 +186,7 @@ def _write_commit(path: Path, commit: _Commit, *, fsync: bool) -> None:
     target = state_path(path)
     temporary = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
     payload = {
-        "version": 1, "storage_revision": commit.revision, "save_revision": commit.save_revision,
+        "version": SESSION_STORAGE_VERSION, "storage_revision": commit.revision, "save_revision": commit.save_revision,
         "committed_bytes": commit.offset, "message_count": commit.message_count,
         "header": commit.header, "provider_state": commit.provider_state,
     }
@@ -200,33 +204,158 @@ def _write_commit(path: Path, commit: _Commit, *, fsync: bool) -> None:
         temporary.unlink(missing_ok=True)
 
 
-@dataclass
+def _snapshot_size(value: object, *, limit: int) -> int:
+    """Estimate retained Python objects without eagerly expanding large lists."""
+    total = 0
+    pending = [iter((value,))]
+    seen: set[int] = set()
+    while pending:
+        try:
+            item = next(pending[-1])
+        except StopIteration:
+            pending.pop()
+            continue
+        identity = id(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        total += sys.getsizeof(item)
+        if total > limit:
+            return total
+        if isinstance(item, dict):
+            pending.append(chain.from_iterable(item.items()))
+        elif isinstance(item, (list, tuple)):
+            pending.append(iter(item))
+        elif is_dataclass(item) and not isinstance(item, type):
+            pending.append(iter(tuple(getattr(item, field.name) for field in fields(item))))
+    return total
+
+
+def _revision_stamp(path: Path) -> tuple[_STAMP, _STAMP | None]:
+    log_stamp = _stamp(path)
+    try:
+        info = state_path(path).lstat()
+    except FileNotFoundError:
+        return log_stamp, None
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("session state file must be a regular file")
+    return log_stamp, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+@dataclass(frozen=True, slots=True)
+class _RevisionEntry:
+    stamp: tuple[_STAMP, _STAMP | None]
+    revision: tuple[int | None, int]
+
+
+@dataclass(slots=True)
 class _Baseline:
     commit: _Commit
     messages: tuple[dict[str, Any], ...]
     stamp: _STAMP
+    message_bytes: int
+    bytes_used: int
 
 
 class IncrementalSessionLog:
-    """A bounded direct-comparison cache; no hashes or content fingerprints."""
+    """Bound message snapshots by count and estimated bytes; no content hashes."""
 
-    def __init__(self, max_sessions: int = 16):
+    _ENTRY_OVERHEAD = 1024
+    _MAX_REVISION_ENTRIES = 128
+
+    def __init__(self, max_sessions: int = 16, max_bytes: int = 32 * 1024 * 1024):
+        if max_sessions < 0 or max_bytes < 0:
+            raise ValueError("session cache limits must be nonnegative")
         self._baselines: OrderedDict[Path, _Baseline] = OrderedDict()
         self._max_sessions = max_sessions
+        self._max_bytes = max_bytes
+        self._baseline_bytes = 0
+        self._revisions: OrderedDict[Path, _RevisionEntry] = OrderedDict()
+
+    def _drop_baseline(self, path: Path) -> None:
+        previous = self._baselines.pop(path, None)
+        if previous is not None:
+            self._baseline_bytes -= previous.bytes_used
 
     def discard(self, path: Path) -> None:
-        self._baselines.pop(path, None)
+        self._drop_baseline(path)
+        self._revisions.pop(path, None)
+
+    def _cache_revision(
+        self, path: Path, revision: tuple[int | None, int],
+        stamp: tuple[_STAMP, _STAMP | None] | None = None,
+    ) -> None:
+        self._revisions[path] = _RevisionEntry(stamp if stamp is not None else _revision_stamp(path), revision)
+        self._revisions.move_to_end(path)
+        while len(self._revisions) > self._MAX_REVISION_ENTRIES:
+            self._revisions.popitem(last=False)
+
+    def committed_revision(self, path: Path) -> tuple[int | None, int]:
+        """Unchanged files need only stat calls on the checkpoint hot path."""
+        for _attempt in range(2):
+            before = _revision_stamp(path)
+            cached = self._revisions.get(path)
+            if cached is not None and cached.stamp == before:
+                self._revisions.move_to_end(path)
+                return cached.revision
+            revision = committed_revision(path)
+            if _revision_stamp(path) == before:
+                self._cache_revision(path, revision, before)
+                return revision
+        self._revisions.pop(path, None)
+        raise RuntimeError("session files changed while reading their committed revision")
+
+    def _cache_baseline(self, path: Path, baseline: _Baseline) -> None:
+        self._drop_baseline(path)
+        if self._max_sessions == 0 or baseline.bytes_used > self._max_bytes:
+            return
+        while self._baselines and (
+            len(self._baselines) >= self._max_sessions
+            or self._baseline_bytes + baseline.bytes_used > self._max_bytes
+        ):
+            oldest = next(iter(self._baselines))
+            self._drop_baseline(oldest)
+        self._baselines[path] = baseline
+        self._baseline_bytes += baseline.bytes_used
 
     def remember(
         self, path: Path, header: dict[str, Any], provider: dict[str, Any] | None,
         messages: list[dict[str, Any]],
     ) -> None:
-        self.discard(path)
-        commit = _Commit(deepcopy(header), deepcopy(provider), path.stat().st_size,
+        self._drop_baseline(path)
+        self._cache_revision(path, (header["_storage_revision"], 0))
+        if self._max_sessions == 0:
+            return
+        commit_bytes = self._ENTRY_OVERHEAD + _snapshot_size((header, provider), limit=self._max_bytes)
+        if commit_bytes + _snapshot_size(messages, limit=self._max_bytes - commit_bytes) > self._max_bytes:
+            return
+        snapshot_header, snapshot_provider, snapshot_messages = deepcopy((header, provider, tuple(messages)))
+        commit = _Commit(snapshot_header, snapshot_provider, path.stat().st_size,
                          len(messages), header["_storage_revision"])
-        self._baselines[path] = _Baseline(commit, tuple(deepcopy(messages)), _stamp(path))
-        while len(self._baselines) > self._max_sessions:
-            self._baselines.popitem(last=False)
+        message_bytes = _snapshot_size(snapshot_messages, limit=self._max_bytes)
+        bytes_used = self._ENTRY_OVERHEAD + message_bytes + _snapshot_size(commit, limit=self._max_bytes)
+        self._cache_baseline(path, _Baseline(commit, snapshot_messages, _stamp(path), message_bytes, bytes_used))
+
+    def _remember_append(
+        self, path: Path, baseline: _Baseline, commit: _Commit,
+        delta: list[dict[str, Any]],
+    ) -> None:
+        self._cache_revision(path, (commit.revision, commit.save_revision))
+        # Existing message snapshots stay shared. Count new frames conservatively,
+        # including shared leaves again, rather than rescanning all old messages.
+        projected = baseline.message_bytes + self._ENTRY_OVERHEAD
+        projected += _snapshot_size(commit, limit=self._max_bytes)
+        if projected + _snapshot_size(delta, limit=self._max_bytes - projected) > self._max_bytes:
+            self._drop_baseline(path)
+            return
+        snapshot_commit, snapshot_delta = deepcopy((commit, tuple(delta)))
+        message_bytes = baseline.message_bytes
+        if snapshot_delta:
+            message_bytes += _snapshot_size(snapshot_delta, limit=self._max_bytes)
+        bytes_used = self._ENTRY_OVERHEAD + message_bytes + _snapshot_size(snapshot_commit, limit=self._max_bytes)
+        updated = _Baseline(snapshot_commit, baseline.messages + snapshot_delta,
+                            _stamp(path), message_bytes, bytes_used)
+        self._cache_baseline(path, updated)
 
     def append(
         self, path: Path, header: dict[str, Any], provider: dict[str, Any] | None,
@@ -273,11 +402,7 @@ class IncrementalSessionLog:
                 commit = _Commit(updated, provider, handle.tell(), len(messages), previous.revision,
                                  previous.save_revision + 1)
                 _write_commit(path, commit, fsync=fsync)
-            baseline.commit = _Commit(deepcopy(updated), deepcopy(provider), commit.offset,
-                                      len(messages), commit.revision, commit.save_revision)
-            baseline.messages += tuple(deepcopy(delta))
-            baseline.stamp = _stamp(path)
-            self._baselines.move_to_end(path)
+            self._remember_append(path, baseline, commit, delta)
             return True
         except BaseException:
             # Leave any tail intact: the old or newly published commit determines
@@ -306,8 +431,8 @@ class IncrementalSessionLog:
             header["metadata"] = metadata
             _write_commit(path, _Commit(header, previous.provider_state, previous.offset,
                                        previous.message_count, previous.revision, previous.save_revision), fsync=fsync)
+        self._cache_revision(path, (previous.revision, previous.save_revision))
         return True
-
 
     def materialize(self, path: Path) -> None:
         if not state_path(path).exists():

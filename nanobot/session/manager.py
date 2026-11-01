@@ -33,7 +33,6 @@ from nanobot.session.incremental_log import (
     IncrementalSessionLog,
     SessionLogReader,
     committed_mtime,
-    committed_revision,
     state_path,
 )
 from nanobot.session.model_selection import SESSION_MODEL_PRESET_METADATA_KEY
@@ -1277,7 +1276,7 @@ class JsonlSessionStore:
                 "session_key": session.key,
                 "base_updated_at": session.updated_at.isoformat(),
                 "base_message_count": len(session.messages),
-                "base_revision": list(committed_revision(path)),
+                "base_revision": list(self._incremental_log.committed_revision(path)),
                 "checkpoint": checkpoint,
                 "provider_state": (
                     session.provider_state.to_private_record()
@@ -1315,7 +1314,7 @@ class JsonlSessionStore:
             # its previous checkpoint.
             raw = _json_object(json.loads(checkpoint_path.read_text(encoding="utf-8")))
             if "base_revision" in raw:
-                superseded = raw["base_revision"] != list(committed_revision(main_path))
+                superseded = raw["base_revision"] != list(self._incremental_log.committed_revision(main_path))
             else:
                 superseded = committed_mtime(main_path) > checkpoint_stat.st_mtime_ns
             if superseded:
