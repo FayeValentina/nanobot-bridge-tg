@@ -414,8 +414,7 @@ def _run_gateway(
     if config.tools.exec.enable and config.tools.exec.sandbox:
         from nanobot.agent.tools.sandbox import require_sandbox_startup
 
-        await asyncio.to_thread(
-            require_sandbox_startup,
+        require_sandbox_startup(
             config.tools.exec.sandbox,
             str(config.workspace_path),
             sandbox_ro_binds=config.tools.exec.sandbox_ro_binds,

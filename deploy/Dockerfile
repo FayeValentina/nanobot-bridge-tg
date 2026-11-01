@@ -16,7 +16,8 @@ COPY nanobot/ ./nanobot/
 COPY --from=webui /src/nanobot/web/dist/ ./nanobot/web/dist/
 RUN NANOBOT_SKIP_WEBUI_BUILD=1 uv build --wheel --out-dir /artifacts
 RUN uv venv /opt/venv
-RUN uv pip install --python /opt/venv/bin/python /artifacts/*.whl
+RUN uv pip install --python /opt/venv/bin/python /artifacts/*.whl && \
+    /opt/venv/bin/python -m compileall -q /opt/venv/lib/python3.11/site-packages/nanobot
 COPY scripts/install_channel_dependencies.py ./scripts/
 RUN uv pip install --python /opt/venv/bin/python pip && \
     /opt/venv/bin/python -m scripts.install_channel_dependencies telegram && \

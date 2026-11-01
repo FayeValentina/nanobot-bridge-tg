@@ -311,6 +311,9 @@ class ReleaseManager:
             predecessor = previous or ({"kind": "container", "revision": old, "backup": str(backup)} if old else None)
             write_json(self.state_path, {"current": revision, "previous": predecessor})
         except BaseException:
+            if backup:
+                with contextlib.suppress(Exception):
+                    self._capture_startup_failure(revision, backup)
             self._compose(revision, "down")
             if backup:
                 self._restore(backup)
@@ -319,6 +322,36 @@ class ReleaseManager:
                 self._wait(old)
             raise
         print(f"Deployed healthy release: {revision}")
+
+    def _capture_startup_failure(self, revision: str, backup: Path) -> None:
+        cid = self._compose(revision, "ps", "-a", "-q", "gateway")
+        if not cid:
+            return
+        result = subprocess.run(
+            [*self.docker, "logs", "--tail", "150", cid],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True,
+        )
+        text = result.stdout
+        config = json.loads((self.data / "config.json").read_text())
+
+        def redact(value):
+            nonlocal text
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if isinstance(item, str) and len(item) > 5 and any(part in key.lower() for part in ("token", "secret", "apikey", "password")):
+                        text = text.replace(item, "<redacted>")
+                    else:
+                        redact(item)
+            elif isinstance(value, list):
+                for item in value:
+                    redact(item)
+
+        redact(config)
+        text = re.sub(r"(?:bot)?\d{6,}:[A-Za-z0-9_-]{20,}", "<telegram-token>", text)
+        path = backup / "failed-startup.log"
+        path.write_text(text)
+        path.chmod(0o600)
+        print(f"Startup failed; redacted logs saved to {path}")
 
     def _harden_tool_policy(self) -> None:
         path = self.data / "config.json"
