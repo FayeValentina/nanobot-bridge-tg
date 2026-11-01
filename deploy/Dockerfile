@@ -31,10 +31,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=python-build /opt/venv/ /opt/venv/
 COPY --from=python-build /artifacts/ /opt/artifacts/
 COPY deploy/smoke_probe.py /opt/smoke_probe.py
-ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+# The build context is the selected Git archive, without live credentials or .git.
+# Keep the matching repository available for the bot to inspect alongside its wheel.
+COPY . /opt/nanobot-source/
+ARG SOURCE_REVISION=unknown
+RUN printf '%s\n' "$SOURCE_REVISION" > /opt/nanobot-source/SOURCE_REVISION
+ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    NANOBOT_SOURCE_DIR=/opt/nanobot-source
 WORKDIR /home/nanobot
 USER 1001:1001
-ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="nanobot-bridge-tg" \
       org.opencontainers.image.source="https://github.com/FayeValentina/nanobot-bridge-tg" \
       org.opencontainers.image.revision=$SOURCE_REVISION

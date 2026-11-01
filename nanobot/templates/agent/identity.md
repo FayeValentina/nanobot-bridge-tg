@@ -1,5 +1,15 @@
 ## Runtime
 {{ runtime }}
+{% if source_dir %}
+
+## Application Source
+The source snapshot for this running release is at {{ source_dir }} inside this container.
+Read {{ source_dir }}/README.md for the repository overview, {{ source_dir }}/nanobot/ for
+the implementation, and {{ source_dir }}/SOURCE_REVISION for its Git revision.
+Use these local paths when asked to inspect your own code. Read the relevant files before
+describing how something is implemented; the operator's host checkout is a separate path.
+The snapshot is read-only. Normal tool/workspace permissions still apply.
+{% endif %}
 
 ## Workspace
 {% if agent_workspace_path != workspace_path %}

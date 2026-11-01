@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -33,6 +34,16 @@ def probe(health_only: bool = False) -> None:
     import nanobot
 
     assert "/opt/venv/" in str(nanobot.__file__), "runtime is importing the source checkout"
+    source_dir = os.environ.get("NANOBOT_SOURCE_DIR")
+    if source_dir:
+        source = Path(source_dir)
+        assert (source / "README.md").is_file(), "repository overview is missing"
+        assert len((source / "SOURCE_REVISION").read_text().strip()) == 40, "source revision is missing"
+        installed = Path(nanobot.__file__).parent
+        for name in ("agent/loop.py", "agent/context.py", "channels/telegram/social/proactive.py"):
+            assert (source / "nanobot" / name).read_bytes() == (installed / name).read_bytes(), "source does not match installed code"
+        assert not (source / ".git").exists(), "source snapshot contains checkout metadata"
+        assert not os.access(source, os.W_OK), "source snapshot is writable by the runtime user"
     print("PASS: wheel import, Telegram dependency, WebUI, authentication and health")
 
 

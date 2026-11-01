@@ -2,6 +2,7 @@
 
 import base64
 import mimetypes
+import os
 import platform
 from dataclasses import dataclass
 from pathlib import Path
@@ -172,6 +173,7 @@ class ContextBuilder:
             workspace_path=workspace_path,
             agent_workspace_path=agent_workspace_path,
             runtime=runtime,
+            source_dir=os.environ.get("NANOBOT_SOURCE_DIR", ""),
             platform_policy=render_template("agent/platform_policy.md", system=system),
             channel=channel or "",
         )
