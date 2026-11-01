@@ -48,4 +48,24 @@ SQLite schema17增加activities/activity_steps，升级在事务内完成，不�
 - 两个场景error均为空、正常tool_end；发布为替身回执，未在真实群探测。
 
 这只证明有限情境下会主动接触内容、分享和续接兴趣，不能证明长期自主性、所有发言都自然或所有事实都正确。
-选题、发言和留笔记仍由模型决定，没有强制发言频率、产物或核验结果。实际实例发布结果另记。
+选题、发言和留笔记仍由模型决定，没有强制发言频率、产物或核验结果。
+
+## 本机实际启用
+
+运行版本 `e0336a832dc5f9b1458391d675bf5ded0c763f93`，schema17、主协议8。
+完整发布管线通过后端1328、provider/OAuth155、前端1553项，以及lint/build/wheel/认证/健康冒烟。
+严格类型检查零错误/警告。部署自动备份 `backups/1793515415772100714/`。
+
+只给当前已启用群的主动配置增加 activityEnabled=true、activityIntervalSeconds=600、
+activityTtlSeconds=300、activityMaxIterations=8，其余配置逐值一致；原配置另作私有备份。
+配置写盘后本次运行进程未自动重载，已重启当前容器使其生效。实际runtime_settings的三个scope均确认加载新策略，
+主群与沉寂话题记录other_topic_active，最近活跃话题已经产生并完成首个activity回合，
+模型自行记录兴趣“翻鲸落和深海鲸墓的报道”；不把这一标题或completed回合冒充实际发表了消息。
+
+安装包临时库确认：只填标题即可开始、没有产物/核验也可结束、休闲提示包含在wheel中、主协议8；
+未接Telegram receiver或向真实群发探针。实际健康status=ok、ready=true、websocket=running。
+
+停机备份→部署后核对：370条旧消息全部原值保留，后续正常增加3条；240贴纸、2表达、原证据、
+学习素材、跟进事项与尝试保留。12条记忆均在，其中一条candidate按原TTL正常转expired，内容和其他列一致。
+角色源/SOUL字节一致，主read/seen未回退。SQLite完整性ok、外键零异常。
+详细只读核对在 `/tmp/nanobot-activity-deployed-report.json`。长期发言自然度仍需实际使用反馈。
