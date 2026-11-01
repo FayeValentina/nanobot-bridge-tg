@@ -6,6 +6,7 @@ import time
 import uuid
 import warnings
 from collections.abc import Mapping
+from contextvars import Context
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
@@ -33,6 +34,7 @@ from nanobot.providers.base import LLMProvider, LLMUsage
 from nanobot.security.workspace_access import (
     WorkspaceScope,
     bind_workspace_scope,
+    default_workspace_scope,
     reset_workspace_scope,
     workspace_sandbox_status,
 )
@@ -238,6 +240,10 @@ class SubagentManager:
         runtime: LLMRuntime | None = None,
     ) -> str:
         """Spawn a subagent to execute a task in the background."""
+        if workspace_scope is None:
+            workspace_scope = default_workspace_scope(
+                self.workspace, self._subagent_tools_config().restrict_to_workspace,
+            )
         if runtime is None:
             runtime = self._compat_spawn_runtime()
         if temperature is not None:
@@ -269,7 +275,8 @@ class SubagentManager:
                 runtime,
                 origin_message_id,
                 workspace_scope,
-            )
+            ),
+            context=Context(),
         )
         self._running_tasks[task_id] = bg_task
         if session_key:
@@ -302,6 +309,10 @@ class SubagentManager:
         runtime: LLMRuntime | None = None,
     ) -> str:
         """Run a subagent synchronously and return its result to the caller."""
+        if workspace_scope is None:
+            workspace_scope = default_workspace_scope(
+                self.workspace, self._subagent_tools_config().restrict_to_workspace,
+            )
         if runtime is None:
             runtime = self._compat_spawn_runtime()
         if temperature is not None:
@@ -333,7 +344,8 @@ class SubagentManager:
                 origin_message_id,
                 workspace_scope,
                 announce=False,
-            )
+            ),
+            context=Context(),
         )
         self._running_tasks[task_id] = inline_task
         if session_key:

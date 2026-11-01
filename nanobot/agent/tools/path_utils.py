@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from nanobot.config.paths import get_media_dir
+from nanobot.security.credentials import require_noncredential_path
 from nanobot.security.workspace_policy import resolve_allowed_path
 
 
@@ -17,10 +18,11 @@ def resolve_workspace_path(
     """Resolve path against workspace and enforce allowed directory containment."""
     media_roots = [get_media_dir()] if include_media_dir else []
     extra_roots = [*media_roots, *(extra_allowed_dirs or [])] if allowed_dir else None
-    return resolve_allowed_path(
+    resolved = resolve_allowed_path(
         path,
         workspace=workspace,
         allowed_root=allowed_dir,
         extra_allowed_roots=extra_roots,
         extra_allowed_files=extra_allowed_files,
     )
+    return require_noncredential_path(resolved)

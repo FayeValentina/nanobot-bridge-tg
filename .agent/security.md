@@ -24,6 +24,15 @@ HTTP/SSE MCP transports are part of this boundary: validate configured MCP URLs 
 
 ## Shell Sandbox
 
-`tools/sandbox.py` provides optional command wrapping: `bwrap` (bubblewrap) on Linux and `seatbelt` (`sandbox-exec`) on macOS. Seatbelt must not expose shared host temporary directories; scratch stays in the workspace. On Windows a configured backend warns and leaves only the application guard. On Unix a configured backend that cannot start must fail, not silently execute without isolation.
+`tools/sandbox.py` provides optional command wrapping: `bwrap` (bubblewrap) and `landlock` (kernel ABI 3+) on Linux, and `seatbelt` (`sandbox-exec`) on macOS. Seatbelt must not expose shared host temporary directories; scratch stays in the workspace. On Windows a configured backend warns and leaves only the application guard. On Unix a configured backend that cannot start must fail, not silently execute without isolation.
 
 **Rule**: If adding a new sandbox backend, implement `_wrap_<name>(command, workspace, cwd) -> str` and register it in `_BACKENDS`.
+
+
+Landlock runs in a fresh Python child before the submitted shell command. It grants
+read-only system/code/media roots, read-write workspace and explicitly configured
+roots, and denies other filesystem content. It does not require user namespaces or
+container capabilities; it fails closed if unavailable. Network access stays enabled.
+Runtime configuration and known OAuth stores are excluded from tool paths and sandbox
+roots, including symlink targets. These guards apply equally in social and normal turns.
+Additional credentials at custom locations still require explicit deployment isolation.

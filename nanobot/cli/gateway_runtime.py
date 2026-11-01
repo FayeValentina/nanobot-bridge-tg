@@ -411,6 +411,16 @@ def _run_gateway(
         mode=webui_bundle_mode,
         webui_static_dist=webui_static_dist,
     )
+    if config.tools.exec.enable and config.tools.exec.sandbox:
+        from nanobot.agent.tools.sandbox import require_sandbox_startup
+
+        await asyncio.to_thread(
+            require_sandbox_startup,
+            config.tools.exec.sandbox,
+            str(config.workspace_path),
+            sandbox_ro_binds=config.tools.exec.sandbox_ro_binds,
+            sandbox_rw_binds=config.tools.exec.sandbox_rw_binds,
+        )
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
     fallback_model_observer = build_webui_fallback_model_observer(bus)

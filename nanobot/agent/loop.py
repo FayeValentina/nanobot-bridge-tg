@@ -11,6 +11,7 @@ import time
 import weakref
 from collections.abc import Coroutine, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
+from contextvars import Context
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -801,7 +802,7 @@ class AgentLoop:
             return
         if normalize_command_text(raw).lower() == "/compact":
             # Compaction must wait for the active turn to commit its session.
-            task = asyncio.create_task(self._dispatch(msg))
+            task = asyncio.create_task(self._dispatch(msg), context=Context())
             self._track_active_task(key, task)
             # Enter dispatch's cancellation handler before consuming a queued /stop.
             await asyncio.sleep(0)
@@ -1394,7 +1395,7 @@ class AgentLoop:
                         continue
                 # Compute the effective session key before dispatching
                 # This ensures /stop command can find tasks correctly when unified session is enabled
-                task = asyncio.create_task(self._dispatch(msg))
+                task = asyncio.create_task(self._dispatch(msg), context=Context())
                 self._track_active_task(effective_key, task)
         finally:
             await self.aclose()
@@ -1603,7 +1604,7 @@ class AgentLoop:
 
     def schedule_background(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Schedule a coroutine as a tracked background task (drained on shutdown)."""
-        task = asyncio.create_task(coro)
+        task = asyncio.create_task(coro, context=Context())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
@@ -1829,12 +1830,10 @@ class AgentLoop:
         if ctx.kind is TurnKind.USER:
             self.workspace_scopes.persist_message_scope(session, msg)
 
-        if restore_runtime_checkpoint(session):
-            self.sessions.save(session)
-        if (
-            RECOVERY_INBOUND_METADATA_KEY not in msg.metadata
-            and restore_pending_interruption(session)
-        ):
+        restored = restore_runtime_checkpoint(session)
+        if RECOVERY_INBOUND_METADATA_KEY not in msg.metadata:
+            restored = restore_pending_interruption(session) or restored
+        if restored:
             self.sessions.save(session)
 
     async def _compact_session(self, ctx: TurnContext) -> None:

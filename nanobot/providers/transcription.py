@@ -214,7 +214,7 @@ async def _post_transcription_with_retry(
     same field is present on retries).
     """
     try:
-        data = path.read_bytes()
+        data = await asyncio.to_thread(path.read_bytes)
     except OSError as e:
         logger.exception("{} transcription error: cannot read audio file: {}", provider_label, e)
         return ""
@@ -243,7 +243,7 @@ async def _post_json_transcription_with_retry(
 ) -> str:
     """POST base64 JSON audio for providers that do not accept multipart uploads."""
     try:
-        data = path.read_bytes()
+        data = await asyncio.to_thread(path.read_bytes)
     except OSError as e:
         logger.exception("{} transcription error: cannot read audio file: {}", provider_label, e)
         return ""
@@ -278,7 +278,7 @@ async def _post_xiaomi_mimo_asr_with_retry(
 ) -> str:
     """POST audio to Xiaomi MiMo ASR's chat-completions transcription API."""
     try:
-        data = path.read_bytes()
+        data = await asyncio.to_thread(path.read_bytes)
     except OSError as e:
         logger.exception("{} transcription error: cannot read audio file: {}", provider_label, e)
         return ""
@@ -326,7 +326,7 @@ async def _post_stepfun_asr_with_retry(
 ) -> str:
     """POST audio to StepFun ASR SSE endpoint and collect final text."""
     try:
-        data = path.read_bytes()
+        data = await asyncio.to_thread(path.read_bytes)
     except OSError as e:
         logger.exception("{} transcription error: cannot read audio file: {}", provider_label, e)
         return ""
@@ -552,7 +552,7 @@ class AssemblyAITranscriptionProvider:
             logger.error("Audio file not found: {}", file_path)
             return ""
         try:
-            data = path.read_bytes()
+            data = await asyncio.to_thread(path.read_bytes)
         except OSError as e:
             logger.exception("AssemblyAI transcription error: cannot read audio file: {}", e)
             return ""

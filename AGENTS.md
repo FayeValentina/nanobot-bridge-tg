@@ -10,6 +10,11 @@ This file provides guidance to AI coding agents working with this repository.
 - Bring the necessary V2-C statistics/scheduling and V2-E follow-up memory fields into V4; defer unrelated V2 scope and M5. V3 remains the semantic entry for incoming messages; the planned V4 idle timer event goes directly to the existing main-agent execution path as documented.
 - The 2026-10-30 V4 planning task is documentation only. Record implementation and deployment status separately when later implementation is requested; do not treat planned behavior as already implemented.
 
+## Owner's build-and-start acceptance (confirmed 2026-11-01)
+
+- The owner explicitly requests build and startup as acceptance for subsequent changes. Do not run full test suites or add separate validation campaigns by default. Report only the build and startup evidence actually obtained.
+- Preserve local automatic backups and failure rollback. `pipeline.sh release` now builds and deploys directly; `pipeline.sh test` remains an explicit opt-in command.
+
 ## Owner's local workflow (confirmed 2026-10-28)
 
 - This migration is a personal project. The actual local Docker instance is used only by the owner, not a commercial production environment. Prioritize quick feedback from that instance.

@@ -79,12 +79,12 @@ case "${1:-help}" in
       echo 'Commit changes before running the release pipeline.' >&2
       exit 1
     fi
-    "$repo_dir/scripts/pipeline.sh" test
+    export BRIDGE_STARTUP_ONLY=1
+    "$repo_dir/scripts/deploy-local.sh" build
     if [[ "$(git rev-parse HEAD)" != "$revision" ]]; then
-      echo 'HEAD changed during tests; run the pipeline again.' >&2
+      echo 'HEAD changed during build; run the pipeline again.' >&2
       exit 1
     fi
-    "$repo_dir/scripts/deploy-local.sh" build
     exec "$repo_dir/scripts/deploy-local.sh" deploy "$revision"
     ;;
   build|smoke|deploy|migrate-systemd|rollback|status|logs|stop|export)

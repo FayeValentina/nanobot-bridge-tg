@@ -7,6 +7,8 @@ import hashlib
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import Field
 from typing import Any
 
 from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
@@ -29,6 +31,8 @@ class FileToolsConfig(Base):
     """Filesystem tools configuration."""
 
     enable: bool = True  # built-in file tools on by default
+    extra_read_allowed_dirs: list[str] = Field(default_factory=list)
+    extra_write_allowed_dirs: list[str] = Field(default_factory=list)
 
 
 class _FsTool(Tool):
@@ -97,7 +101,14 @@ class _FsTool(Tool):
         return cls(
             workspace=agent_workspace,
             allowed_dir=allowed_dir,
-            extra_read_allowed_dirs=[BUILTIN_SKILLS_DIR, resolved_agent_workspace / "skills"],
+            extra_read_allowed_dirs=[
+                BUILTIN_SKILLS_DIR, resolved_agent_workspace / "skills",
+                *(Path(p).expanduser() for p in ctx.config.file.extra_read_allowed_dirs),
+                *(Path(p).expanduser() for p in ctx.config.file.extra_write_allowed_dirs),
+            ],
+            extra_write_allowed_dirs=[
+                Path(p).expanduser() for p in ctx.config.file.extra_write_allowed_dirs
+            ],
             extra_read_allowed_files=[resolved_agent_workspace / "memory" / "history.jsonl"],
             file_states=ctx.file_state_store,
             restrict_to_workspace=ctx.config.restrict_to_workspace,

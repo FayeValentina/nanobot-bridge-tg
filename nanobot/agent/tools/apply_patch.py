@@ -14,6 +14,7 @@ from nanobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
+from nanobot.utils.async_io import run_file_transaction
 from nanobot.utils.file_edit_events import FileDiff, FileEditResult, display_file_edit_path
 
 
@@ -100,6 +101,9 @@ class ApplyPatchTool(_FsTool):
         dry_run: bool = False,
         **kwargs: Any,
     ) -> str:
+        return await run_file_transaction(self._execute_patch, edits, dry_run)
+
+    def _execute_patch(self, edits: list[object] | None, dry_run: bool) -> str:
         try:
             if not edits:
                 raise _PatchError("must provide edits")

@@ -101,6 +101,7 @@ def source_snapshot(repo: Path, revision: str):
 
 class ReleaseManager:
     def __init__(self, root: Path = DEFAULT_ROOT):
+        self.startup_only = os.environ.get("BRIDGE_STARTUP_ONLY") == "1"
         self.root = root.expanduser().resolve()
         if self.root == REPO or REPO in self.root.parents:
             raise ValueError("deployment data must be outside the Git checkout")
@@ -195,7 +196,8 @@ class ReleaseManager:
                 raise RuntimeError(f"gateway container is {status}")
             health = output([*self.docker, "inspect", cid, "--format", "{{.State.Health.Status}}"])
             if health == "healthy":
-                run([*self.docker, "exec", cid, "python", "/opt/smoke_probe.py"])
+                if not self.startup_only:
+                    run([*self.docker, "exec", cid, "python", "/opt/smoke_probe.py"])
                 return
             time.sleep(1)
         raise RuntimeError("gateway health check timed out")
@@ -214,8 +216,9 @@ class ReleaseManager:
         target = self.root / "releases" / revision
         if target.exists():
             verify_release(target)
-            self.smoke(revision)
-            print(f"Existing verified release: {revision}")
+            if not self.startup_only:
+                self.smoke(revision)
+            print(f"Existing built release: {revision}")
             return revision
         target.parent.mkdir(parents=True, exist_ok=True)
         image = f"nanobot-bridge-tg:sha-{revision}"
@@ -250,8 +253,9 @@ class ReleaseManager:
             write_json(staging / "release.json", metadata)
             verify_release(staging)
             shutil.copytree(staging, target)
-        self.smoke(revision)
-        print(f"Built and smoke-tested release: {revision}")
+        if not self.startup_only:
+            self.smoke(revision)
+        print(f"Built release: {revision}")
         return revision
 
     def smoke(self, revision: str) -> None:
@@ -282,7 +286,11 @@ class ReleaseManager:
         shutil.copytree(backup / "data", self.data, symlinks=True)
 
     def deploy(self, revision: str, previous: dict | None = None) -> None:
-        self.smoke(revision)
+        if self.startup_only:
+            directory, metadata = self.release(revision)
+            self._load_image(directory, metadata)
+        else:
+            self.smoke(revision)
         if not (self.data / "config.json").is_file():
             raise ValueError("initialize data or use migrate-systemd before deploying")
         old_state = self.state()
@@ -296,6 +304,8 @@ class ReleaseManager:
         backup = None
         try:
             backup = self._backup(old_state)
+            if os.environ.get("BRIDGE_HARDEN_TOOLS") == "1":
+                self._harden_tool_policy()
             self._compose(revision, "up", "-d", "--no-deps", "--force-recreate", "gateway")
             self._wait(revision)
             predecessor = previous or ({"kind": "container", "revision": old, "backup": str(backup)} if old else None)
@@ -309,6 +319,33 @@ class ReleaseManager:
                 self._wait(old)
             raise
         print(f"Deployed healthy release: {revision}")
+
+    def _harden_tool_policy(self) -> None:
+        path = self.data / "config.json"
+        config = json.loads(path.read_text())
+        tools = config.setdefault("tools", {})
+        tools["restrictToWorkspace"] = True
+        exec_settings = tools.setdefault("exec", {})
+        exec_settings["sandbox"] = "landlock"
+        roles = "/data/telegram-social/roles"
+        read_roots = ["/opt/nanobot-source", str(REPO)]
+        for key, additions in (("sandboxRoBinds", read_roots), ("sandboxRwBinds", [roles])):
+            exec_settings[key] = list(dict.fromkeys([*exec_settings.get(key, []), *additions]))
+        files = tools.setdefault("file", {})
+        for key, additions in (("extraReadAllowedDirs", read_roots), ("extraWriteAllowedDirs", [roles])):
+            files[key] = list(dict.fromkeys([*files.get(key, []), *additions]))
+        # Retired settings are explicitly reported by the social runtime.
+        social = config.get("channels", {}).get("telegram", {}).get("social", {})
+        for key in ("wakeProbability", "replyAttention"):
+            social.pop(key, None)
+        social.get("sleepInterrupts", {}).pop("probability", None)
+        dynamic_wait = social.get("dynamicWait", {})
+        dynamic_wait.pop("enabled", None)
+        dynamic_wait.pop("unfinishedSeconds", None)
+        owner = path.stat()
+        write_json(path, config)
+        if os.geteuid() == 0:
+            os.chown(path, owner.st_uid, owner.st_gid)
 
     def migrate_systemd(self, revision: str, source: Path) -> None:
         self.smoke(revision)

@@ -7,10 +7,13 @@ and register it in _BACKENDS below.
 
 import os
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable
 
 from nanobot.config.paths import get_media_dir
+from nanobot.security.credentials import protected_runtime_paths, require_noncredential_root
 
 
 def _normalize_bind_paths(
@@ -306,7 +309,38 @@ def _seatbelt(
     return shlex.join(args)
 
 
-_BACKENDS = {"bwrap": _bwrap, "seatbelt": _seatbelt}
+def _landlock(
+    command: str,
+    workspace: str,
+    cwd: str,
+    *,
+    sandbox_ro_binds: Iterable[str] | None = None,
+    sandbox_rw_binds: Iterable[str] | None = None,
+) -> str:
+    ws = require_noncredential_root(Path(workspace))
+    system_reads = [
+        "/usr", "/bin", "/lib", "/lib64", "/etc/alternatives",
+        "/etc/ssl/certs", "/etc/pki/tls/certs", "/etc/pki/ca-trust",
+        "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
+        "/etc/ld.so.cache", "/etc/localtime", str(Path(sys.prefix)),
+        str(get_media_dir()),
+    ]
+    read_roots = [Path(p) for p in system_reads if Path(p).exists()]
+    read_roots.extend(Path(p) for p in (sandbox_ro_binds or []))
+    write_roots = [Path(p) for p in (sandbox_rw_binds or [])]
+    write_roots.extend(Path(p) for p in ("/dev/null", "/dev/zero", "/dev/urandom") if Path(p).exists())
+    wrapper = Path(__file__).resolve().parents[2] / "security" / "landlock.py"
+    args = [sys.executable, "-I", str(wrapper), "--workspace", str(ws), "--cwd", cwd]
+    for flag, roots in (("--read", read_roots), ("--write", write_roots)):
+        for path in roots:
+            args.extend([flag, str(require_noncredential_root(path))])
+    for path in protected_runtime_paths():
+        args.extend(["--protect", str(path)])
+    args.append("--command=" + command)
+    return shlex.join(args)
+
+
+_BACKENDS = {"bwrap": _bwrap, "seatbelt": _seatbelt, "landlock": _landlock}
 
 
 def wrap_command(
@@ -328,3 +362,23 @@ def wrap_command(
             sandbox_rw_binds=sandbox_rw_binds,
         )
     raise ValueError(f"Unknown sandbox backend {sandbox!r}. Available: {list(_BACKENDS)}")
+
+
+def require_sandbox_startup(
+    sandbox: str, workspace: str, *,
+    sandbox_ro_binds: Iterable[str] | None = None,
+    sandbox_rw_binds: Iterable[str] | None = None,
+) -> None:
+    """Fail gateway startup if its configured exec boundary cannot be established."""
+    command = wrap_command(
+        sandbox, ":", workspace, workspace,
+        sandbox_ro_binds=sandbox_ro_binds,
+        sandbox_rw_binds=sandbox_rw_binds,
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", command],
+        env={"PATH": os.defpath, "LANG": "C.UTF-8"},
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode:
+        raise RuntimeError(f"Configured exec sandbox could not start: {result.stderr.strip()}")

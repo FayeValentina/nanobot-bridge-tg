@@ -18,6 +18,7 @@ from nanobot.agent.tools.path_utils import resolve_workspace_path
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
 from nanobot.bus.events import DeliveryReceipt, OutboundMessage
 from nanobot.config.paths import get_workspace_path
+from nanobot.security.credentials import require_noncredential_path
 from nanobot.security.workspace_access import current_tool_workspace
 
 _CURRENT_MESSAGE_SENDS: ContextVar[set[tuple[str, str]] | None] = ContextVar(
@@ -152,7 +153,9 @@ class MessageTool(Tool):
                 resolved.append(p)
             elif not access.restrict_to_workspace:
                 path = Path(p).expanduser()
-                resolved.append(p if path.is_absolute() else str(workspace / path))
+                resolved.append(str(require_noncredential_path(
+                    path if path.is_absolute() else workspace / path
+                )))
             else:
                 resolved.append(str(resolve_workspace_path(p, workspace, access.allowed_root)))
         return resolved
