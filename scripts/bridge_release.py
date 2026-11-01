@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import fcntl
 import gzip
@@ -16,6 +17,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -40,6 +42,54 @@ def write_json(path: Path, value: dict) -> None:
     staging.replace(path)
 
 
+def wheel_session_storage_versions(wheel: Path) -> list[int]:
+    """Read packaged capabilities without importing or running the target code."""
+    with zipfile.ZipFile(wheel) as archive:
+        marker = "nanobot/session/storage_format.py"
+        names = archive.namelist()
+        if marker not in names:
+            # The first incremental-log release predates the explicit marker.
+            return [0, 1] if "nanobot/session/incremental_log.py" in names else [0]
+        module = ast.parse(archive.read(marker).decode("utf-8"))
+        for statement in module.body:
+            if isinstance(statement, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "SESSION_STORAGE_READ_VERSIONS"
+                for target in statement.targets
+            ):
+                versions = ast.literal_eval(statement.value)
+                if (
+                    not isinstance(versions, (list, tuple)) or not versions
+                    or any(type(version) is not int or version < 0 for version in versions)
+                ):
+                    raise ValueError("invalid packaged session storage capabilities")
+                return sorted(set(versions))
+        raise ValueError("release is missing its session storage capability declaration")
+
+
+def required_session_storage_versions(data: Path) -> set[int]:
+    """Find session commit formats in a live or backed-up instance data tree."""
+    required = {0}
+    for root in (data / "sessions", data / "workspace" / "sessions"):
+        if not root.exists():
+            continue
+        for state in root.rglob("*.state.json"):
+            log = state.with_name(state.name.removesuffix(".state.json") + ".jsonl")
+            if not log.exists():
+                continue
+            if state.is_symlink() or log.is_symlink():
+                raise ValueError("session compatibility check refuses symlinked storage")
+            try:
+                record = json.loads(state.read_text())
+            except FileNotFoundError:
+                continue  # A live full save may have just removed its old state.
+            if not isinstance(record, dict) or type(record.get("version")) is not int:
+                raise ValueError("cannot determine session storage compatibility from invalid state")
+            if record["version"] < 1:
+                raise ValueError("invalid incremental session storage version")
+            required.add(record["version"])
+    return required
+
+
 def verify_release(directory: Path) -> dict:
     """Check the local release inventory; loading and health checks verify behavior."""
     if (directory / "release.json").is_symlink():
@@ -60,7 +110,11 @@ def verify_release(directory: Path) -> dict:
         raise ValueError("unexpected image name")
     if metadata["architecture"] not in {"arm64", "amd64"}:
         raise ValueError("unsupported architecture")
-    return metadata
+    versions = wheel_session_storage_versions(directory / wheel)
+    declared = metadata.get("session_storage_versions", versions)
+    if declared != versions:
+        raise ValueError("release metadata disagrees with packaged session storage capabilities")
+    return dict(metadata, session_storage_versions=versions)
 
 
 def initial_config() -> dict:
@@ -166,8 +220,25 @@ class ReleaseManager:
         if identity["Architecture"] != metadata["architecture"]:
             raise ValueError("loaded image architecture does not match release")
 
+    def _require_session_compatibility(
+        self, revision: str, *, data: Path | None = None,
+    ) -> None:
+        _, metadata = self.release(revision)
+        supported = set(metadata["session_storage_versions"])
+        required = required_session_storage_versions(self.data if data is None else data)
+        unsupported = required - supported
+        if unsupported:
+            raise ValueError(
+                f"Release {revision} cannot read session storage versions {sorted(unsupported)}. "
+                "Use rollback to restore its matching data backup, or materialize sessions "
+                "with the current runtime before deploying an older release."
+            )
+
     def _compose(self, revision: str, *args: str) -> str:
         _, metadata = self.release(revision)
+        if args and args[0] == "up":
+            # Central gate covers normal deploy, rollback and failure recovery.
+            self._require_session_compatibility(revision)
         values = dict(BRIDGE_IMAGE=metadata["image"], BRIDGE_DATA_DIR=str(self.data),
                       BRIDGE_CHECKOUT_DIR=str(REPO),
                       BRIDGE_UID=str(os.getuid()), BRIDGE_GID=str(os.getgid()),
@@ -249,6 +320,7 @@ class ReleaseManager:
                 "schema": 2, "revision": revision, "image": image,
                 "architecture": output([*self.docker, "image", "inspect", image, "--format", "{{.Architecture}}"]),
                 "wheel": wheels[0].name,
+                "session_storage_versions": wheel_session_storage_versions(wheels[0]),
             }
             write_json(staging / "release.json", metadata)
             verify_release(staging)
@@ -299,6 +371,9 @@ class ReleaseManager:
             self._wait(revision)
             print("Release already deployed and healthy")
             return
+        # Reject a known-incompatible target before stopping the healthy instance.
+        # _compose(up) repeats the gate after stop/backup to close the live-write race.
+        self._require_session_compatibility(revision)
         if old:
             self._compose(old, "stop", "gateway")
         backup = None
@@ -423,6 +498,8 @@ class ReleaseManager:
         backup = Path(previous["backup"]).resolve()
         if self.root / "backups" not in backup.parents:
             raise ValueError("invalid backup path")
+        if previous["kind"] == "container":
+            self._require_session_compatibility(previous["revision"], data=backup / "data")
         self._compose(state["current"], "down")
         safety = None
         try:
