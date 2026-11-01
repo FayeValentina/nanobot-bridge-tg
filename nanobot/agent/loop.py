@@ -12,9 +12,7 @@ import weakref
 from collections.abc import Coroutine, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
 from contextvars import Context
-from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum, auto
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar, cast
@@ -30,8 +28,8 @@ from nanobot.agent.cron_turns import CronTurnCoordinator
 from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
+from nanobot.agent.pending_messages import PendingMessageBuffer
 from nanobot.agent.runner import (
-    _MAX_INJECTIONS_PER_TURN,
     AgentRunner,
     AgentRunResult,
     AgentRunSpec,
@@ -49,6 +47,7 @@ from nanobot.agent.turn_delivery import (
 )
 from nanobot.agent.turn_delivery import TurnRoute as TurnRoute
 from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
+from nanobot.agent.turn_context import TurnContext, TurnKind, TurnOptions
 from nanobot.bus.events import INBOUND_META_USER_SHELL, InboundMessage, OutboundMessage
 from nanobot.bus.outbound_events import (
     StreamDeltaEvent,
@@ -61,7 +60,7 @@ from nanobot.command.router import normalize_command_text
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.events import NO_EVENTS, AgentEvent, EventSink
 from nanobot.llm_usage.context import source_from_request
-from nanobot.providers.base import LLMProvider, LLMUsage, ProviderConversationState
+from nanobot.providers.base import LLMProvider, ProviderConversationState
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.runtime_context import (
     RUNTIME_CONTEXT_HISTORY_META,
@@ -97,7 +96,6 @@ from nanobot.session.recovery import (
     restore_runtime_checkpoint,
 )
 from nanobot.session.summary import (
-    SessionSummary,
     SessionSummaryCheckpoint,
 )
 from nanobot.triggers.local_turns import LocalTriggerTurnCoordinator
@@ -123,75 +121,6 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 _SUBAGENT_PROVIDER_TASK_META = "subagent_provider_task_id"
 _SUBAGENT_TERMINAL_WAIT_SECONDS = 300.0
-
-
-class TurnKind(Enum):
-    USER = auto()
-    SYSTEM = auto()
-
-
-@dataclass
-class TurnContext:
-    msg: InboundMessage
-    session_key: str
-    turn_id: str
-    runtime: LLMRuntime | None
-    kind: TurnKind
-    delivery: TurnDelivery
-    original_user_text: str | None = None
-    session: Session | None = None
-
-    history: list[dict[str, Any]] = field(default_factory=list)
-    transcript_input: TranscriptInput | None = None
-    provider_state: ProviderConversationState | None = field(default=None, repr=False)
-    request_context: RequestContext | None = None
-    runtime_context_blocks: list[RuntimeContextBlock] = field(default_factory=list)
-    attributes: dict[str, Any] = field(default_factory=dict)
-
-    final_content: str | None = None
-    all_messages: list[dict[str, Any]] = field(default_factory=list)
-    stop_reason: str = ""
-    failure_error_kind: str | None = None
-    streamed_content: bool = False
-
-    input_persisted_early: bool = False
-    save_skip: int = 0
-
-    outbound: OutboundMessage | None = None
-    suppress_response: bool = False
-
-    events: EventSink = NO_EVENTS
-    streaming: bool = False
-    on_runtime_admitted: Callable[[LLMRuntime], Awaitable[None]] | None = None
-
-    pending_queue: asyncio.Queue[InboundMessage] | None = None
-    pending_summary: SessionSummary | None = None
-    summary_checkpoint: SessionSummaryCheckpoint | None = None
-    provider_compaction_applied: bool = False
-
-    ephemeral: bool = False
-    run_extra_hooks_for_ephemeral: bool = False
-    hooks: list[AgentHook] = field(default_factory=list)
-    hook_factories: list[AgentTurnHookFactory] = field(default_factory=list)
-    turn_scopes: list[AbstractContextManager[Any]] = field(default_factory=list)
-    tools: ToolRegistry | None = None
-
-    turn_wall_started_at: float = field(default_factory=time.time)
-    visible_run_started_at: float | None = None
-    turn_latency_ms: int | None = None
-    usage: LLMUsage | None = None
-
-    def require_runtime(self) -> LLMRuntime:
-        """Return the runtime established by the BUILD stage."""
-        if self.runtime is None:
-            raise RuntimeError("turn runtime is not initialized; BUILD must run before this stage")
-        return self.runtime
-
-    def require_session(self) -> Session:
-        """Return the session established by the RESTORE stage."""
-        if self.session is None:
-            raise RuntimeError("turn session is not initialized; RESTORE must run before this stage")
-        return self.session
 
 
 class AgentLoop:
@@ -996,129 +925,74 @@ class AgentLoop:
                 )
             self._set_runtime_checkpoint(session, public_payload)
 
-        async def _drain_pending(
-            *,
-            limit: int = _MAX_INJECTIONS_PER_TURN,
-            first_msg: InboundMessage | None = None,
-        ) -> list[dict[str, Any]]:
-            """Drain only messages that are already available."""
-            if pending_queue is None:
-                return []
-
-            async def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any]:
-                content = pending_msg.content
-                image_paths = pending_msg.media if pending_msg.media else None
-                if image_paths:
-                    content, image_paths = reference_non_image_attachments(
-                        content,
-                        image_paths,
-                    )
-                    image_paths = image_paths or None
-                user_content = self.context.build_user_content(
+        async def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any]:
+            content = pending_msg.content
+            image_paths = pending_msg.media if pending_msg.media else None
+            if image_paths:
+                content, image_paths = reference_non_image_attachments(
                     content,
-                    image_paths=image_paths,
+                    image_paths,
                 )
-                row: dict[str, Any] = {"role": "user", "content": user_content}
-                metadata_value = cast(object, pending_msg.metadata)
-                metadata = (
-                    pending_msg.metadata
-                    if isinstance(metadata_value, dict)
-                    else {}
+                image_paths = image_paths or None
+            user_content = self.context.build_user_content(
+                content,
+                image_paths=image_paths,
+            )
+            row: dict[str, Any] = {"role": "user", "content": user_content}
+            metadata_value = cast(object, pending_msg.metadata)
+            metadata = (
+                pending_msg.metadata
+                if isinstance(metadata_value, dict)
+                else {}
+            )
+            if pending_msg.is_user_input:
+                scope = self.workspace_scopes.for_turn(
+                    channel=pending_msg.channel,
+                    message_metadata=metadata,
+                    session_metadata=session.metadata if session is not None else None,
                 )
-                if pending_msg.is_user_input:
-                    scope = self.workspace_scopes.for_turn(
-                        channel=pending_msg.channel,
-                        message_metadata=metadata,
-                        session_metadata=session.metadata if session is not None else None,
-                    )
-                    pending_request = RequestContext(
-                        channel=pending_msg.channel,
-                        chat_id=pending_msg.chat_id,
-                        message_id=metadata.get("message_id"),
-                        session_key=active_session_key,
-                        original_user_text=pending_msg.content,
-                        runtime=runtime,
-                        metadata=dict(metadata),
-                        attributes=dict(request_ctx.attributes),
-                        sender_id=pending_msg.sender_id,
-                        turn_id=request_ctx.turn_id,
-                        workspace=scope.project_path,
-                        allow_private_context=request_ctx.allow_private_context,
-                    )
-                    blocks = await self._resolve_runtime_context_for_request(
-                        pending_request,
-                        effective_tools,
-                    )
-                    row["content"], runtime_marker = append_runtime_context(
-                        user_content,
-                        blocks,
-                    )
-                    if runtime_marker is not None:
-                        row["_meta"] = {
-                            RUNTIME_CONTEXT_MESSAGE_META: runtime_marker,
-                        }
-                if (
-                    pending_msg.sender_id == "subagent"
-                    and metadata.get("injected_event") == "subagent_result"
-                ):
-                    subagent_marker: dict[str, Any] = {"kind": "subagent_result"}
-                    task_id = metadata.get("subagent_task_id")
-                    if isinstance(task_id, str) and task_id:
-                        subagent_marker["subagent_task_id"] = task_id
-                        row["subagent_task_id"] = task_id
-                    row[HIDDEN_HISTORY_META] = subagent_marker
-                    row["injected_event"] = "subagent_result"
-                followup_id = metadata.get(PENDING_FOLLOWUP_ID_KEY)
-                if isinstance(followup_id, str) and followup_id:
-                    row[PENDING_FOLLOWUP_ID_KEY] = followup_id
-                return row
-
-            items: list[dict[str, Any]] = []
-            if first_msg is not None:
-                items.append(await _to_user_message(first_msg))
-            while len(items) < limit:
-                try:
-                    items.append(await _to_user_message(pending_queue.get_nowait()))
-                except asyncio.QueueEmpty:
-                    break
-
-            return items
-
-        terminal_wait_deadline: float | None = None
-
-        async def _wait_for_pending(
-            *,
-            limit: int = _MAX_INJECTIONS_PER_TURN,
-        ) -> list[dict[str, Any]]:
-            """Wait for a pending result only when the runner is ready to exit."""
-            nonlocal terminal_wait_deadline
-
-            items = await _drain_pending(limit=limit)
+                pending_request = RequestContext(
+                    channel=pending_msg.channel,
+                    chat_id=pending_msg.chat_id,
+                    message_id=metadata.get("message_id"),
+                    session_key=active_session_key,
+                    original_user_text=pending_msg.content,
+                    runtime=runtime,
+                    metadata=dict(metadata),
+                    attributes=dict(request_ctx.attributes),
+                    sender_id=pending_msg.sender_id,
+                    turn_id=request_ctx.turn_id,
+                    workspace=scope.project_path,
+                    allow_private_context=request_ctx.allow_private_context,
+                )
+                blocks = await self._resolve_runtime_context_for_request(
+                    pending_request,
+                    effective_tools,
+                )
+                row["content"], runtime_marker = append_runtime_context(
+                    user_content,
+                    blocks,
+                )
+                if runtime_marker is not None:
+                    row["_meta"] = {
+                        RUNTIME_CONTEXT_MESSAGE_META: runtime_marker,
+                    }
             if (
-                items
-                or pending_queue is None
-                or session is None
-                or self.subagents.get_running_count_by_session(session.key) == 0
+                pending_msg.sender_id == "subagent"
+                and metadata.get("injected_event") == "subagent_result"
             ):
-                return items
+                subagent_marker: dict[str, Any] = {"kind": "subagent_result"}
+                task_id = metadata.get("subagent_task_id")
+                if isinstance(task_id, str) and task_id:
+                    subagent_marker["subagent_task_id"] = task_id
+                    row["subagent_task_id"] = task_id
+                row[HIDDEN_HISTORY_META] = subagent_marker
+                row["injected_event"] = "subagent_result"
+            followup_id = metadata.get(PENDING_FOLLOWUP_ID_KEY)
+            if isinstance(followup_id, str) and followup_id:
+                row[PENDING_FOLLOWUP_ID_KEY] = followup_id
+            return row
 
-            now = asyncio.get_running_loop().time()
-            if terminal_wait_deadline is None:
-                terminal_wait_deadline = now + _SUBAGENT_TERMINAL_WAIT_SECONDS
-            remaining = terminal_wait_deadline - now
-            if remaining <= 0:
-                return []
-
-            try:
-                msg = await asyncio.wait_for(pending_queue.get(), timeout=remaining)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Timeout waiting for sub-agent completion before session {} exits",
-                    session.key,
-                )
-                return []
-
-            return await _drain_pending(limit=limit, first_msg=msg)
 
         request_ctx = request_context or RequestContext(
             channel="cli",
@@ -1148,6 +1022,16 @@ class AgentLoop:
                 workspace=effective_scope.project_path,
             )
         effective_tools = tools if tools is not None else self.tools
+        pending_buffer = PendingMessageBuffer(
+            pending_queue,
+            convert=_to_user_message,
+            has_running_work=lambda: (
+                session is not None
+                and self.subagents.get_running_count_by_session(session.key) > 0
+            ),
+            session_key=session.key if session is not None else active_session_key,
+            terminal_wait_seconds=_SUBAGENT_TERMINAL_WAIT_SECONDS,
+        )
         file_state_token = bind_file_states(self._file_state_store.for_session(active_session_key))
         request_token = bind_request_context(request_ctx)
         workspace_token = bind_workspace_scope(effective_scope)
@@ -1222,8 +1106,8 @@ class AgentLoop:
                     if session is not None and not ephemeral
                     else None
                 ),
-                injection_callback=_drain_pending,
-                terminal_injection_callback=_wait_for_pending,
+                injection_callback=pending_buffer.drain,
+                terminal_injection_callback=pending_buffer.wait,
                 continuation_callback=_goal_continue,
                 finalize_on_max_iterations=turn_continuation.should_finalize_on_max_iterations(
                     pending_queue_available=pending_queue is not None and session is not None,
@@ -1450,8 +1334,7 @@ class AgentLoop:
                     )
                     response = await self._process_message(
                         msg,
-                        pending_queue=pending,
-                        delivery=delivery,
+                        TurnOptions(pending_queue=pending, delivery=delivery),
                     )
                     continuing = turn_continuation.internal_continuation_pending(msg.metadata)
                     await delivery.complete(
@@ -1614,32 +1497,22 @@ class AgentLoop:
         logger.info("Agent loop stopping")
 
     async def _process_message(
-        self,
-        msg: InboundMessage,
-        session_key: str | None = None,
-        on_progress: Callable[..., Awaitable[None]] | None = None,
-        on_stream: Callable[[str], Awaitable[None]] | None = None,
-        on_stream_end: Callable[..., Awaitable[None]] | None = None,
-        pending_queue: asyncio.Queue[InboundMessage] | None = None,
-        ephemeral: bool = False,
-        run_extra_hooks_for_ephemeral: bool = False,
-        hooks: list[AgentHook] | None = None,
-        hook_factories: list[AgentTurnHookFactory] | None = None,
-        tools: ToolRegistry | None = None,
-        runtime: LLMRuntime | None = None,
-        delivery: TurnDelivery | None = None,
-        on_runtime_admitted: Callable[[LLMRuntime], Awaitable[None]] | None = None,
-        attributes: Mapping[str, Any] | None = None,
+        self, msg: InboundMessage, options: TurnOptions | None = None,
+        **legacy_options: Any,
     ) -> OutboundMessage | None:
-        """Process a single inbound message and return the response."""
+        """Process a turn; legacy keyword callers are adapted at this boundary."""
+        if options is not None and legacy_options:
+            raise TypeError("pass TurnOptions or legacy keywords, not both")
+        options = options if options is not None else TurnOptions(**legacy_options)
+        delivery = options.delivery
         kind = TurnKind.USER if msg.is_user_input else TurnKind.SYSTEM
         if kind is TurnKind.SYSTEM:
             destination = (
                 msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
             )
-            key = session_key or msg.session_key_override or f"{destination[0]}:{destination[1]}"
+            key = options.session_key or msg.session_key_override or f"{destination[0]}:{destination[1]}"
         else:
-            key = session_key or msg.session_key
+            key = options.session_key or msg.session_key
         if delivery is None:
             delivery = self.turn_delivery_factory.create(msg, key)
         elif delivery.session_key != key:
@@ -1650,7 +1523,7 @@ class AgentLoop:
             session=None,
             session_key=key,
             turn_id=f"{key}:{time.time_ns()}",
-            runtime=runtime,
+            runtime=options.runtime,
             kind=kind,
             delivery=delivery,
             original_user_text=(
@@ -1665,19 +1538,19 @@ class AgentLoop:
             ),
             events=output_events(
                 default=delivery.events,
-                on_progress=on_progress,
-                on_stream=on_stream,
-                on_stream_end=on_stream_end,
+                on_progress=options.on_progress,
+                on_stream=options.on_stream,
+                on_stream_end=options.on_stream_end,
             ),
-            streaming=on_stream is not None or delivery.streaming,
-            on_runtime_admitted=on_runtime_admitted,
-            pending_queue=pending_queue,
-            ephemeral=ephemeral,
-            run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,
-            hooks=list(hooks or []),
-            hook_factories=list(hook_factories or []),
-            tools=tools,
-            attributes=dict(attributes or {}),
+            streaming=options.on_stream is not None or delivery.streaming,
+            on_runtime_admitted=options.on_runtime_admitted,
+            pending_queue=options.pending_queue,
+            ephemeral=options.ephemeral,
+            run_extra_hooks_for_ephemeral=options.run_extra_hooks_for_ephemeral,
+            hooks=list(options.hooks or []),
+            hook_factories=list(options.hook_factories or []),
+            tools=options.tools,
+            attributes=dict(options.attributes or {}),
         )
         # A streaming callback may be present even when the final text comes from a
         # non-streaming recovery. Only the last completed segment can suppress the
@@ -2388,30 +2261,22 @@ class AgentLoop:
         lock = self._get_session_lock(session_key)
         try:
             async with lock:
-                kwargs: dict[str, Any] = {
-                    "session_key": session_key,
-                    "on_progress": on_progress,
-                    "on_stream": on_stream,
-                    "on_stream_end": on_stream_end,
-                    "ephemeral": ephemeral,
-                }
-                if _run_extra_hooks_for_ephemeral:
-                    kwargs["run_extra_hooks_for_ephemeral"] = True
-                if hooks is not None:
-                    kwargs["hooks"] = hooks
-                if hook_factories is not None:
-                    kwargs["hook_factories"] = hook_factories
-                if tools is not None:
-                    kwargs["tools"] = tools
-                if runtime is not None:
-                    kwargs["runtime"] = runtime
-                if on_runtime_admitted is not None:
-                    kwargs["on_runtime_admitted"] = on_runtime_admitted
-                if attributes is not None:
-                    kwargs["attributes"] = dict(attributes)
                 return await self._process_message(
                     msg,
-                    **kwargs,
+                    TurnOptions(
+                        session_key=session_key,
+                        on_progress=on_progress,
+                        on_stream=on_stream,
+                        on_stream_end=on_stream_end,
+                        ephemeral=ephemeral,
+                        run_extra_hooks_for_ephemeral=_run_extra_hooks_for_ephemeral,
+                        hooks=hooks,
+                        hook_factories=hook_factories,
+                        tools=tools,
+                        runtime=runtime,
+                        on_runtime_admitted=on_runtime_admitted,
+                        attributes=attributes,
+                    ),
                 )
         finally:
             await self.runtime_event_publisher.run_status_changed(msg, session_key, "idle")
