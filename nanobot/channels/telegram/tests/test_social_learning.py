@@ -423,7 +423,7 @@ def test_upgrade_seventeen_retains_learning_batches_and_adds_nullable_detail(sto
     store.close()
     restored = SocialStore(tmp_path, now=lambda: 1000.)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 18
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert [tuple(row) for row in restored.db.execute(f"SELECT {','.join(columns)} FROM learning_batches ORDER BY id")] == before
         assert [row[0] for row in restored.db.execute("SELECT error_detail FROM learning_batches")] == [None, None]
         assert restored.db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

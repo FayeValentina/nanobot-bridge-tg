@@ -33,34 +33,40 @@ class SocialProactive:
         self.db = store.db
         self.random_value = random_value
 
-    def _next_check(self, binding: TelegramSocialScopeConfig) -> float:
+    def _next_idle_check(self, binding: TelegramSocialScopeConfig) -> float:
         policy = binding.proactive
-        if policy.activity_enabled:
-            return self.store.now() + policy.activity_interval_seconds
         return self.store.now() + policy.min_interval_seconds + self.random_value() * (
             policy.max_interval_seconds - policy.min_interval_seconds)
+
+    def _next_activity_check(self, binding: TelegramSocialScopeConfig) -> float:
+        return self.store.now() + binding.proactive.activity_interval_seconds
 
     def sync(self, scope: ConversationScope, binding: TelegramSocialScopeConfig | None) -> None:
         key = scope.session_key
         version = self.store.state(key)["version"]
         enabled = binding is not None and binding.proactive.enabled and not binding.paused
+        activity_enabled = binding is not None and binding.proactive.activity_enabled
         row = self.db.execute("SELECT * FROM proactive_state WHERE scope=?", (key,)).fetchone()
         name = f"proactive_schedule:{key}"
         source = json.dumps({"enabled": enabled, "policy": binding.proactive.model_dump() if binding else None}, sort_keys=True)
         previous = self.db.execute("SELECT value FROM runtime_settings WHERE name=?", (name,)).fetchone()
         same_policy = previous is None or previous[0] == source
         self.store.setting_revision(name, source)
-        if row is not None and row["version"] == version and (row["next_check"] is not None) == enabled and same_policy:
+        if (row is not None and row["version"] == version and (row["next_check"] is not None) == enabled
+                and (row["next_activity_check"] is not None) == (enabled and activity_enabled) and same_policy):
             return
-        due = (row["next_check"] if row is not None and row["next_check"] is not None and enabled and same_policy
-               else self._next_check(binding) if enabled and binding is not None else None)
+        idle_due = (row["next_check"] if row is not None and row["next_check"] is not None and enabled and same_policy
+                    else self._next_idle_check(binding) if enabled and binding is not None else None)
+        activity_due = (row["next_activity_check"] if row is not None and row["next_activity_check"] is not None and enabled and activity_enabled and same_policy
+                        else self._next_activity_check(binding) if enabled and activity_enabled and binding is not None else None)
         with self.db:
-            self.db.execute("INSERT INTO proactive_state(scope,version,next_check,decision,tracked_since) VALUES(?,?,?,?,?) "
+            self.db.execute("INSERT INTO proactive_state(scope,version,next_check,next_activity_check,decision,tracked_since) VALUES(?,?,?,?,?,?) "
                             "ON CONFLICT(scope) DO UPDATE SET version=excluded.version,next_check=excluded.next_check,"
-                            "decision=excluded.decision", (key, version, due, "waiting" if enabled else "disabled", self.store.now()))
+                            "next_activity_check=excluded.next_activity_check,decision=excluded.decision",
+                            (key, version, idle_due, activity_due, "waiting" if enabled else "disabled", self.store.now()))
 
     def status(self, key: str) -> dict[str, object]:
-        row = self.db.execute("SELECT next_check,last_check,decision,opportunity_seq,probability,sample,selected,metrics,stopped "
+        row = self.db.execute("SELECT next_check,next_activity_check,last_check,decision,opportunity_seq,probability,sample,selected,metrics,stopped "
                               "FROM proactive_state WHERE scope=?", (key,)).fetchone()
         result: dict[str, object] = dict(row) if row is not None else {"next_check": None, "last_check": None, "decision": "disabled"}
         if row is not None:
@@ -144,11 +150,14 @@ class SocialProactive:
     def tick(self, scope: ConversationScope, binding: TelegramSocialScopeConfig, config: TelegramSocialConfig) -> None:
         key, now = scope.session_key, self.store.now()
         row = self.db.execute("SELECT * FROM proactive_state WHERE scope=?", (key,)).fetchone()
-        if row is None or row["next_check"] is None or float(row["next_check"]) > now:
+        if row is None:
             return
-        decision = "probability_miss"
-        candidate: ProactiveCandidate | None = None
         policy = binding.proactive
+        idle_ready = row["next_check"] is not None and float(row["next_check"]) <= now
+        activity_ready = policy.activity_enabled and row["next_activity_check"] is not None and float(row["next_activity_check"]) <= now
+        if not idle_ready and not activity_ready:
+            return
+        candidate: ProactiveCandidate | None = None
         probability: float | None = None
         sample: float | None = None
         metrics = self._participation(key)
@@ -156,67 +165,83 @@ class SocialProactive:
         member_at = self.db.execute("SELECT last_member_at FROM scopes WHERE key=?", (key,)).fetchone()[0]
         idle = now - float(member_at if member_at is not None else row["tracked_since"])
         metrics.update({"last_member_at": member_at, "idle_seconds": idle, "base_probability": policy.probability})
-        ttl = policy.activity_ttl_seconds if policy.activity_enabled else policy.ttl_seconds
-        if now >= float(row["next_check"]) + ttl:
-            decision = "missed"
-        elif row["stopped"]:
-            decision = "stopped"
+        common = None
+        if row["stopped"]:
+            common = "stopped"
         elif binding.paused or not policy.enabled:
-            decision = "disabled"
+            common = "disabled"
         elif is_quiet(binding, now):
-            decision = "quiet_hours"
+            common = "quiet_hours"
         elif self._deferred(key):
-            decision = "deferred"
+            common = "deferred"
         elif self.db.execute("SELECT 1 FROM wakes WHERE scope=? AND status IN ('scheduled','queued','running') AND expires>?", (key, now)).fetchone():
-            decision = "busy"
+            common = "busy"
         elif self.db.execute("SELECT 1 FROM judge_state WHERE scope=? AND (pending_due IS NOT NULL OR inflight=1)", (key,)).fetchone():
-            decision = "busy"
+            common = "busy"
         elif self.store.state(key)["mode"] == "active":
-            decision = "busy"
+            common = "busy"
         elif idle < policy.idle_seconds:
-            decision = "member_active"
-        elif policy.activity_enabled:
-            # Work is independent of the probability and budget for public speech.
-            # With allTopics, use the conversation members most recently used rather
-            # than running identical idle projects in every dormant topic.
-            target = self.db.execute("SELECT key FROM scopes WHERE channel=? AND chat_id=? "
-                                     "ORDER BY last_member_at DESC,key LIMIT 1", (scope.channel, scope.chat_id)).fetchone()
-            if binding.all_topics and target is not None and target[0] != key:
-                decision = "other_topic_active"
+            common = "member_active"
+        idle_decision = None
+        if idle_ready:
+            idle_decision = "probability_miss"
+            if now >= float(row["next_check"]) + policy.ttl_seconds:
+                idle_decision = "missed"
+            elif common:
+                idle_decision = common
+            elif (self.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_sends_per_hour
+                  or (isinstance(hourly, int) and hourly >= config.max_sends_per_hour)):
+                idle_decision = "send_budget"
             elif self.db.execute("SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_requests_per_hour:
-                decision = "request_budget"
+                idle_decision = "request_budget"
             else:
-                decision = "scheduled"
-                candidate = ProactiveCandidate(kind="activity", seq=0, expires_at=now + ttl,
-                                               opportunity_id=int(row["opportunity_seq"]) + 1)
-        elif (self.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_sends_per_hour
-              or (isinstance(hourly, int) and hourly >= config.max_sends_per_hour)):
-            decision = "send_budget"
-        elif self.db.execute("SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_requests_per_hour:
-            decision = "request_budget"
-        else:
-            metrics["pending_thought_available"] = self.store.followups.has_pending_thought(key)
-            probability = policy.probability
-            if metrics["pending_thought_available"]:
-                probability = min(1, probability * policy.pending_thought_multiplier)
-            last = metrics["last_confirmed_send"]
-            if isinstance(last, (float, int)) and now - last < policy.recent_send_seconds:
-                probability *= policy.recent_send_multiplier
-            local = datetime.fromtimestamp(now, ZoneInfo(policy.timezone))
-            if local.hour >= 23 or local.hour < 8:
-                probability *= policy.night_multiplier
-            if isinstance(hourly, int) and hourly >= policy.hourly_send_threshold:
-                probability *= policy.frequent_send_multiplier
-            sample = self.random_value()
-            if sample < probability:
-                decision = "scheduled"
-                candidate = ProactiveCandidate(kind="idle", seq=0, expires_at=now + policy.ttl_seconds,
-                                               opportunity_id=int(row["opportunity_seq"]) + 1)
+                metrics["pending_thought_available"] = self.store.followups.has_pending_thought(key)
+                probability = policy.probability
+                if metrics["pending_thought_available"]:
+                    probability = min(1, probability * policy.pending_thought_multiplier)
+                last = metrics["last_confirmed_send"]
+                if isinstance(last, (float, int)) and now - last < policy.recent_send_seconds:
+                    probability *= policy.recent_send_multiplier
+                local = datetime.fromtimestamp(now, ZoneInfo(policy.timezone))
+                if local.hour >= 23 or local.hour < 8:
+                    probability *= policy.night_multiplier
+                if isinstance(hourly, int) and hourly >= policy.hourly_send_threshold:
+                    probability *= policy.frequent_send_multiplier
+                sample = self.random_value()
+                if sample < probability:
+                    idle_decision = "scheduled"
+                    candidate = ProactiveCandidate(kind="idle", seq=0, expires_at=now + policy.ttl_seconds,
+                                                   opportunity_id=int(row["opportunity_seq"]) + 1)
+        activity_decision = None
+        if activity_ready:
+            if candidate is not None:
+                activity_decision = "idle_selected"
+            elif now >= float(row["next_activity_check"]) + policy.activity_ttl_seconds:
+                activity_decision = "missed"
+            elif common:
+                activity_decision = common
+            else:
+                # Work is independent of the probability and budget for public speech.
+                # With allTopics, use the conversation members most recently used rather
+                # than running identical idle projects in every dormant topic.
+                target = self.db.execute("SELECT key FROM scopes WHERE channel=? AND chat_id=? "
+                                         "ORDER BY last_member_at DESC,key LIMIT 1", (scope.channel, scope.chat_id)).fetchone()
+                if binding.all_topics and target is not None and target[0] != key:
+                    activity_decision = "other_topic_active"
+                elif self.db.execute("SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_requests_per_hour:
+                    activity_decision = "request_budget"
+                else:
+                    activity_decision = "scheduled"
+                    candidate = ProactiveCandidate(kind="activity", seq=0, expires_at=now + policy.activity_ttl_seconds,
+                                                   opportunity_id=int(row["opportunity_seq"]) + 1)
+        decision = idle_decision if activity_decision is None else f"idle:{idle_decision or 'not_due'};activity:{activity_decision}"
         with self.db:
-            self.db.execute("UPDATE proactive_state SET next_check=?,last_check=?,decision=?,opportunity_seq=opportunity_seq+1,"
+            self.db.execute("UPDATE proactive_state SET next_check=?,next_activity_check=?,last_check=?,decision=?,opportunity_seq=opportunity_seq+1,"
                             "probability=?,sample=?,selected=?,metrics=? WHERE scope=?",
-                            (self._next_check(binding), now, decision, probability, sample,
-                             int(candidate is not None) if sample is not None or policy.activity_enabled else None, json.dumps(metrics), key))
+                            (self._next_idle_check(binding) if idle_ready else row["next_check"],
+                             self._next_activity_check(binding) if activity_ready else row["next_activity_check"],
+                             now, decision, probability, sample,
+                             int(candidate is not None) if sample is not None or activity_decision is not None else None, json.dumps(metrics), key))
             if candidate is not None:
                 # A configured timer event has no source member message or read credit.
                 self.db.execute("INSERT INTO wakes(id,scope,version,trigger_seq,source_seq,status,created,expires,due,reason,proactive_source) "

@@ -61,13 +61,13 @@ async def test_work_still_respects_request_budget_stop_and_new_member_priority(s
         social.store.db.execute("INSERT INTO requests VALUES(?,?)", (A.session_key, social.now()))
     await tick(social)
     assert social.bus.inbound.empty()
-    assert social.proactive.status(A.session_key)["decision"] == "request_budget"
+    assert social.proactive.status(A.session_key)["decision"] == "idle:request_budget;activity:request_budget"
     with social.store.db:
         social.store.db.execute("DELETE FROM requests")
         social.store.db.execute("UPDATE proactive_state SET stopped=1 WHERE scope=?", (A.session_key,))
     await tick(social)
     assert social.bus.inbound.empty()
-    assert social.proactive.status(A.session_key)["decision"] == "stopped"
+    assert social.proactive.status(A.session_key)["decision"] == "idle:stopped;activity:stopped"
     with social.store.db:
         social.store.db.execute("UPDATE proactive_state SET stopped=0 WHERE scope=?", (A.session_key,))
     await tick(social)
@@ -92,7 +92,7 @@ async def test_all_topics_work_uses_most_recent_conversation(social):
     await tick(social)
     assert social.bus.inbound.qsize() == 1
     assert social.bus.inbound.get_nowait().session_key == recent.session_key
-    assert social.proactive.status(A.session_key)["decision"] == "other_topic_active"
+    assert social.proactive.status(A.session_key)["decision"] == "idle:probability_miss;activity:other_topic_active"
 
 
 async def test_free_time_can_end_on_resource_budget_without_notes_or_public_output(tmp_path, social):

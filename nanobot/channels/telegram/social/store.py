@@ -1192,6 +1192,7 @@ class SocialStore:
                               "WHERE status='scheduled' UNION ALL SELECT MIN(wake_at) FROM scopes "
                               "UNION ALL SELECT MIN(MIN(due,expires)) FROM actions WHERE status='queued' "
                               "UNION ALL SELECT MIN(next_check) FROM proactive_state "
+                              "UNION ALL SELECT MIN(next_activity_check) FROM proactive_state "
                               "UNION ALL SELECT MIN(quiet_due) FROM dialogue_waits "
                               "UNION ALL SELECT MIN(total_due) FROM dialogue_waits "
                               "UNION ALL SELECT MIN(condition_expires) FROM dialogue_waits "

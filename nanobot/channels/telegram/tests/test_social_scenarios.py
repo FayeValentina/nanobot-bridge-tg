@@ -156,7 +156,6 @@ async def test_new_conversation_supersedes_unclaimed_idle_opportunity(make_harne
     assert chat.model_saw("大家来看这个新话题")
 
 
-@pytest.mark.xfail(strict=True, reason="P0.5: activity shadows idle, see SOCIAL_ARCHITECTURE_REVIEW §5.2")
 async def test_idle_opportunity_remains_available_when_activity_is_enabled(make_harness):
     chat = make_harness()
     chat.set_proactive(activityEnabled=True)
@@ -164,6 +163,28 @@ async def test_idle_opportunity_remains_available_when_activity_is_enabled(make_
     await chat.tick()
     assert chat.model_calls() == 1
     assert any(wake["kind"] == "idle" for wake in chat.wakes())
+
+
+async def test_activity_runs_on_its_own_interval_without_accelerating_idle(make_harness):
+    chat = make_harness()
+    chat.set_proactive(activityEnabled=True, minIntervalSeconds=3600, maxIntervalSeconds=3600,
+                       activityIntervalSeconds=60, probability=1)
+    chat.advance(61)
+    await chat.tick()
+    assert any(wake["kind"] == "activity" for wake in chat.wakes())
+    assert not any(wake["kind"] == "idle" for wake in chat.wakes())
+    chat.advance(3540)
+    await chat.tick()
+    assert any(wake["kind"] == "idle" for wake in chat.wakes())
+
+
+async def test_activity_still_runs_when_idle_probability_misses(make_harness):
+    chat = make_harness()
+    chat.set_proactive(activityEnabled=True, probability=0, minIntervalSeconds=60,
+                       maxIntervalSeconds=60, activityIntervalSeconds=60)
+    chat.advance(61)
+    await chat.tick()
+    assert any(wake["kind"] == "activity" for wake in chat.wakes())
 
 
 async def test_pending_matter_allows_only_two_proactive_followups(make_harness):
