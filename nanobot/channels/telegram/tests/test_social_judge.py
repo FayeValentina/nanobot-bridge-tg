@@ -142,7 +142,7 @@ async def test_bad_decisions_are_errors_not_observe(case, body):
     provider.chat.return_value = LLMResponse(content=body)
     record = await judge.assess(snapshot)
     assert record.status == "pending" and record.error_code == "invalid_decision"
-    assert store.judge_through(A.session_key) == store.scopes.state(A.session_key)["read_through"] == 0
+    assert store.judge.through(A.session_key) == store.scopes.state(A.session_key)["read_through"] == 0
 
 
 @pytest.mark.parametrize("decision", ["wake", "observe"])
@@ -151,7 +151,7 @@ async def test_decision_advances_only_assessment_and_duplicate_does_not_recall(c
     provider.chat.return_value = LLMResponse(content=output(decision=decision))
     record = await judge.assess(snapshot)
     assert record.status == "decided" and record.decision.decision == decision
-    assert store.judge_through(A.session_key) == 3
+    assert store.judge.through(A.session_key) == 3
     assert store.scopes.state(A.session_key)["seen_through"] == store.scopes.state(A.session_key)["read_through"] == 0
     assert not store.db.execute("SELECT 1 FROM wakes").fetchone()
     assert not store.db.execute("SELECT 1 FROM actions").fetchone()
@@ -238,7 +238,7 @@ async def test_two_failures_yield_one_durable_fallback_without_main_execution(ca
     assert final.decision is None and final.error_code == "provider_exception"
     assert await judge.assess(snapshot) == final
     assert provider.chat.await_count == 2
-    assert store.judge_through(A.session_key) == 0
+    assert store.judge.through(A.session_key) == 0
     assert not store.db.execute("SELECT 1 FROM wakes").fetchone()
     assert "sensitive" not in str([tuple(row) for row in store.db.execute("SELECT * FROM judge_attempts")])
 
@@ -268,7 +268,7 @@ async def test_global_budget_covers_other_topics_and_retries(case):
     assert record.status == "pending" and record.attempts == 0
     assert record.due == now[0] + 3600
     provider.chat.assert_awaited_once()
-    assert store.judge_through(B.session_key) == 0
+    assert store.judge.through(B.session_key) == 0
 
 
 async def test_zero_fallback_budget_keeps_failed_batch_pending_until_expiry(case):
@@ -278,9 +278,9 @@ async def test_zero_fallback_budget_keeps_failed_batch_pending_until_expiry(case
     record = await SocialJudge(store, settings, provider).assess(snapshot)
     assert record.status == "pending" and record.due == snapshot.expires
     now[0] = snapshot.expires
-    store.recover_judge_batches()
-    assert store.judge_record(record.id).status == "expired"
-    assert store.judge_through(A.session_key) == 0
+    store.judge.recover()
+    assert store.judge.record(record.id).status == "expired"
+    assert store.judge.through(A.session_key) == 0
 
 
 async def test_concurrent_same_scope_sends_one_request(case):
@@ -310,7 +310,7 @@ async def test_arrivals_during_judgement_are_not_assessed_or_marked_read(case):
 
     provider.chat.side_effect = arrive
     assert (await judge.assess(snapshot)).status == "decided"
-    assert store.judge_through(A.session_key) == 3
+    assert store.judge.through(A.session_key) == 3
     assert store.scopes.state(A.session_key)["next_seq"] == 5
     assert store.scopes.state(A.session_key)["seen_through"] == 0
 
@@ -346,7 +346,7 @@ async def test_missing_context_cannot_advance_past_retained_unshown_messages(cas
     with pytest.raises(PermissionError, match="not retained"):
         await judge.assess(snapshot)
     provider.chat.assert_not_called()
-    assert store.judge_through(A.session_key) == 0
+    assert store.judge.through(A.session_key) == 0
 
 
 async def test_context_and_ttl_limits_precede_network(case):
@@ -373,34 +373,34 @@ async def test_cancelled_request_is_charged_and_does_not_mark_read(case):
     provider.chat.side_effect = asyncio.CancelledError
     with pytest.raises(asyncio.CancelledError):
         await judge.assess(snapshot)
-    record = store.judge_record(store.db.execute("SELECT id FROM judge_batches").fetchone()[0])
+    record = store.judge.record(store.db.execute("SELECT id FROM judge_batches").fetchone()[0])
     assert record.status == "pending" and record.attempts == 1
-    assert store.judge_through(A.session_key) == 0
+    assert store.judge.through(A.session_key) == 0
 
 
 def test_startup_recovery_does_not_refund_an_incomplete_attempt(case):
     store, settings, _, judge, snapshot, _ = case
-    record = store.open_judge_batch(snapshot, judge.revision, settings.model)
-    running = store.claim_judge_attempt(record.id, snapshot, limit=240, interval=0, max_attempts=2)
+    record = store.judge.open_batch(snapshot, judge.revision, settings.model)
+    running = store.judge.claim_attempt(record.id, snapshot, limit=240, interval=0, max_attempts=2)
     assert running.attempts == 1
-    store.recover_judge_batches()
-    assert store.judge_record(record.id).status == "pending"
-    assert store.judge_record(record.id).attempts == 1
+    store.judge.recover()
+    assert store.judge.record(record.id).status == "pending"
+    assert store.judge.record(record.id).attempts == 1
     assert store.db.execute("SELECT error_code FROM judge_attempts").fetchone()[0] == "interrupted"
 
 
 def test_decision_and_assessment_watermark_rollback_together(case):
     store, settings, _, judge, snapshot, _ = case
-    record = store.open_judge_batch(snapshot, judge.revision, settings.model)
-    running = store.claim_judge_attempt(record.id, snapshot, limit=240, interval=0, max_attempts=2)
+    record = store.judge.open_batch(snapshot, judge.revision, settings.model)
+    running = store.judge.claim_attempt(record.id, snapshot, limit=240, interval=0, max_attempts=2)
     store.db.execute("CREATE TRIGGER fail_judge_cursor BEFORE INSERT ON judge_state BEGIN SELECT RAISE(ABORT,'test'); END")
     store.db.commit()
     with pytest.raises(sqlite3.IntegrityError):
-        store.finish_judge_attempt(record.id, snapshot, attempt=running.attempts,
+        store.judge.finish_attempt(record.id, snapshot, attempt=running.attempts,
                                    decision=JudgeDecision.model_validate_json(output()), error_code=None,
                                    delay=0, latency_ms=1, input_tokens=1, output_tokens=1, total_tokens=2)
-    assert store.judge_record(record.id).status == "running"
-    assert store.judge_through(A.session_key) == 0
+    assert store.judge.record(record.id).status == "running"
+    assert store.judge.through(A.session_key) == 0
     assert store.db.execute("SELECT finished FROM judge_attempts").fetchone()[0] is None
 
 
@@ -410,9 +410,9 @@ async def test_restart_preserves_decision_without_recalling_provider(case, tmp_p
     store.close()
     restored = SocialStore(tmp_path, now=lambda: now[0])
     try:
-        restored.recover_judge_batches()
+        restored.judge.recover()
         assert await SocialJudge(restored, settings, provider).assess(snapshot) == expected
-        assert restored.judge_through(A.session_key) == 3
+        assert restored.judge.through(A.session_key) == 3
         provider.chat.assert_awaited_once()
     finally:
         restored.close()
@@ -432,7 +432,7 @@ def test_schema_eight_upgrade_preserves_main_data(case, tmp_path):
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert upgraded.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 3
         assert upgraded.scopes.state(A.session_key)["read_through"] == 0
-        assert upgraded.judge_through(A.session_key) == 3
+        assert upgraded.judge.through(A.session_key) == 3
     finally:
         upgraded.close()
 
@@ -442,7 +442,7 @@ async def test_timeout_is_a_charged_failure_with_no_observe_watermark(case):
     provider.chat.side_effect = TimeoutError
     record = await judge.assess(snapshot)
     assert record.error_code == "timeout" and record.attempts == 1
-    assert store.judge_through(A.session_key) == 0
+    assert store.judge.through(A.session_key) == 0
 
 
 async def test_single_attempt_mode_never_silently_retries(case):
@@ -454,7 +454,7 @@ async def test_single_attempt_mode_never_silently_retries(case):
     assert record.status == "fallback" and record.attempts == 1
     assert (await judge.assess(snapshot)).id == record.id
     provider.chat.assert_awaited_once()
-    assert store.judge_through(A.session_key) == 0
+    assert store.judge.through(A.session_key) == 0
 
 
 async def test_fallback_allowance_is_global_and_persistent(case):
@@ -522,10 +522,10 @@ async def test_same_scope_different_batch_cannot_overlap_network_requests(case):
 
 async def test_recovery_cannot_replenish_exhausted_attempts(case):
     store, settings, provider, judge, snapshot, _ = case
-    record = store.open_judge_batch(snapshot, judge.revision, settings.model)
+    record = store.judge.open_batch(snapshot, judge.revision, settings.model)
     for _ in range(2):
-        store.claim_judge_attempt(record.id, snapshot, limit=240, interval=0, max_attempts=2)
-        store.recover_judge_batches()
+        store.judge.claim_attempt(record.id, snapshot, limit=240, interval=0, max_attempts=2)
+        store.judge.recover()
     assert (await judge.assess(snapshot)).status == "fallback"
     provider.chat.assert_not_called()
 

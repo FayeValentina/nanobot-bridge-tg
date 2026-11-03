@@ -77,10 +77,8 @@ class SocialProactive:
                 result["last_opportunity"] = {
                     "wake_id": wake["id"], "main_status": wake["status"], "turn_id": wake["turn_id"],
                     "source": json.loads(wake["proactive_source"]),
-                    "sends": [dict(item) for item in self.db.execute(
-                        "SELECT id,status,message_id FROM actions WHERE scope=? AND turn_id=?", (key, wake["turn_id"]))],
-                    "message_deliveries": [dict(item) for item in self.db.execute(
-                        "SELECT id,status,message_ids FROM message_deliveries WHERE scope=? AND turn_id=?", (key, wake["turn_id"]))],
+                    "sends": [dict(item) for item in self.store.deliveries.turn_actions(key, wake["turn_id"])],
+                    "message_deliveries": [dict(item) for item in self.store.deliveries.turn_messages(key, wake["turn_id"])],
                 }
         return result
 
@@ -135,7 +133,7 @@ class SocialProactive:
                 state = self.store.scopes.last_member_at(key)
                 if state[0] is not None and now - float(state[0]) < binding.proactive.idle_seconds:
                     return "member_active"
-                if self.db.execute("SELECT 1 FROM judge_state WHERE scope=? AND (pending_due IS NOT NULL OR inflight=1)", (key,)).fetchone():
+                if self.store.judge.pending(key):
                     return "conversation_arrived"
         elif binding.proactive.require_context:
             return "context_required"
@@ -170,7 +168,7 @@ class SocialProactive:
             common = "deferred"
         elif self.store.wakes.active_wake(key, now):
             common = "busy"
-        elif self.db.execute("SELECT 1 FROM judge_state WHERE scope=? AND (pending_due IS NOT NULL OR inflight=1)", (key,)).fetchone():
+        elif self.store.judge.pending(key):
             common = "busy"
         elif self.store.scopes.state(key)["mode"] == "active":
             common = "busy"
@@ -183,7 +181,7 @@ class SocialProactive:
                 idle_decision = "missed"
             elif common:
                 idle_decision = common
-            elif (self.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_sends_per_hour
+            elif (self.store.deliveries.attempt_count(key, now - 3600) >= config.max_sends_per_hour
                   or (isinstance(hourly, int) and hourly >= config.max_sends_per_hour)):
                 idle_decision = "send_budget"
             elif self.store.wakes.request_count(key, now - 3600) >= config.max_requests_per_hour:

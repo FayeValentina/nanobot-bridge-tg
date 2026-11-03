@@ -14,11 +14,11 @@ __all__ = ["case"]
 
 def test_batch_id_cannot_be_reused_with_changed_frozen_intent(case):
     store, settings, provider, judge, snapshot, _ = case
-    record = store.open_judge_batch(snapshot, judge.revision, settings.model)
+    record = store.judge.open_batch(snapshot, judge.revision, settings.model)
     changed = updated(snapshot, role_summary="changed after the request was frozen")
     with pytest.raises(PermissionError, match="input changed"):
-        store.claim_judge_attempt(record.id, changed, limit=240, interval=0, max_attempts=2)
-    assert store.judge_record(record.id).attempts == 0
+        store.judge.claim_attempt(record.id, changed, limit=240, interval=0, max_attempts=2)
+    assert store.judge.record(record.id).attempts == 0
     provider.chat.assert_not_called()
 
 
@@ -29,8 +29,8 @@ def test_schema_ten_upgrade_removes_keys_and_preserves_journals(case, tmp_path):
     with store.db:
         store.db.execute("UPDATE judge_state SET assessed_through=0 WHERE scope=?", (A.session_key,))
     snapshot = updated(snapshot, version=old_version)
-    batch = store.open_judge_batch(snapshot, judge.revision, settings.model)
-    store.claim_judge_attempt(batch.id, snapshot, limit=240, interval=0, max_attempts=2)
+    batch = store.judge.open_batch(snapshot, judge.revision, settings.model)
+    store.judge.claim_attempt(batch.id, snapshot, limit=240, interval=0, max_attempts=2)
     with store.db:
         store.db.execute("UPDATE scopes SET read_through=1,seen_through=2,mode='waiting',wake_at=1070 WHERE key=?", (A.session_key,))
         store.db.execute("UPDATE judge_state SET batch_id=?,pending_seq=3 WHERE scope=?", (batch.id, A.session_key))
@@ -79,8 +79,8 @@ def test_schema_ten_upgrade_removes_keys_and_preserves_journals(case, tmp_path):
         state = restored.scopes.state(A.session_key)
         assert (state["read_through"], state["seen_through"], state["next_seq"]) == (1, 2, 4)
         assert state["version"] == "1" and state["mode"] == "waiting" and state["wake_at"] == 1070
-        assert restored.judge_record(batch.id).status == "cancelled"
-        assert restored.judge_record(batch.id).attempts == 1
+        assert restored.judge.record(batch.id).status == "cancelled"
+        assert restored.judge.record(batch.id).attempts == 1
         assert restored.db.execute("SELECT pending_due FROM judge_state").fetchone()[0] == now[0]
         assert restored.db.execute("SELECT through_seq FROM memory_resets").fetchone()[0] == 3
         assert {row[2] for row in restored.db.execute("SELECT * FROM memory_suppressions")} == {"old fact", "11"}

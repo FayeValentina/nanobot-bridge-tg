@@ -231,7 +231,7 @@ async def test_ordinary_unknown_survives_restart_and_blocks_cross_tool_retry(soc
         with pytest.raises(PermissionError, match="unknown"):
             await restored.send(ctx, outbound.content, None)
         sender.assert_not_awaited()
-        assert restored.store.uncertain_send(A.session_key)["text"] == outbound.content
+        assert restored.store.deliveries.uncertain_send(A.session_key)["text"] == outbound.content
     finally:
         restored.close()
 

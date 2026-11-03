@@ -56,7 +56,7 @@ def test_collection_without_main_exposure_and_independent_success_cursors(store)
     cursors = {row["kind"]: dict(row) for row in store.db.execute("SELECT * FROM learning_cursors WHERE scope=?", (A.session_key,))}
     assert cursors["expression"]["message_id"] == 2 and cursors["expression"]["revision"] == 1
     assert cursors["jargon"]["event_id"] == 0
-    assert store.judge_through(A.session_key) == 0
+    assert store.judge.through(A.session_key) == 0
     assert store.scopes.state(A.session_key)["seen_through"] == before["seen_through"] == 0
     assert store.scopes.state(A.session_key)["read_through"] == before["read_through"] == 0
     assert store.learning.status(B.session_key)["buffered_materials"] == 0

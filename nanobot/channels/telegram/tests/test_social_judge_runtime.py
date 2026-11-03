@@ -81,7 +81,7 @@ async def test_even_explicit_addresses_have_no_parallel_local_wake_path(social,d
     await due(social)
     provider.chat.assert_awaited_once()
     assert social.bus.inbound.empty()
-    assert social.store.judge_through(A.session_key)==1
+    assert social.store.judge.through(A.session_key)==1
     assert social.store.scopes.state(A.session_key)["read_through"]==0
 
 
@@ -194,7 +194,7 @@ async def test_judge_latency_does_not_hold_receiver_or_cycle_lock(social):
     assert social.store.scopes.state(A.session_key)["next_seq"]==3
     release.set()
     await asyncio.gather(*list(social.judging.tasks.values()))
-    assert social.store.judge_through(A.session_key)==1
+    assert social.store.judge.through(A.session_key)==1
     assert social.store.scopes.state(A.session_key)["read_through"]==0
 
 
@@ -242,7 +242,7 @@ async def test_decision_and_main_handoff_commit_in_one_transaction(social):
     social.store.db.commit()
     await social.observe(observed(social),directed=True)
     await due(social)
-    assert social.store.judge_through(A.session_key)==0
+    assert social.store.judge.through(A.session_key)==0
     assert social.store.db.execute("SELECT status FROM judge_batches").fetchone()[0]=="pending"
     assert social.bus.inbound.empty()
     social.store.db.execute("DROP TRIGGER fail_handoff")
@@ -286,8 +286,8 @@ async def test_restart_preserves_frozen_retry_and_does_not_reset_attempt_budget(
         await restored.recover()
         clock(restored).advance(3)
         await restored.run_due()
-        assert restored.store.judge_record(batch).attempts==2
-        assert restored.store.judge_record(batch).status=="fallback"
+        assert restored.store.judge.record(batch).attempts==2
+        assert restored.store.judge.record(batch).status=="fallback"
         assert bus.inbound.qsize()==1
     finally:
         restored.close()
@@ -416,8 +416,8 @@ async def test_restart_with_changed_judge_rebuilds_pending_input_without_reusing
         ready = decide(restored)
         restored.judging.set_provider(ready, "changed-prompt-provider")
         await restored.recover()
-        assert restored.store.judge_record(batch).status == "cancelled"
-        assert restored.store.judge_record(batch).error_code == "provider_changed"
+        assert restored.store.judge.record(batch).status == "cancelled"
+        assert restored.store.judge.record(batch).error_code == "provider_changed"
         assert bus.inbound.qsize() == 1
         assert restored.store.scopes.state(A.session_key)["read_through"] == 0
     finally:
@@ -506,7 +506,7 @@ async def test_unavailable_judge_image_is_explicit_without_extra_model_calls(soc
     assert not any(block["type"] == "image_url" for block in blocks)
     assert "unavailable" in blocks[-1]["text"]
     assert social.bus.inbound.empty()
-    assert social.store.judge_through(A.session_key) == 1
+    assert social.store.judge.through(A.session_key) == 1
 
 
 @pytest.mark.parametrize("change", ["pause", "edit"])

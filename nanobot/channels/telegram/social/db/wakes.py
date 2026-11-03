@@ -287,6 +287,7 @@ class Wakes:
             raise PermissionError("temporary wake conditions changed")
         if row is None:
             return
+        # Read-only exception: Judge depends on Wakes, not the reverse.
         for batch in self.db.execute("SELECT input_meta,decision FROM judge_batches WHERE handoff_job=?", (job,)):
             if batch[0] is None:
                 continue
@@ -524,3 +525,7 @@ class Wakes:
 
     def turn_source(self, scope: str, turn_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT proactive_source FROM wakes WHERE scope=? AND turn_id=? AND status='running'", (scope, turn_id)).fetchone()
+
+    def any_active(self) -> sqlite3.Row | None:
+        return self.db.execute("SELECT 1 FROM scopes WHERE mode=? UNION ALL SELECT 1 FROM wakes WHERE status IN (?,?,?) LIMIT 1",
+                               (ScopeMode.ACTIVE, *ACTIVE)).fetchone()

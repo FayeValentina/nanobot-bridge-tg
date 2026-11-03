@@ -8,10 +8,11 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
+from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.judge import (
     JudgeProviderSettings,
     SocialJudge,
@@ -54,12 +55,9 @@ class JudgeCoordinator:
                                  provider_changed=provider_changed, media_loader=self._media_content)
         # A restart can change the prompt as well as the provider. Reassess live
         # pending content with fresh facts instead of restoring an old wait intent.
-        with self.store.db:
-            self.store.db.execute("UPDATE judge_batches SET status='cancelled',error_code='provider_changed' "
-                                  "WHERE status IN ('pending','running') AND judge_revision<>?", (self.judge.revision,))
-            self.store.db.execute("UPDATE judge_state SET batch_id=NULL,pending_due=? WHERE batch_id IN "
-                                  "(SELECT id FROM judge_batches WHERE status='cancelled' AND error_code='provider_changed')",
-                                  (self.runtime.now(),))
+        with transaction(self.store.db):
+            self.store.judge.cancel_other_revisions(self.judge.revision)
+            self.store.judge.requeue_provider_changes(self.runtime.now())
 
     def set_provider(self, provider: LLMProvider, version: JudgeProviderSettings) -> None:
         changed = version != self.provider_version
@@ -87,7 +85,7 @@ class JudgeCoordinator:
         if binding is None or binding.paused:
             return
         delay = self.coalesce_delay(scope)
-        self.store.queue_judgement(scope.session_key, seq, delay=delay,
+        self.store.judge.queue(scope.session_key, seq, delay=delay,
                                     maximum=self.runtime.config.dynamic_wait.max_seconds, opportunity=opportunity)
 
     def intent(self, scope: ConversationScope) -> JudgeIntent | None:
@@ -126,7 +124,7 @@ class JudgeCoordinator:
         assert scope is not None  # JudgeSnapshot validates the scope.
 
         def validate() -> None:
-            if self.runtime.binding(scope) is None or not self.store._judge_current(snapshot):
+            if self.runtime.binding(scope) is None or not self.store.judge.current(snapshot):
                 raise PermissionError("judge image batch is no longer current")
 
         validate()
@@ -188,8 +186,9 @@ class JudgeCoordinator:
                             media=tuple(json.loads(row["media"])), revision=int(row["revision"]))
 
     def _restore(self, batch: str) -> JudgeSnapshot:
-        row = self.store.db.execute("SELECT input_meta FROM judge_batches WHERE id=?", (batch,)).fetchone()
-        metadata = json.loads(row[0])
+        row = self.store.judge.input_metadata(batch)
+        # The coordinator restores the persisted batch selected from judge_state.
+        metadata = json.loads(cast(sqlite3.Row, row)[0])
         messages: list[JudgeMessage] = []
         for excerpt in metadata.pop("excerpts"):
             source = self.store.messages.by_seq(metadata["scope"], excerpt["seq"])
@@ -204,8 +203,8 @@ class JudgeCoordinator:
 
     def _snapshot(self, scope: ConversationScope) -> JudgeSnapshot | None:
         key = scope.session_key
-        pending = self.store.db.execute("SELECT * FROM judge_state WHERE scope=?", (key,)).fetchone()
-        after = self.store.judge_through(key)
+        pending = self.store.judge.state(key)
+        after = self.store.judge.through(key)
         rows = self.store.messages.range(key, after, pending["pending_seq"], self.runtime.config.judge.context_messages)
         # Leading non-events can be passed locally; this is assessment, never main read.
         while rows:
@@ -213,8 +212,8 @@ class JudgeCoordinator:
             if facts.get("eligible") and float(facts.get("received_at",rows[0]["at"])) + self.runtime.config.judge.batch_ttl_seconds > self.runtime.now():
                 break
             after = int(rows.pop(0)["seq"])
-        with self.store.db:
-            self.store.db.execute("UPDATE judge_state SET assessed_through=? WHERE scope=?", (after, key))
+        with transaction(self.store.db):
+            self.store.judge.set_through(after, key)
         if not rows and pending["opportunity"] is None:
             return None
         binding = self.runtime.binding(scope)
@@ -285,7 +284,7 @@ class JudgeCoordinator:
 
     async def start_due(self) -> None:
         now = self.runtime.now()
-        rows = self.store.db.execute("SELECT scope,batch_id FROM judge_state WHERE inflight=0 AND pending_due<=?", (now,)).fetchall()
+        rows = self.store.judge.due_scopes(now)
         for row in rows:
             key = str(row["scope"])
             if key in self.tasks:
@@ -293,8 +292,8 @@ class JudgeCoordinator:
             scope = ConversationScope.from_session_key(key)
             if scope is None or self.runtime.binding(scope) is None or self.store.scopes.state(key)["mode"] == "paused":
                 continue
-            with self.store.db:
-                self.store.db.execute("UPDATE judge_state SET inflight=1 WHERE scope=?", (key,))
+            with transaction(self.store.db):
+                self.store.judge.claim_scope(key)
             self.tasks[key] = asyncio.create_task(self._run(scope, row["batch_id"]), name="social-judge")
         if rows:
             await asyncio.sleep(0)  # Yield to independent model work; never await its network latency.
@@ -309,10 +308,10 @@ class JudgeCoordinator:
             if snapshot is None:
                 return
             if batch is None:
-                result = self.store.open_judge_batch(snapshot, self.judge.revision, self.judge.settings.model)
+                result = self.store.judge.open_batch(snapshot, self.judge.revision, self.judge.settings.model)
                 batch = result.id
-                with self.store.db:
-                    self.store.db.execute("UPDATE judge_state SET batch_id=?,pending_first=NULL,pending_due=NULL,opportunity=NULL WHERE scope=?", (batch, key))
+                with transaction(self.store.db):
+                    self.store.judge.attach_batch(batch, key)
             result = await self.judge.assess(snapshot)
         except asyncio.CancelledError:
             raise
@@ -320,32 +319,28 @@ class JudgeCoordinator:
             # A failed decision/handoff transaction must remain recoverable, not
             # advance assessment as if the input had been handled.
             if batch and not self.store.closed:
-                with self.store.db:
-                    self.store.db.execute("UPDATE judge_attempts SET finished=?,error_code='commit_failed' "
-                                          "WHERE batch_id=? AND finished IS NULL", (self.runtime.now(),batch))
-                    self.store.db.execute("UPDATE judge_batches SET status='pending',error_code='commit_failed',due=? "
-                                          "WHERE id=? AND status='running'", (self.runtime.now()+1,batch))
-                result = self.store.judge_record(batch)
+                with transaction(self.store.db):
+                    self.store.judge.finish_failed_commit(self.runtime.now(), batch)
+                    self.store.judge.retry_failed_commit(self.runtime.now()+1, batch)
+                result = self.store.judge.record(batch)
             preparation_failed = result is None
         except Exception:
             if batch and not self.store.closed:
-                with self.store.db:
-                    self.store.db.execute("UPDATE judge_batches SET status='cancelled',error_code='invalid_input' WHERE id=? AND status IN ('pending','running')", (batch,))
+                with transaction(self.store.db):
+                    self.store.judge.cancel_invalid_input(batch)
             preparation_failed = snapshot is None
             logger.warning("Social intermediary input expired/changed or could not be prepared")
         finally:
             self.tasks.pop(key, None)
             if not self.store.closed:
-                with self.store.db:
-                    state = self.store.db.execute("SELECT * FROM judge_state WHERE scope=?", (key,)).fetchone()
+                with transaction(self.store.db):
+                    state = self.store.judge.state(key)
                     if result is not None and result.status == "pending" and result.expires > self.runtime.now():
-                        self.store.db.execute("UPDATE judge_state SET inflight=0,batch_id=?,pending_due=? WHERE scope=?",
-                                              (result.id, min(result.due,result.expires), key))
+                        self.store.judge.reschedule_batch(result.id, min(result.due,result.expires), key)
                     else:
                         if snapshot is not None and (result is None or result.error_code != "provider_changed"):
-                            self.store.db.execute("UPDATE judge_state SET assessed_through=MAX(assessed_through,?) WHERE scope=?",
-                                                  (snapshot.through_seq,key))
-                        remaining = self.store.messages.eligible_after(key, self.store.judge_through(key))
+                            self.store.judge.advance_through(snapshot.through_seq, key)
+                        remaining = self.store.messages.eligible_after(key, self.store.judge.through(key))
                         due = self.runtime.now() if remaining or state["opportunity"] is not None else None
                         if remaining and state["pending_first"] is not None:
                             due = min(float(state["pending_last"])+self.coalesce_delay(scope),float(state["pending_max"]))
@@ -353,9 +348,9 @@ class JudgeCoordinator:
                             end = float(state["pending_first"] or self.runtime.now()) + self.runtime.config.judge.batch_ttl_seconds
                             due = min(self.runtime.now()+5,end)
                             if self.runtime.now() >= end:
-                                self.store.db.execute("UPDATE judge_state SET assessed_through=MAX(assessed_through,pending_seq),opportunity=NULL WHERE scope=?", (key,))
+                                self.store.judge.discard_pending(key)
                                 due = None
                         if self.store.scopes.state(key)["mode"] == "paused" or self.runtime.binding(scope) is None:
                             due = None
-                        self.store.db.execute("UPDATE judge_state SET inflight=0,batch_id=NULL,pending_due=? WHERE scope=?", (due,key))
+                        self.store.judge.release_scope(due, key)
                 self.runtime.scheduler.notify()

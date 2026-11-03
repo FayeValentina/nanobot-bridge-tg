@@ -281,8 +281,8 @@ class ExpressionLearner:
             self.task.cancel()
 
     def busy(self) -> bool:
-        return bool(self.main_busy() or self.runtime.judging.tasks or self.store.db.execute(
-            "SELECT 1 FROM scopes WHERE mode='active' UNION ALL SELECT 1 FROM wakes WHERE status IN ('scheduled','queued','running') UNION ALL SELECT 1 FROM judge_state WHERE inflight=1 OR pending_due IS NOT NULL LIMIT 1").fetchone())
+        return bool(self.main_busy() or self.runtime.judging.tasks or self.store.wakes.any_active()
+                    or self.store.judge.any_pending())
 
     def start_due(self, scopes: list[str]) -> None:
         if (self.provider is None or not scopes or not self.store.learning.config.enabled

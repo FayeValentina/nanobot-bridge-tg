@@ -25,6 +25,7 @@ from nanobot.bus.events import DeliveryReceipt, InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.bindings import SOCIAL_PROTOCOL as SOCIAL_PROTOCOL
 from nanobot.channels.telegram.social.bindings import ScopeBindings
+from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.db.wakes import WakeStatus
 from nanobot.channels.telegram.social.expressions import ExpressionLearner
 from nanobot.channels.telegram.social.jargon import JargonRequest
@@ -428,7 +429,7 @@ class TelegramSocialRuntime:
             return
         self._recovered = True
         self.store.recover()
-        self.store.recover_judge_batches()
+        self.store.judge.recover()
         self.store.learning.recover()
         await self.run_due()
         self.scheduler.start()
@@ -441,9 +442,8 @@ class TelegramSocialRuntime:
         conditions, _ = self._wake_conditions(scope.session_key)
         state = self.store.scopes.state(scope.session_key)
         requests = self.store.wakes.request_usage(scope.session_key, self.now() - 3600)
-        sends = self.store.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?",
-                                      (scope.session_key, self.now() - 3600)).fetchone()[0]
-        last_send = self.store.last_send(scope.session_key)
+        sends = self.store.deliveries.attempt_count(scope.session_key, self.now() - 3600)
+        last_send = self.store.deliveries.last_send(scope.session_key)
         intent = self.judging.intent(scope)
         return {"role_id": binding.role_id, "role_file": str(self.bindings.role_file(binding)),
                 "tool_permissions": "shared_with_normal_chat",
@@ -451,7 +451,7 @@ class TelegramSocialRuntime:
                 "latest_seq": state["next_seq"] - 1, "mode": state["mode"],
                 "wake_at": state["wake_at"], "wake_config": conditions.model_dump(),
                 "wait_infinite": state["wait_infinite"],
-                "judge": {"model": self.config.judge.model, "assessed_through": self.store.judge_through(scope.session_key),
+                "judge": {"model": self.config.judge.model, "assessed_through": self.store.judge.through(scope.session_key),
                           "semantic_authority": "intermediary",
                           "intent": intent.model_dump() if intent else None,
                           "participation": {"keywords": binding.wake_keywords, "senders": binding.wake_senders,
@@ -591,16 +591,12 @@ class TelegramSocialRuntime:
         if self.store.scopes.state(scope.session_key)["mode"] == "paused":
             raise PermissionError("social conversation is paused")
         self.proactive.check_send(scope, turn, self.binding(scope))
-        previous = self.store.last_send(scope.session_key)
+        previous = self.store.deliveries.last_send(scope.session_key)
         if previous is not None and self.now() < previous + self.config.send_cooldown_seconds:
             raise PermissionError("send cooldown is active")
-        if self.store.db.execute("SELECT 1 FROM actions WHERE scope=? AND status='queued'",
-                                 (scope.session_key,)).fetchone():
+        if self.store.deliveries.queued(scope.session_key):
             raise PermissionError("an earlier send is awaiting delivery")
-        if turn is not None and self.store.db.execute(
-            "SELECT 1 FROM actions WHERE scope=? AND version=? AND turn_id=? AND trim(content)=trim(?) "
-            "AND status IN ('sent','sending','unknown')", (scope.session_key, version, turn, text),
-        ).fetchone():
+        if turn is not None and self.store.deliveries.attempted_content(scope.session_key, version, turn, text):
             raise PermissionError("delivery already attempted in this turn; do not repeat it")
         return self.store.reserve_send(scope.session_key, version, text, self.config.max_sends_per_hour, turn=turn, units=units)
 
@@ -617,23 +613,18 @@ class TelegramSocialRuntime:
             self.validate_context(ctx)
             self.proactive.check_send(scope, ctx.turn_id, self.binding(scope))
             version = self.store.scopes.state(scope.session_key)["version"]
-            previous_action = self.store.db.execute(
-                "SELECT * FROM actions WHERE scope=? AND version=? AND turn_id=? AND kind=? AND trim(content)=trim(?) "
-                "ORDER BY created DESC LIMIT 1", (scope.session_key, version, ctx.turn_id, "sticker" if sticker else "text", text),
-            ).fetchone()
+            previous_action = self.store.deliveries.latest_content(scope.session_key, version, ctx.turn_id, "sticker" if sticker else "text", text)
             if previous_action is not None:
                 return self._action_result(previous_action)
-            previous = self.store.last_send(scope.session_key)
+            previous = self.store.deliveries.last_send(scope.session_key)
             if previous is not None and self.now() < previous + self.config.send_cooldown_seconds:
                 raise PermissionError("send cooldown is active")
-            if self.store.db.execute("SELECT 1 FROM actions WHERE scope=? AND status='queued'",
-                                     (scope.session_key,)).fetchone():
+            if self.store.deliveries.queued(scope.session_key):
                 raise PermissionError("an earlier send is awaiting a platform retry")
             action = self.store.reserve_send(scope.session_key, version, text, self.config.max_sends_per_hour,
                                              turn=ctx.turn_id, sticker=sticker, followup_id=followup_id)
             with self.store.db:
-                self.store.db.execute("UPDATE actions SET reply_to=?,expires=(SELECT MAX(expires) FROM wakes "
-                                      "WHERE turn_id=? AND status='running') WHERE id=?", (reply_to, ctx.turn_id, action))
+                self.store.deliveries.set_reply_expiry(reply_to, ctx.turn_id, action)
             self.validate_context(ctx)
             return await self._deliver(scope, action, version, text, reply_to)
 
@@ -673,17 +664,14 @@ class TelegramSocialRuntime:
             self.proactive.check_send(scope, ctx.turn_id, self.binding(scope))
             version = self.store.scopes.state(scope.session_key)["version"]
             # Repeated identical calls return each child's receipt, including partial failures.
-            for group in self.store.db.execute("SELECT DISTINCT group_id FROM actions WHERE scope=? "
-                                               "AND version=? AND turn_id=? AND group_id IS NOT NULL",
-                                               (scope.session_key, version, ctx.turn_id)).fetchall():
-                rows = self.store.db.execute("SELECT * FROM actions WHERE group_id=? ORDER BY ordinal", (group[0],)).fetchall()
+            for group in self.store.deliveries.turn_groups(scope.session_key, version, ctx.turn_id):
+                rows = self.store.deliveries.group_parts(group[0])
                 if [str(row["content"]) for row in rows] == texts and rows[0]["reply_to"] == reply_to:
                     return [self._action_result(row) for row in rows]
-            previous = self.store.last_send(scope.session_key)
+            previous = self.store.deliveries.last_send(scope.session_key)
             if previous is not None and self.now() < previous + self.config.send_cooldown_seconds:
                 raise PermissionError("send cooldown is active")
-            if self.store.db.execute("SELECT 1 FROM actions WHERE scope=? AND status='queued'",
-                                     (scope.session_key,)).fetchone():
+            if self.store.deliveries.queued(scope.session_key):
                 raise PermissionError("an earlier send is awaiting delivery")
             rows = self.store.enqueue_parts(scope.session_key, version, ctx.turn_id, texts,
                                             reply_to, self.config.max_sends_per_hour, followup_id=followup_id)
@@ -692,7 +680,7 @@ class TelegramSocialRuntime:
 
     async def _deliver(self, scope: ConversationScope, action: str, version: str,
                        text: str, reply_to: int | None) -> DeliveryResult:
-        row = self.store.db.execute("SELECT kind,media_ref,turn_id FROM actions WHERE id=?", (action,)).fetchone()
+        row = self.store.deliveries.action_media(action)
         sticker = MediaReference.model_validate_json(row["media_ref"]) if row["kind"] == "sticker" else None
         try:
             if version != self.store.scopes.state(scope.session_key)["version"] or self.store.scopes.state(scope.session_key)["mode"] == "paused":
@@ -707,7 +695,7 @@ class TelegramSocialRuntime:
             message_id = await sender(scope, sticker.file_id if sticker else text, reply_to)
         except SocialRateLimitError as exc:
             after = max(exc.retry_after, self.config.send_cooldown_seconds)
-            queued = math.isfinite(after) and self.store.queue_retry(action, after, reply_to)
+            queued = math.isfinite(after) and self.store.deliveries.queue_retry(action, after, reply_to)
             if not queued:
                 self.store.delivery(action, "failed", error="rate limit exceeds retry bounds")
             self.scheduler.notify()
@@ -732,10 +720,8 @@ class TelegramSocialRuntime:
         ), self.config.retention_messages)
         # Every confirmed public send resets observation. A paced group establishes
         # Confirm the grouped delivery only after its final child is confirmed.
-        child = self.store.db.execute("SELECT group_id,ordinal FROM actions WHERE id=?", (action,)).fetchone()
-        final = child["group_id"] is None or not self.store.db.execute(
-            "SELECT 1 FROM actions WHERE group_id=? AND ordinal>?", (child["group_id"], child["ordinal"]),
-        ).fetchone()
+        child = self.store.deliveries.part_position(action)
+        final = child["group_id"] is None or not self.store.deliveries.later_part(child["group_id"], child["ordinal"])
         if self.store.scopes.state(scope.session_key)["version"] == version:
             self._confirmed_send(scope, action, str(row["turn_id"]) if row["turn_id"] else None, text, final=final)
         return {"action_id": action, "status": "sent", "message_id": message_id}
@@ -747,8 +733,7 @@ class TelegramSocialRuntime:
             return
         # Recent confirmed messages are dialogue facts. They do not arm a second wake route.
         self.store.wakes.note_sent(scope.session_key)
-        sticker = self.store.db.execute("SELECT media_ref FROM actions WHERE id=? AND scope=? AND status='sent' AND kind='sticker'",
-                                        (action, scope.session_key)).fetchone()
+        sticker = self.store.deliveries.sent_sticker(action, scope.session_key)
         if sticker and sticker[0]:
             self.selector.confirm_sticker(scope.session_key, turn, action,
                                           MediaReference.model_validate_json(sticker[0]).unique_id)
@@ -762,10 +747,7 @@ class TelegramSocialRuntime:
         binding = self.binding(scope)
         if binding is None or binding.paused or self.store.scopes.state(key)["mode"] not in {"active", "observing"}:
             return
-        confirmed = self.store.db.execute("SELECT 1 FROM actions WHERE scope=? AND turn_id=? AND status='sent' "
-                                          "UNION ALL SELECT 1 FROM message_deliveries WHERE scope=? AND turn_id=? "
-                                          "AND (status='sent' OR json_array_length(message_ids)>0) LIMIT 1",
-                                          (key,turn,key,turn)).fetchone()
+        confirmed = self.store.deliveries.confirmed_turn(key, turn)
         if confirmed is None:
             return
         conditions, dynamic = self._effective_wake(key, binding)
@@ -776,7 +758,7 @@ class TelegramSocialRuntime:
         self.scheduler.notify()
 
     async def _retry_sends(self) -> None:
-        for row in self.store.ready_sends():
+        for row in self.store.deliveries.ready_sends():
             scope = ConversationScope.from_session_key(str(row["scope"]))
             if scope is None or self.binding(scope) is None:
                 self.store.delivery(str(row["id"]), "failed", error="scope revoked")
@@ -789,21 +771,21 @@ class TelegramSocialRuntime:
                 except PermissionError:
                     self.store.delivery(action, "failed", error="proactive opportunity no longer valid")
                     continue
-                predecessor = self.store.send_predecessor(action)
+                predecessor = self.store.deliveries.send_predecessor(action)
                 if predecessor is not None:
                     if predecessor["status"] in ("failed", "unknown"):
                         self.store.delivery(action, "failed", error="earlier part was not confirmed")
                     else:
-                        self.store.postpone_send(action, max(self.now() + 1, float(predecessor["due"] or 0)))
+                        self.store.deliveries.postpone_send(action, max(self.now() + 1, float(predecessor["due"] or 0)))
                     continue
                 if row["expires"] is not None and float(row["expires"]) <= self.now():
                     self.store.delivery(action, "failed", error="send expired")
                     continue
-                previous = self.store.last_send(scope.session_key)
+                previous = self.store.deliveries.last_send(scope.session_key)
                 if int(row["attempts"]) == 0 and previous is not None and self.now() < previous + self.config.send_cooldown_seconds:
-                    self.store.postpone_send(action, previous + self.config.send_cooldown_seconds)
+                    self.store.deliveries.postpone_send(action, previous + self.config.send_cooldown_seconds)
                     continue
-                if not self.store.claim_retry(str(row["id"]), self.config.max_sends_per_hour):
+                if not self.store.deliveries.claim_retry(str(row["id"]), self.config.max_sends_per_hour):
                     continue
                 await self._deliver(scope, str(row["id"]), str(row["version"]), str(row["content"]),
                                     int(row["reply_to"]) if row["reply_to"] is not None else None)
@@ -813,18 +795,13 @@ class TelegramSocialRuntime:
                                delivery_id: str | None = None, *, followup_id: str | None = None) -> str | None:
         if self.binding(scope) is None:
             return None
-        previous = self.store.db.execute("SELECT status,version FROM message_deliveries WHERE id=? AND scope=?",
-                                         (delivery_id, scope.session_key)).fetchone() if delivery_id else None
-        with self.store.db:
+        previous = self.store.deliveries.message_receipt(delivery_id, scope.session_key) if delivery_id else None
+        with transaction(self.store.db):
             if delivery_id is None:
                 delivery_id = uuid4().hex
-                self.store.db.execute("INSERT INTO message_deliveries VALUES(?,?,?,?,?,?,?,?)",
-                                      (delivery_id, scope.session_key, turn_id, self.now(),
-                                       receipt.status, json.dumps(receipt.message_ids), receipt.detail,
-                                       self.store.scopes.state(scope.session_key)["version"]))
+                self.store.deliveries.insert_message_delivery(delivery_id, scope.session_key, turn_id, self.now(), receipt.status, json.dumps(receipt.message_ids), receipt.detail, self.store.scopes.state(scope.session_key)["version"])
             else:
-                self.store.db.execute("UPDATE message_deliveries SET status=?,message_ids=?,detail=? WHERE id=? AND scope=?",
-                                      (receipt.status, json.dumps(receipt.message_ids), receipt.detail, delivery_id, scope.session_key))
+                self.store.deliveries.update_message_delivery(receipt.status, json.dumps(receipt.message_ids), receipt.detail, delivery_id, scope.session_key)
             if followup_id is not None and receipt.status == "queued":
                 if turn_id is None:
                     raise ValueError("a proactive follow-up requires a source turn")

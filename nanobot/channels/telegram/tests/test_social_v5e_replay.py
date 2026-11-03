@@ -87,7 +87,7 @@ def test_release_rebind_preserves_judge_cursor_and_active_proactive_deadline(tmp
         due=runtime.proactive.status(scope.session_key)['next_check']
         runtime.store.bind(scope,'new-protocol')
         runtime.proactive.sync(scope,cfg.scopes[0])
-        assert runtime.store.judge_through(scope.session_key)==0
+        assert runtime.store.judge.through(scope.session_key)==0
         assert runtime.proactive.status(scope.session_key)['next_check']==due
         assert runtime.store.db.execute('SELECT pending_due FROM judge_state WHERE scope=?',(scope.session_key,)).fetchone()[0]==1000
         # A real policy change still reschedules; a mere protocol rebind does not.

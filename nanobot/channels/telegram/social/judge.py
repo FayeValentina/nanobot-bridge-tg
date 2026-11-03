@@ -105,12 +105,12 @@ class SocialJudge:
             raise ValueError("judge snapshot exceeds configured context limits")
         if snapshot.expires - snapshot.created > settings.batch_ttl_seconds:
             raise ValueError("judge snapshot exceeds configured batch TTL")
-        record = self.store.open_judge_batch(snapshot, self.revision, settings.model)
+        record = self.store.judge.open_batch(snapshot, self.revision, settings.model)
         if record.status != "pending":
             return record
         if record.attempts >= 1 + settings.max_retries:
-            return self.store.judge_fallback(record.id, snapshot, limit=settings.max_fallbacks_per_hour)
-        record = self.store.claim_judge_attempt(
+            return self.store.judge.fallback(record.id, snapshot, limit=settings.max_fallbacks_per_hour)
+        record = self.store.judge.claim_attempt(
             record.id, snapshot, limit=settings.max_requests_per_hour,
             interval=settings.min_interval_seconds, max_attempts=1 + settings.max_retries,
         )
@@ -149,7 +149,7 @@ class SocialJudge:
                 decision = candidate
         except asyncio.CancelledError:
             if not self.store.closed:
-                self.store.finish_judge_attempt(
+                self.store.judge.finish_attempt(
                     record.id, snapshot, attempt=record.attempts, decision=None,
                     error_code="interrupted", delay=0,
                     latency_ms=int((time.monotonic() - started) * 1000),
@@ -166,7 +166,7 @@ class SocialJudge:
             error = "provider_exception"
             logger.warning("Social judge batch={} error={}: {}", record.id, error, redacted_error_detail(exc))
         usage = response.usage if response is not None else None
-        record = self.store.finish_judge_attempt(
+        record = self.store.judge.finish_attempt(
             record.id, snapshot, attempt=record.attempts, decision=decision, error_code=error,
             delay=delay, latency_ms=int((time.monotonic() - started) * 1000),
             input_tokens=usage.input_tokens if usage else None,
@@ -174,5 +174,5 @@ class SocialJudge:
             total_tokens=usage.total_tokens if usage else None,
         )
         if record.status == "pending" and record.attempts >= 1 + settings.max_retries:
-            record = self.store.judge_fallback(record.id, snapshot, limit=settings.max_fallbacks_per_hour)
+            record = self.store.judge.fallback(record.id, snapshot, limit=settings.max_fallbacks_per_hour)
         return record

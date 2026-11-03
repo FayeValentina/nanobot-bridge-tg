@@ -319,13 +319,7 @@ class ContextSelector:
     def recent_usage(self, scope: str) -> dict[str, object]:
         # Only sent receipts. message IDs join to the observed SELF text/media;
         # unconfirmed/queued/unknown and generated-but-unsent drafts never qualify.
-        rows = self.runtime.store.db.execute(
-            "SELECT * FROM (SELECT id,turn_id,created,CASE WHEN kind='sticker' THEN '' ELSE content END AS text,CASE WHEN kind='sticker' THEN media_ref ELSE NULL END AS sticker "
-            "FROM actions WHERE scope=? AND status='sent' UNION ALL "
-            "SELECT d.id,d.turn_id,d.created,m.text AS text,m.media_refs AS sticker FROM message_deliveries d "
-            "JOIN json_each(d.message_ids) j JOIN messages m ON m.scope=d.scope AND m.message_id=j.value AND m.is_self=1 "
-            "WHERE d.scope=? AND d.status='sent') ORDER BY created DESC,id DESC LIMIT 80", (scope, scope),
-        ).fetchall()
+        rows = self.runtime.store.deliveries.recent_usage(scope)
         turns: dict[str, UsageTurn] = {}
         for row in rows:
             key = str(row["turn_id"] or row["id"])

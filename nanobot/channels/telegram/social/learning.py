@@ -390,10 +390,7 @@ class SocialLearning:
         with nullcontext() if self.db.in_transaction else self.db:
             if kind == "jargon" and not self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status='usable'", (scope, entry_id, revision)).fetchone():
                 raise ValueError("only current usable jargon can be attributed as natural use")
-            receipt = self.db.execute("SELECT 1 FROM actions WHERE scope=? AND turn_id=? AND id=? AND status='sent' "
-                                      "UNION ALL SELECT 1 FROM message_deliveries WHERE scope=? AND turn_id=? AND id=? "
-                                      "AND (status='sent' OR json_array_length(message_ids)>0)",
-                                      (scope, turn_id, delivery_id, scope, turn_id, delivery_id)).fetchone()
+            receipt = self.store.deliveries.confirmed_receipt(scope, turn_id, delivery_id)
             if receipt is None:
                 raise ValueError("usage requires a confirmed delivery in this turn and scope")
             changed = self.db.execute("UPDATE expression_selections SET delivery_id=? WHERE scope=? AND turn_id=? AND kind=? AND entry_id=? AND revision=?",
