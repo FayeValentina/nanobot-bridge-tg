@@ -43,10 +43,13 @@ Codex 的短处：
 2. **派发**（Claude 的 Bash 调用需要 `dangerouslyDisableSandbox: true`，否则 Codex 的 bwrap 嵌套在 Claude 的沙箱里会启动失败；
    同时用后台运行，Codex 可能需要几十分钟）：
    ```bash
-   cd /home/ubuntu/nanobot-bridge-tg && codex exec -C /home/ubuntu/nanobot-bridge-tg \
+   cd /home/ubuntu/nanobot-bridge-tg && PYTHONPATH=.agent PYTEST_ADDOPTS="-p codex_pytest_env" \
+     codex exec -C /home/ubuntu/nanobot-bridge-tg \
      -s workspace-write -c approval_policy='"never"' --color never --json \
      -o .agent/tasks/<id>.report.md - < .agent/tasks/<id>.md > .agent/tasks/<id>.events.jsonl 2>&1
    ```
+   `PYTHONPATH/PYTEST_ADDOPTS` 加载 `.agent/codex_pytest_env.py`，补偿 Codex 沙箱环境的问题（没有外部 DNS、跨线程唤醒延迟）。
+   这些补偿**只**存在于该插件中，不得写进工程的 conftest 或测试（P0-b 教训：Codex 曾把它们写进 conftest，已退回）。
    系统前提：`/etc/apparmor.d/bwrap` 允许 bwrap 使用 user namespace（2026-11-03 经用户同意添加）。
    如果 Codex 报告 sandbox 初始化失败，先检查这个文件是否还在。
 3. **验收**（Claude 必须**亲自**完成，不能只读 Codex 的报告）：

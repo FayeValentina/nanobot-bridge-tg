@@ -58,7 +58,7 @@
   两个 xfail 场景以 XFAIL 结束（不能是 XPASS）。
 - `grep -nE "db\.execute|\.store\.|\b_[a-z]" nanobot/channels/telegram/tests/test_social_scenarios.py` 没有输出（`__` 魔术方法除外）。
 - `.venv/bin/ruff check nanobot/channels/telegram/tests/social_harness.py nanobot/channels/telegram/tests/test_social_scenarios.py` 通过。
-- 已有社交测试不受影响：`.venv/bin/python -m pytest nanobot/channels/telegram/tests -q -x` 通过（不含 `evaluate_*` 脚本）。
+- 已有社交测试不受影响：`.venv/bin/python -m pytest nanobot/channels/telegram/tests -q -p no:cacheprovider --ignore-glob="*evaluate_*"` 全部通过（编排者会复跑整个目录）。
 
 ## 报告格式（最终回复只包含以下内容）
 

@@ -21,6 +21,8 @@ and Claude is the orchestrator and reviewer. See `.agent/orchestration.md`. In t
   (deployed instances under `~/.local/share/nanobot-bridge-tg-*`, `~/.nanobot`, `~/.codex`).
 - Run the checks the brief lists and paste their real output. Never claim a check passed without running it.
 - Implement the design the brief specifies; do not invent structure. Do not add files, classes, helpers or abstraction layers the brief does not name.
+- Do not change project code, conftest or tests to work around your sandbox environment (DNS, threads, timing).
+  Sandbox-only shims belong in `.agent/codex_pytest_env.py`; report any new environment problem instead.
 - Do not add defensive code the brief does not ask for: no extra validation, try/except, fallbacks, version or revision checks,
   migration steps, config options or audit tables for hypothetical situations. If you believe one is truly needed,
   propose it under "suggestions" in your report instead of implementing it.
