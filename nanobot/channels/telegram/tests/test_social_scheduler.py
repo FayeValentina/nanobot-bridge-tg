@@ -81,7 +81,8 @@ def observed(social, seq=1, *, scope=A, **kwargs):
 
 
 def context(social, *, scope=A, turn="test-turn"):
-    _, version = social._persona(scope)
+    social.sync_scope(scope)
+    version = social.store.state(scope.session_key)["version"]
     job = uuid4().hex
     now = social.now()
     with social.store.db:

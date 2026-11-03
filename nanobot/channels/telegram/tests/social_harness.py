@@ -237,6 +237,12 @@ class SocialHarness:
     def edit_role(self, text: str) -> None:
         self._role.write_text(text, encoding="utf-8")
 
+    def reconfigure(self, **overrides: Any) -> None:
+        self._config = TelegramSocialConfig.model_validate({
+            **self._config.model_dump(by_alias=True), **overrides,
+        })
+        self._runtime.configure(self._config)
+
     def set_proactive(self, **settings: Any) -> None:
         self._config.scopes[0].proactive = TelegramSocialProactiveConfig.model_validate({
             "enabled": True, "minIntervalSeconds": 60, "maxIntervalSeconds": 60,

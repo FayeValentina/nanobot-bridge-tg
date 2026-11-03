@@ -86,7 +86,7 @@ async def test_all_topics_work_uses_most_recent_conversation(social):
     binding.all_topics = True
     social.configure(social.config)
     recent = ConversationScope(A.channel, A.chat_id, 99)
-    social._persona(recent)
+    social.sync_scope(recent)
     with social.store.db:
         social.store.db.execute("UPDATE scopes SET last_member_at=? WHERE key=?", (social.now() - 10, recent.session_key))
     await tick(social)

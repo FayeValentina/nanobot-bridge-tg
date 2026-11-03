@@ -276,7 +276,7 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                     turn_id=f"v4c-{name}-{len(turns)}", metadata=dict(inbound.metadata), runtime=llm_runtime)
                 registry_context[0] = ctx
                 runtime.admit_request(ctx)
-                persona, _ = runtime._persona(SCOPE)
+                persona = runtime.bindings.resolve(SCOPE).persona
                 hook = runtime.hook_factory(AgentTurnHookContext(session_key=SCOPE.session_key))
                 started = time.monotonic()
                 before = len(provider.calls)

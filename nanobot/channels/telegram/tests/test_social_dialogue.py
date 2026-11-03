@@ -398,11 +398,9 @@ def test_ordinary_message_receipt_records_confirmed_context_once(dialogue):
 
 
 async def test_paced_group_records_confirmed_context_after_last_child(dialogue):
-    ctx = expose(dialogue)
+    ctx = expose(dialogue, turn="group")
     dialogue.config.send_cooldown_seconds = 2
     dialogue.configure(dialogue.config)
-    # Re-admit after changing configuration.
-    ctx = expose(dialogue, turn="group", seq=2)
     dialogue.set_sender(AsyncMock(side_effect=[800, 801, 802]))
     await dialogue.send_parts(ctx, ["第一条", "第二条", "几点出发？"], None)
     await dialogue.run_due()
@@ -550,8 +548,8 @@ async def test_restart_preserves_automatic_quiet_deadline(dialogue):
         restored.close()
 
 
-@pytest.mark.parametrize("change", ["pause", "disable", "role"])
-async def test_operator_changes_invalidate_pending_observation(dialogue, change):
+@pytest.mark.parametrize("change", ["pause", "disable", "role", "background"])
+async def test_operator_changes_only_invalidate_pending_observation_for_binding_changes(dialogue, change):
     ctx = expose(dialogue)
     dialogue.wait(ctx, 600, sleeping=True)
     finish(dialogue, ctx)
@@ -559,9 +557,13 @@ async def test_operator_changes_invalidate_pending_observation(dialogue, change)
         dialogue.config.scopes[0].paused = True
     elif change == "disable":
         dialogue.config.enabled = False
+    elif change == "role":
+        dialogue.config.scopes[0].role_id = "other"
     else:
-        dialogue.config.scopes[0].background = "different binding revision"
+        dialogue.config.scopes[0].background = "different persona revision"
     dialogue.configure(dialogue.config)
+    wait = dialogue.store.dialogue_status(A.session_key)["wait"]
+    assert (wait is not None) == (change == "background")
     clock(dialogue).advance(301)
     await dialogue.run_due()
     assert dialogue.store.dialogue_status(A.session_key)["wait"] is None

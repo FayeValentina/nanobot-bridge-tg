@@ -243,7 +243,7 @@ class JudgeCoordinator:
         arrival_times = [float(json.loads(row["judge_facts"]).get("received_at",row["at"])) for row in rows
                          if int(row["seq"]) <= through and json.loads(row["judge_facts"]).get("eligible")]
         created = min(arrival_times) if arrival_times else float(pending["pending_first"]) if pending["pending_first"] is not None else now
-        persona, _ = self.runtime._persona(scope)
+        persona = self.runtime.bindings.resolve(scope).persona
         expires = created+self.runtime.config.judge.batch_ttl_seconds
         if pending["opportunity"] and not new:
             expires = min(expires, ProactiveCandidate.model_validate_json(pending["opportunity"]).expires_at)

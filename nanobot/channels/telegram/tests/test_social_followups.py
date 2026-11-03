@@ -109,7 +109,7 @@ async def test_compaction_rebuild_keeps_trusted_protocol_and_injects_only_live_i
         social.store.db.execute("UPDATE wakes SET proactive_source=? WHERE id=?", (
             json.dumps({"kind":"memory", "seq":0, "expires_at":social.now()+120,
                         "memory_id":item["id"], "revision":item["revision"]}), ctx.metadata["_social_job"]))
-    persona, _ = social._persona(A)
+    persona = social.bindings.resolve(A).persona
     builder = ContextBuilder(tmp_path)
     raw, compaction = ContextCompactionState.from_transcript(
         TranscriptInput(history=[], current_message="Synthetic idle observation"),
@@ -240,7 +240,7 @@ async def test_two_paced_groups_count_once_each_and_second_group_finishes(social
     assert social.store.followups.describe(item["id"]).followup_state == "dropped"
 
 
-@pytest.mark.parametrize("change", ["completed", "delete", "edit", "expire", "configuration"])
+@pytest.mark.parametrize("change", ["completed", "delete", "edit", "expire", "configuration", "role_binding"])
 async def test_queued_parts_recheck_live_intention_before_sending(social, change):
     item = own(social, ttl_seconds=2 if change == "expire" else 3600)
     sender = AsyncMock(return_value=501)
@@ -256,12 +256,20 @@ async def test_queued_parts_recheck_live_intention_before_sending(social, change
     elif change == "configuration":
         social.config.scopes[0].background = "updated operator background"
         social.configure(social.config)
+        assert social.store.followups.describe(item["id"]).reserved_attempts == 1
+    elif change == "role_binding":
+        social.config.scopes[0].role_id = "other"
+        social.configure(social.config)
         assert social.store.followups.describe(item["id"]).reserved_attempts == 0
     else:
         edit(social, item["id"], followup_state="completed")
     await social.run_due()
-    sender.assert_not_awaited()
-    assert social.store.followups.describe(item["id"]).confirmed_attempts == 0
+    if change == "configuration":
+        sender.assert_awaited_once()
+        assert social.store.followups.describe(item["id"]).confirmed_attempts == 1
+    else:
+        sender.assert_not_awaited()
+        assert social.store.followups.describe(item["id"]).confirmed_attempts == 0
 
 
 async def test_cannot_queue_unlinked_parts_when_followup_is_invalid(social):

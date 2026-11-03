@@ -36,7 +36,7 @@ async def evaluate(args):
             scopes=[TelegramSocialScopeConfig(chat_id=scope.chat_id, thread_id=scope.thread_id, role_id="friend")]),
             root, MessageBus())
         runtime.roles.joinpath("friend.md").write_text(Path("docs/harness/groupmate.md").read_text())
-        runtime._persona(scope)
+        runtime.sync_scope(scope)
         publications = []
 
         async def sender(target, text, reply_to):

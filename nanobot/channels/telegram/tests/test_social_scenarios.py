@@ -221,7 +221,6 @@ async def test_role_edit_applies_new_persona_on_next_turn(make_harness):
     assert chat.model_saw("PERSONA BETA")
 
 
-@pytest.mark.xfail(strict=True, reason="Phase 2: config/persona change must keep history, see P0-7")
 async def test_role_edit_keeps_earlier_group_history_in_context(make_harness):
     chat = make_harness(snapshotMessages=2)
     chat.script_model(chat.tool("social_mark_read", through=1))
@@ -239,6 +238,34 @@ async def test_role_edit_keeps_earlier_group_history_in_context(make_harness):
     await chat.tick()
     assert chat.model_saw("PERSONA BETA")
     assert chat.model_saw("上次群聊约定的暗号是青瓷")
+
+
+async def test_unrelated_config_change_keeps_waiting_and_history(make_harness):
+    chat = make_harness(snapshotMessages=2)
+    chat.script_model(chat.tool("social_mark_read", through=1))
+    await chat.member_says("配置修改前的暗号是青瓷")
+    await chat.tick()
+    assert "error" not in chat.last_tool_result("social_mark_read")
+    await chat.member_says("今天的话题一")
+    await chat.member_says("今天的话题二")
+    await chat.tick()
+    chat.script_model(chat.tool("social_wait", purpose="messages", seconds=30))
+    await chat.member_says("等下一条消息")
+    await chat.tick()
+    assert chat.last_tool_result("social_wait")["deferred"]
+    calls = chat.model_calls()
+    chat.reconfigure(judge={"timeoutSeconds": 25, "minIntervalSeconds": 0, "maxRetries": 0})
+    chat.advance(5)
+    await chat.tick()
+    assert chat.model_calls() == calls
+    await chat.member_says("继续刚才的话题")
+    await chat.tick()
+    assert chat.model_calls() == calls
+    chat.advance(0.1)
+    await chat.tick()
+    assert chat.model_calls() > calls
+    assert chat.model_saw("继续刚才的话题")
+    assert chat.model_saw("配置修改前的暗号是青瓷")
 
 
 async def test_restart_processes_a_wake_that_was_queued_but_unclaimed(make_harness):

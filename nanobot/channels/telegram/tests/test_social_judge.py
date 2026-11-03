@@ -547,7 +547,7 @@ async def test_forged_self_identity_is_rejected_before_calling(case):
     provider.chat.assert_not_called()
 
 
-def test_v3b_judge_settings_change_invalidates_the_active_scope_version(tmp_path):
+def test_v3b_judge_settings_change_preserves_the_active_scope_version_and_wait(tmp_path):
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
     from nanobot.config.schema import TelegramSocialScopeConfig
@@ -562,8 +562,9 @@ def test_v3b_judge_settings_change_invalidates_the_active_scope_version(tmp_path
         changed = config.model_copy(deep=True)
         changed.judge.model = "openai-codex/gpt-6.1-sol"
         runtime.configure(changed)
-        assert runtime.store.state(A.session_key)["version"] != before
-        assert runtime.store.state(A.session_key)["mode"] == "observing"
-        assert runtime.store.state(A.session_key)["wake_config"] == '{}'
+        assert runtime.store.state(A.session_key)["version"] == before
+        assert runtime.store.state(A.session_key)["mode"] == "waiting"
+        assert runtime.store.state(A.session_key)["wake_at"] == 2000
+        assert runtime.store.state(A.session_key)["wake_config"] == '{"keywords":["ready"]}'
     finally:
         runtime.close()

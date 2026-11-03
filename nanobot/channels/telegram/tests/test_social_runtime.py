@@ -102,7 +102,8 @@ async def wake(social, scope=A, *, seq=1, text="@bot hello"):
 
 
 def context(social, scope=A, *, turn="test-turn"):
-    _, version = social._persona(scope)
+    social.sync_scope(scope)
+    version = social.store.state(scope.session_key)["version"]
     job = uuid4().hex
     now = time.time()
     with social.store.db:
@@ -409,7 +410,7 @@ async def test_role_edit_can_be_confirmed_in_the_same_turn_and_reloads_next_turn
     social.set_sender(sender)
     assert (await social.send(ctx, "role updated", None))["status"] == "sent"
     changed = loop.sessions.get_or_create(A.session_key)
-    assert changed.get_history() == []
+    assert changed.get_history()[0]["content"] == "older role conversation"
     assert changed.messages[0]["content"] == "older role conversation"
     assert "NEW PERSONA" in changed.policy.persona
     sender.assert_awaited_once_with(A, "role updated", None)
@@ -576,14 +577,14 @@ async def test_uncertain_text_cannot_be_blindly_repeated_in_a_new_action(social)
     assert sender.await_count == 1
 
 
-async def test_budget_configuration_change_invalidates_an_admitted_turn(social):
+async def test_budget_configuration_change_keeps_an_admitted_turn(social):
     ctx = context(social)
     social.config.max_sends_per_hour = 1
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
-    with pytest.raises(PermissionError):
-        await social.send(ctx, "old turn", None)
-    sender.assert_not_awaited()
+    social.configure(social.config)
+    assert (await social.send(ctx, "old turn", None))["status"] == "sent"
+    sender.assert_awaited_once_with(A, "old turn", None)
 
 
 async def test_skills_and_runtime_providers_are_loaded_as_in_normal_chat(tmp_path, social):
@@ -647,7 +648,7 @@ def test_role_symlink_cannot_read_private_files(tmp_path, social):
     (social.roles / "a.md").unlink()
     (social.roles / "a.md").symlink_to(outside)
     with pytest.raises(PermissionError):
-        social._persona(A)
+        social.bindings.resolve(A)
 
 
 def test_replacing_role_directory_with_a_symlink_cannot_escape_root(tmp_path, social):
@@ -657,7 +658,7 @@ def test_replacing_role_directory_with_a_symlink_cannot_escape_root(tmp_path, so
     social.roles.rename(social.root / "original-roles")
     social.roles.symlink_to(outside, target_is_directory=True)
     with pytest.raises(PermissionError):
-        social._persona(A)
+        social.bindings.resolve(A)
 
 
 @pytest.mark.parametrize("route", ["user", "background", "idle"])
@@ -727,14 +728,15 @@ async def test_busy_turn_defers_new_wake_without_losing_watermark(tmp_path, soci
             await runner
 
 
-def test_cached_old_summary_is_not_replayed_after_role_switch(tmp_path, social):
+def test_persisted_summary_is_preserved_after_role_edit(tmp_path, social):
     loop = agent(tmp_path, social, [])
     session = loop.sessions.get_or_create(A.session_key)
-    loop.auto_compact._summaries[A.session_key] = {"text": "OLD ROLE DATA", "last_active": "2026-10-28"}
+    session.metadata["_last_summary"] = {"text": "EARLIER CHAT SUMMARY", "last_active": "2026-10-28"}
+    loop.auto_compact._summaries[A.session_key] = session.metadata["_last_summary"]
     (social.roles / "a.md").write_text("CHANGED ROLE", encoding="utf-8")
     current = loop.sessions.get_or_create(A.session_key)
     _, summary = loop.auto_compact.prepare_session(current, A.session_key)
-    assert summary is None
+    assert summary == {"text": "EARLIER CHAT SUMMARY", "last_active": "2026-10-28"}
     assert "CHANGED ROLE" in session.policy.persona
 
 
@@ -826,10 +828,10 @@ def test_group_wide_role_and_existing_topic_history_survive_reconfiguration(soci
     group.all_topics = True
     social.configure(social.config)
     other = ConversationScope("telegram", A.chat_id, 43)
-    social._persona(other)
+    social.sync_scope(other)
     assert social.store.state(A.session_key)["next_seq"] == 2
     assert social.store.state(other.session_key)["next_seq"] == 1
-    assert "PERSONA ALPHA" in social._persona(other)[0]
+    assert "PERSONA ALPHA" in social.bindings.resolve(other).persona
     group.all_topics = False
     social.configure(social.config)
     assert social.binding(other) is None
