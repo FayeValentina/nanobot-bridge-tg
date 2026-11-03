@@ -21,7 +21,7 @@ from nanobot.channels.telegram.social.db.proactive_state import ProactiveState
 from nanobot.channels.telegram.social.db.schema import initialize_social_schema
 from nanobot.channels.telegram.social.db.scopes import Scopes
 from nanobot.channels.telegram.social.db.stickers import StickerLibrary
-from nanobot.channels.telegram.social.db.views import Views
+from nanobot.channels.telegram.social.db.views import Views, complete_view_ids
 from nanobot.channels.telegram.social.db.wakes import Wakes
 from nanobot.channels.telegram.social.followups import SocialFollowups
 from nanobot.channels.telegram.social.learning import SocialLearning
@@ -174,6 +174,7 @@ class SocialStore:
                            "decision": json.loads(item["decision"]) if item["decision"] else None,
                            "error_code": item["error_code"]}
                           for item in self.judge.latest_for_job(job_id)] if job_id else [],
+            "view_end": view_id,
         }
         if job_id:
             source = wake["proactive_source"]
@@ -186,12 +187,13 @@ class SocialStore:
         return result
 
     def note_seen(self, key: str, turn_id: str, model_text: str) -> list[str]:
+        ids = complete_view_ids(model_text)
         state = self.scopes.state(key)
         admitted: list[str] = []
         with transaction(self.db):
             exposed = False
-            for row in self.views.unseen(key, state["version"]):
-                if row["turn_id"] not in (None, turn_id) or row["body"] not in model_text:
+            for row in self.views.unseen(key, state["version"], ids):
+                if row["turn_id"] not in (None, turn_id):
                     continue
                 job = json.loads(row["body"]).get("wake_job")
                 if job:

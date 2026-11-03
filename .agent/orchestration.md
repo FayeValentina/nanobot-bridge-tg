@@ -61,7 +61,9 @@ Codex 的短处：
    - 涉及 schema 迁移时，用实际实例 `social.sqlite3` 的**副本**（复制到 scratchpad）跑一次迁移，并核对关键表的行数前后一致。
    - Codex 声称“已测试”的内容，以 Claude 自己的复跑结果为准。
 4. **返工**：不合格时，在同一个 Codex 会话里续写具体意见：
-   `codex exec resume <session_id> - < 意见文件`。session_id 从 `<id>.events.jsonl` 的首个事件中取得。
+   `codex exec resume <session_id> -c sandbox_mode='"workspace-write"' -c approval_policy='"never"' --json -o <id>.report.md - < 意见文件`
+   （同样加 `PYTHONPATH=.agent PYTEST_ADDOPTS="-p codex_pytest_env"`）。session_id 即 `<id>.events.jsonl` 首个事件的 `thread_id`。
+   注意 `resume` 不接受 `-C`/`-s`/`--color`，沙箱模式只能用 `-c sandbox_mode=...` 传入（P4-a 教训）。
    最多返工 2 轮；仍不合格的，Claude 自己修正小问题，或者把阻塞点带着证据报告给用户。
 5. **提交与部署**：验收通过后由 Claude 提交（提交信息说明阶段、任务和验收证据）。
    - Codex 不在施工时：在主仓库直接执行 `./scripts/pipeline.sh release`。

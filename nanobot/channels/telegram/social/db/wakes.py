@@ -73,6 +73,10 @@ class Wakes:
     def _insert_scheduled(self, columns: str, values: str, params: Sequence[object]) -> None:
         self.db.execute(f"INSERT INTO wakes({columns}) " + values.format(status=WakeStatus.SCHEDULED), params)
 
+    def _enter_running(self, key: str) -> None:
+        self.db.execute("UPDATE scopes SET mode=?,wake_at=NULL,wait_infinite=0 WHERE key=?", (ScopeMode.ACTIVE, key,))
+        self.db.execute("DELETE FROM dialogue_waits WHERE scope=?", (key,))
+
     def claim(self, key: str, job: str, version: str, turn: str) -> None:
         with transaction(self.db):
             self._check_trigger_source(key, job)
@@ -82,8 +86,7 @@ class Wakes:
             changed = self._move(WakeStatus.RUNNING, "id=? AND scope=? AND version=? AND status='queued' AND expires>?", (job,key,version,self.now(),), turn_id=turn)
             if changed != 1:
                 raise PermissionError("wake is stale, expired or already claimed")
-            self.db.execute("UPDATE scopes SET mode=?,wake_at=NULL,wait_infinite=0 WHERE key=?", (ScopeMode.ACTIVE, key,))
-            self.db.execute("DELETE FROM dialogue_waits WHERE scope=?", (key,))
+            self._enter_running(key)
 
     def active_turn(self, key: str, version: str, turn: str) -> bool:
         return self.db.execute( "SELECT 1 FROM wakes WHERE scope=? AND version=? AND turn_id=? AND status='running' AND expires>?", (key, version, turn, self.now()), ).fetchone() is not None
@@ -425,11 +428,15 @@ class Wakes:
         return self.db.execute("SELECT * FROM wakes WHERE id=?", (job,)).fetchone()
 
     def admit_view_job(self, key: str, version: str, job: str, turn: str) -> bool:
-        return bool(self._move(WakeStatus.RUNNING, "id=? AND scope=? AND status='queued' AND version=? AND expires>?",
-                               (job, key, version, self.now()), turn_id=turn))
+        changed = self._move(WakeStatus.RUNNING, "id=? AND scope=? AND status='queued' AND version=? AND expires>?",
+                             (job, key, version, self.now()), turn_id=turn)
+        if changed == 1:
+            self._enter_running(key)
+        return changed == 1
 
     def admit_shown(self, key: str, version: str, seqs: list[int], turn: str) -> list[str]:
         admitted: list[str] = []
+        changed = 0
         for seq in seqs:
             candidates = self.db.execute("SELECT id FROM wakes WHERE scope=? AND version=? AND status='scheduled' AND trigger_seq=? AND expires>?", (key, version, seq, self.now())).fetchall()
             for candidate in candidates:
@@ -439,8 +446,10 @@ class Wakes:
                     self._move(WakeStatus.CANCELLED, "id=?", (candidate[0],))
                 else:
                     admitted.append(str(candidate[0]))
-            self._move(WakeStatus.RUNNING, "scope=? AND version=? AND status='scheduled' AND trigger_seq=? AND expires>?",
-                       (key, version, seq, self.now()), turn_id=turn)
+            changed += self._move(WakeStatus.RUNNING, "scope=? AND version=? AND status='scheduled' AND trigger_seq=? AND expires>?",
+                                 (key, version, seq, self.now()), turn_id=turn)
+        if changed > 0:
+            self._enter_running(key)
         return admitted
 
     def note_observed(self, key: str, seq: int) -> None:

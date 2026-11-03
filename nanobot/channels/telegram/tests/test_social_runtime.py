@@ -507,6 +507,14 @@ async def test_unseen_truncated_snapshot_does_not_grant_read_ack(social):
         social.mark_read(ctx, 1)
 
 
+async def test_reencoded_snapshot_grants_read_ack(social):
+    social.store.observe(message(A), 100)
+    ctx = context(social)
+    view = social.store.view(A.session_key, count=2, chars=4000, turn_id=ctx.turn_id)
+    social.store.note_seen(A.session_key, ctx.turn_id, json.dumps(view, ensure_ascii=False))
+    assert social.mark_read(ctx, 1) == 1
+
+
 async def test_duplicates_edits_and_media_markers_do_not_produce_extra_wakes(social):
     original = message(A, text="original", media=("photo",))
     await social.observe(original, directed=True)

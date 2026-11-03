@@ -14,10 +14,18 @@
   P3-a 部署后线上已有真实活动正常走过新代码（1 次 judge wake、3 次主动机会完成、1 次发送成功，无异常）。
 - **Claude 的设计决定（偏离审查文档的量化目标）**：知识/学习/活动表仍由各自拥有者模块（memory/jargon/followups/activity/learning/expressions）
   执行 SQL，只要求每张表只有一个拥有者；“`db/` 之外 0 处 `db.execute`”推迟到 Phase 6/7 重组 knowledge/learning 包时完成。
-- **下一步：Phase 4**（显式曝光登记取代子串匹配 P0-4；SocialContextBuilder + hook 瘦身 P1-3），风险高。
-  按惯例先派**只读分析**：穷举 `note_seen`/`Views`/`selection.input`/`memory.context`/`Views.displayed_evidence` 中对“模型是否看到快照”的全部判断，
-  以及 `_publish_wake`、`social_read_messages` 产生快照的全部路径和 hook 的调用时序，再由 Claude 设计。
-  Phase 5（统一投递日志）也只依赖 Phase 3，可放在 Phase 4 之后。
+- **进行中：Phase 4**（owner 2026-11-04 确认开始）。只读清单 P4-0 已完成（`.agent/tasks/P4-0.report.md`）。主要事实：
+  快照只有两个生产来源（`_publish_wake` 入站消息、`social_read_messages` 工具返回）；曝光判定点 13 处，核心是 `note_seen` 和 `selection.input`
+  两处整串子串匹配；busy-time wake 是运行中途直接注入的用户消息，不经过 claim，所以仍需曝光时收取（`admit_view_job`）。
+  Claude 的设计：**不改登记时机**（仍在 provider 返回后用 `model_messages` 登记），只改识别方式：快照 JSON 首尾各有一个 view_id 标记
+  （`view_id` 本来就是第一个字段，新增末尾字段 `view_end`），两者都出现才算完整看到。拆为：
+  - **P4-a**（已完成，待 owner 群内体验）：首尾标记 + `complete_view_ids()`，替换 `note_seen` 与 `selection.input` 的子串匹配；`displayed_bodies` 排序补 rowid；
+    修 Q4（曝光收取的 wake 也执行 claim 的 scope 迁移）。【小幅行为变更】
+  - **P4-b**：`SocialContextBuilder`（memory/selection/近期用语/活动 → RuntimeContextBlock），hook 只负责注入、恢复和曝光登记。纯重构。
+  - P4-0 中**暂不处理、已记录**的疑点：max-iterations 的无工具收尾请求绕过曝光 hook；compaction 开启时临时注入块会留在 accepted_messages 和摘要输入中；
+    发布“尝试”而非回执决定 unsent 修复；Q5（wake 过期后 mode 仍为 active）经核实只在 turn 运行期间存在，finish 时会复位，不是 bug；
+    但 wake 在调度 120 秒后过期、长 turn 中 social 工具会因此被拒，留给 Phase 6/8 评估；
+    `scripts/evaluate_social_selection.py`、`evaluate_social_v5.py` 仍调用已不存在的 `store.wake(...)`，评估脚本迁移时修。
 - **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
   `Wakes._check_trigger_source` 读 judge_batches 的只读例外（Phase 7 judge 简化时重看）；P3-0 疑点 Q4/Q5（Phase 4）、Q6（Phase 7）、
   Q10/Q11/Q13–Q15（按所属 Phase）。P3-0 清单 `.agent/tasks/P3-0.report.md` 的行号已过时，只作线索。
@@ -56,3 +64,4 @@
 | P3-b `db/wakes.py` 显式 wake 状态机【小幅行为修正】 | 3 | `c2668524` | 2026-11-03 healthy，schema 20，日志无异常栈 | 社交目录 + 契约 + gateway 981 passed（Claude 复跑），场景测试未改动；ruff 全仓干净；basedpyright social/ 0 errors；wakes.py 中设置 status 的只有 `_move` 一处；**线上库副本演练**：`recover()` + `ready()` 正常，Q9 清理删除一天前的终态 wake（330→125 行），dialogue_jobs 级联 33→2，messages 不变 | 修正 Q2/Q3/Q9/Q12，没有测试断言旧行为。Claude 补修 2 处：(1) 简报给的 `transaction` 返回注解 `Iterator[None]` 被 basedpyright 判为弃用，改为 `Generator[None, None, None]`；(2) `proactive._cancel` 仍是旧式 `with self.db:`，块内第一条就调用已改用 `transaction()` 的 `store.cancel_opportunity`，会把原来一个事务拆成两个，改为 `transaction()`。store.py 1036→627 行，wakes.py 526 行（略超 500 的目标，Phase 6 拆 runtime 时再看），生产代码净增 120 行。**遗留**：其他模块仍有旧式 `with self.db:`，P3-c 统一改为 `transaction()` |
 | P3-c `db/judge.py` 与 `db/deliveries.py`（纯搬迁） | 3 | `7ec03fa3` | 2026-11-04 healthy，schema 20，日志无异常栈 | 社交目录 + 契约 + gateway 981 passed（Claude 复跑）；ruff 全仓干净；basedpyright social/ 0 errors；`_judge_current` 私有访问全仓 0 处；线上库副本上 `recover()`/`judge.recover()`/`ready()` 正常 | store.py 627→325 行；judge.py 293 行、deliveries.py 164 行；生产代码净增 120 行。唯一保留的跨表读取例外：`Wakes._check_trigger_source` 读 judge_batches（Judge 依赖 Wakes，反向会循环），已加注释。Claude 小修：`Wakes.any_active` 原被实现成由调用方传入 mode/status 字面量，改为无参并使用枚举。`expressions.busy` 的三段 UNION 按简报拆成 `wakes.any_active() or judge.any_pending()` |
 | P3-d Phase 3 收尾：单一归属、schema 集中、事务统一、SQL 归属测试 | 3 | `5e484184` | 2026-11-04 healthy，schema 20，日志无异常栈 | 社交目录 + 契约 + gateway 982 passed（新增 `test_social_sql_ownership.py`）；ruff 全仓干净；basedpyright social/ 0 errors；store/runtime/proactive/judge_runtime/jargon_learning 中 0 处 SQL；db/ 之外旧式 `with db:`/nullcontext 0 处；Codex 先逐条核对了全部块外写语句，均有调用方事务包住，没有依赖“顺带提交”的路径；**线上库副本演练**：打开（经迁入 db/schema.py 的升级函数）、recover、judge/learning recover、consume_timers、ready 后 `in_transaction` 均为 False | memory↔jargon 循环解开（`MemoryEvidence` 移到 models，`displayed_evidence` 移到 `Views`）；新增 `db/proactive_state.py`；4 个 schema 升级函数迁入 db/schema.py；`savepoint()` 取代手写 SAVEPOINT。**Claude 退回一处迎合测试的改动**：Codex 为了躲过子串扫描，把 jargon_learning 中两处 `self.tools.execute(...)` 改成局部变量绑定；已恢复原代码，并把测试的匹配串收窄为 `db.execute(` 等（social 代码中所有连接变量均名为 db，已 grep 核实）。生产代码净增 140 行（超出预期 80 行，均为方法签名）。**留给 Phase 7**：learning.py 对 expressions/jargon 表的读写、selection 的动态候选查询 |
+| P4-a 快照曝光改为按 view_id 首尾标记识别【小幅行为变更】 | 4 | 待填 | 待填 | 社交目录 + 契约 + gateway 983 passed（新增：默认分隔符重新编码的快照仍能登记并 mark_read）；场景测试未改；ruff 全仓干净；basedpyright social/ 0 errors；`in model_text` 子串判断全仓 0 处；手工核对 `complete_view_ids`：完整快照识别、只有开头的截断快照不识别、带空格的重新编码识别 | 行为变化：快照 JSON 末尾多一个 `view_end` 字段；Q4 已修（曝光收取的 wake 也执行 `_enter_running`）。**返工 1 轮**：简报自相矛盾（识别正则只认紧凑分隔符，验收测试却用默认分隔符），Codex 停下来上报，Claude 修订正则容许冒号两侧空白。顺带发现 `codex exec resume` 不接受 `-C`/`-s`，已更正 orchestration.md |

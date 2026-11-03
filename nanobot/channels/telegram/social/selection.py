@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
+from nanobot.channels.telegram.social.db.views import complete_view_ids
 from nanobot.channels.telegram.social.expressions import (
     make_expression_provider,
     redacted_error_detail,
@@ -124,12 +125,13 @@ class ContextSelector:
 
     def input(self, scope: str, turn: str, model_text: str = "") -> list[TurnMessage]:
         rows = self.runtime.store.views.turn_bodies(scope, turn)
+        ids = complete_view_ids(model_text)
         for row in rows:
-            if model_text and row[0] not in model_text:
+            if model_text and row["id"] not in ids:
                 continue
-            if not model_text and row[1] != turn:
+            if not model_text and row["turn_id"] != turn:
                 continue
-            messages = SelectionInput.model_validate_json(row[0]).messages[-8:]
+            messages = SelectionInput.model_validate_json(row["body"]).messages[-8:]
             for message in messages:
                 # Already learned notes for the exact displayed sticker provide
                 # visual context without another model/image call. Never borrow

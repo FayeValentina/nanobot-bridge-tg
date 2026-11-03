@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Callable
 
 from nanobot.channels.telegram.social.db.scopes import Scopes
 from nanobot.channels.telegram.social.models import MemoryEvidence
+
+_VIEW_ID = re.compile(r'"view_id"\s*:\s*"([0-9a-f]{32})"')
+
+
+def complete_view_ids(text: str) -> set[str]:
+    """View ids whose opening and closing markers both appear in text."""
+    return {view_id for view_id in _VIEW_ID.findall(text) if re.search(rf'"view_end"\s*:\s*"{view_id}"', text)}
 
 
 class Views:
@@ -23,18 +31,20 @@ class Views:
     def mark_seen(self, view_id: str, turn_id: str) -> None:
         self.db.execute("UPDATE views SET seen=1, turn_id=? WHERE id=?", (turn_id, view_id))
 
-    def unseen(self, key: str, version: str) -> list[sqlite3.Row]:
-        return self.db.execute("SELECT * FROM views WHERE scope=? AND version=? AND seen=0", (key, version)).fetchall()
+    def unseen(self, key: str, version: str, view_ids: set[str]) -> list[sqlite3.Row]:
+        if not view_ids:
+            return []
+        return self.db.execute(f"SELECT * FROM views WHERE scope=? AND version=? AND seen=0 AND id IN ({','.join('?' for _ in view_ids)})", (key, version, *view_ids)).fetchall()
 
     def displayed_bodies(self, key: str, turn_id: str) -> list[sqlite3.Row]:
         return self.db.execute("SELECT body FROM views WHERE scope=? AND turn_id=? "
-                               "AND seen=1 AND version=? ORDER BY created", (key, turn_id, self.scopes.state(key)["version"])).fetchall()
+                               "AND seen=1 AND version=? ORDER BY created,rowid", (key, turn_id, self.scopes.state(key)["version"])).fetchall()
 
     def latest_body(self, key: str, turn_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT body FROM views WHERE scope=? AND turn_id=? ORDER BY created DESC,rowid DESC LIMIT 1", (key, turn_id)).fetchone()
 
     def turn_bodies(self, key: str, turn: str) -> list[sqlite3.Row]:
-        return self.db.execute("SELECT body,turn_id FROM views WHERE scope=? AND (turn_id=? OR turn_id IS NULL) "
+        return self.db.execute("SELECT id,body,turn_id FROM views WHERE scope=? AND (turn_id=? OR turn_id IS NULL) "
                                "ORDER BY created DESC,rowid DESC LIMIT 128", (key, turn)).fetchall()
 
     def record(self, view_id: str, key: str, version: str, body: str, seqs: list[int],

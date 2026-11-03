@@ -117,6 +117,7 @@ class Snapshot(TypedDict):
     opportunity: dict[str, object] | None
     dialogue: DialogueContext | None
     judgement: list[dict[str, object]]
+    view_end: str
 
 
 class ProactiveCandidate(BaseModel):
