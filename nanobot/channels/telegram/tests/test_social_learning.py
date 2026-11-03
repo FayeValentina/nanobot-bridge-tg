@@ -180,17 +180,6 @@ def test_slang_proxy_edit_delete_and_no_legacy_rows(store):
     assert store.db.execute("SELECT status FROM jargon").fetchone()[0] == "disabled"
 
 
-def test_explicit_delete_invalidates_sources_without_rewinding_main_watermarks(store):
-    entry = jargon_record(store)
-    observe(store, 2)
-    batch = store.learning.prepare(A.session_key, "expression")
-    before = store.state(A.session_key)
-    store.delete_observed(A.session_key, 1)
-    assert store.db.execute("SELECT status FROM learning_batches WHERE id=?", (batch,)).fetchone()[0] == "cancelled"
-    assert store.db.execute("SELECT status FROM jargon WHERE id=?", (entry["id"],)).fetchone()[0] == "disabled"
-    assert store.state(A.session_key)["seen_through"] == before["seen_through"]
-
-
 def test_slang_rejects_bot_and_stale_view_sources(store):
     observe(store, 1, is_bot=True)
     view = store.view(A.session_key, count=30, chars=12000, turn_id="turn")

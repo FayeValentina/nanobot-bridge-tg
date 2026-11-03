@@ -7,6 +7,7 @@ import time
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -102,7 +103,15 @@ async def wake(social, scope=A, *, seq=1, text="@bot hello"):
 
 def context(social, scope=A, *, turn="test-turn"):
     _, version = social._persona(scope)
-    job = social.store.wake(scope.session_key, 1, 100, now=time.time())
+    job = uuid4().hex
+    now = time.time()
+    with social.store.db:
+        social.store.db.execute(
+            "INSERT INTO wakes(id,scope,version,trigger_seq,status,created,expires,due,requested) "
+            "VALUES(?,?,?,1,'queued',?,?,?,?)",
+            (job, scope.session_key, social.store.state(scope.session_key)["version"], now, now + 120, now, now),
+        )
+        social.store.db.execute("INSERT INTO requests VALUES(?,?)", (scope.session_key, now))
     ctx = RequestContext(
         channel=scope.channel, chat_id=str(scope.chat_id), session_key=scope.session_key,
         turn_id=turn, metadata={"message_thread_id": scope.thread_id, "_social_job": job},
@@ -747,22 +756,6 @@ def test_webui_saves_typed_social_config_and_rejects_invalid_authorization():
                 "enabled": True, "scopes": [{"chatId": 1, "roleId": "a"}],
             })}, load_channel_plugin=load_channel_plugin,
         )
-
-
-@pytest.mark.parametrize("unified", [False, True])
-def test_personal_heartbeat_can_choose_a_social_group(social, unified):
-    from nanobot.cli.gateway_runtime import _pick_heartbeat_target_from_sessions
-    from nanobot.session.keys import UNIFIED_SESSION_KEY, remember_last_channel
-
-    metadata = {}
-    remember_last_channel(metadata, "telegram", str(A.chat_id))
-    target = _pick_heartbeat_target_from_sessions(
-        enabled_channels=["telegram"], archived_keys=[],
-        sessions=[{"key": UNIFIED_SESSION_KEY if unified else A.session_key}, {"key": "telegram:123"}],
-        unified_session_metadata=metadata,
-        target_allowed=social.allows_personal_delivery,
-    )
-    assert target == ("telegram", str(A.chat_id) if unified else f"{A.chat_id}:topic:{A.thread_id}")
 
 
 async def test_background_sessions_keep_ordinary_permissions_for_social_targets(tmp_path, social):

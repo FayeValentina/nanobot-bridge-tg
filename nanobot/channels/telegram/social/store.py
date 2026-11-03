@@ -359,15 +359,8 @@ class SocialStore:
         finally:
             self.db.execute("RELEASE learning_collection")
 
-    def delete_observed(self, key: str, message_id: int) -> None:
-        """Explicit source deletion; ordinary rolling retention is not a deletion event."""
-        with self.db:
-            self.learning.invalidate(key, message_id, None)
-            self.db.execute("DELETE FROM messages WHERE scope=? AND message_id=?", (key, message_id))
-
-    def observe(self, msg: ObservedMessage, retention: int, *, reason: str | None = None,
-                delay: float = 0, quiet_seconds: float | None = None,
-                max_delay: float = 12, fresh: bool = False, wait_relevant: bool = True,
+    def observe(self, msg: ObservedMessage, retention: int, *,
+                max_delay: float = 12, fresh: bool = False,
                 judge_event: bool = False, judge_delay: float = 1.5,
                 directed: bool = False) -> tuple[int, bool]:
         key = msg.scope.session_key
@@ -428,8 +421,6 @@ class SocialStore:
                     # Continue an already requested answer after quiet, with its original total cap.
                     self.db.execute("UPDATE dialogue_waits SET quiet_due=? WHERE scope=?",
                                     (self.now()+float(wait["quiet_seconds"]),key))
-            if reason is not None:
-                self._schedule(key, seq, reason, delay)
             if judge_event:
                 self.queue_judgement(key,seq,delay=judge_delay,maximum=max_delay)
             return seq, True
@@ -545,11 +536,6 @@ class SocialStore:
             # A read tool can expose a busy-time trigger within the current run.
             # Only real provider exposure consumes it; returning the page alone cannot.
             for seq in seen:
-                direct = self.db.execute("SELECT 1 FROM wakes WHERE scope=? AND status='scheduled' "
-                                         "AND trigger_seq=? AND reason IN ('directed','nickname')", (key, seq)).fetchone()
-                if direct:
-                    self.db.execute("UPDATE wakes SET reason='directed',proactive_source=NULL "
-                                    "WHERE scope=? AND turn_id=? AND reason='proactive'", (key, turn_id))
                 candidates = self.db.execute("SELECT id FROM wakes WHERE scope=? AND version=? AND status='scheduled' "
                                              "AND trigger_seq=? AND expires>?", (key, state["version"], seq, self.now())).fetchall()
                 for candidate in candidates:
@@ -592,13 +578,6 @@ class SocialStore:
             self.db.execute("UPDATE scopes SET read_through=? WHERE key=?", (through, key))
             return through
 
-    def last_shown_member_text(self, key: str, turn: str) -> str:
-        shown = self._shown_sequences(key, turn)
-        row = self.db.execute("SELECT text FROM messages WHERE scope=? AND is_self=0 "
-                              "AND seq IN (SELECT value FROM json_each(?)) ORDER BY seq DESC LIMIT 1",
-                              (key, json.dumps(sorted(shown)))).fetchone()
-        return str(row[0]) if row else ""
-
     def acknowledge_seen(self, key: str, turn_id: str) -> int:
         """Acknowledge only the contiguous prefix actually exposed in this turn."""
         current = int(self.state(key)["read_through"])
@@ -607,22 +586,6 @@ class SocialStore:
         while through + 1 in shown:
             through += 1
         return self.mark_read(key, turn_id, through)
-
-    def wake(self, key: str, seq: int, limit: int, *, now: float) -> str | None:
-        with self.db:
-            count = self.db.execute(
-                "SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600),
-            ).fetchone()[0]
-            if count >= limit:
-                return None
-            job = uuid4().hex
-            self.db.execute("INSERT INTO wakes(id,scope,version,trigger_seq,status,created,expires,turn_id,due,requested) "
-                            "VALUES(?,?,?,?,?,?,?,NULL,?,?)", (
-                job, key, self.state(key)["version"], seq, "queued", now, now + 120, now, now,
-            ))
-            self.db.execute("DELETE FROM wakes WHERE scope=? AND created<?", (key, now - 86400))
-            self.db.execute("INSERT INTO requests VALUES(?,?)", (key, now))
-            return job
 
     def claim(self, key: str, job: str, version: str, turn: str) -> None:
         with self.db:
@@ -640,7 +603,6 @@ class SocialStore:
                 raise PermissionError("wake is stale, expired or already claimed")
             self.db.execute("UPDATE scopes SET mode='active',wake_at=NULL,wait_infinite=0 WHERE key=?", (key,))
             self.db.execute("DELETE FROM dialogue_waits WHERE scope=?", (key,))
-            self.db.execute("DELETE FROM dialogue_attention WHERE scope=?", (key,))
 
     def active_turn(self, key: str, version: str, turn: str) -> bool:
         return self.db.execute(
@@ -882,7 +844,7 @@ class SocialStore:
 
     def _clear_dialogue(self, key: str) -> None:
         """Caller owns the configuration/pause transaction."""
-        for table in ("dialogue_state", "dialogue_waits", "dialogue_attention"):
+        for table in ("dialogue_state", "dialogue_waits"):
             self.db.execute(f"DELETE FROM {table} WHERE scope=?", (key,))
 
     def dialogue_job(self, job: str) -> DialogueContext | None:
@@ -931,14 +893,13 @@ class SocialStore:
             else:
                 quiet_due = None
         with self.db:
-            self.db.execute("DELETE FROM dialogue_attention WHERE scope=?", (key,))
             self.db.execute("INSERT OR REPLACE INTO dialogue_waits VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                             (key, purpose, now, quiet, quiet_due, total, after, source, int(on_timeout), sleep_seconds, condition_expires, sleep_until))
             self.db.execute("UPDATE scopes SET mode='waiting',wake_at=NULL,wait_after_seq=?,wait_infinite=? WHERE key=?",
                             (after, int(seconds is None), key))
             # A newer direct mention always survives the decision to wait.
             self.db.execute("UPDATE wakes SET status='cancelled' WHERE scope=? AND status='scheduled' "
-                            "AND reason NOT IN ('directed','nickname','judge') AND trigger_seq<=?", (key, after))
+                            "AND reason <> 'judge' AND trigger_seq<=?", (key, after))
             if purpose in {"reply", "messages"}:
                 self.db.execute("UPDATE judge_state SET pending_due=MIN(pending_last+?,pending_max,COALESCE(?,pending_max)) "
                                 "WHERE scope=? AND batch_id IS NULL AND pending_due IS NOT NULL", (quiet,total,key))
@@ -971,8 +932,6 @@ class SocialStore:
                             "AND id IN (SELECT job FROM dialogue_jobs)", (now,))
             self.db.execute("UPDATE dialogue_state SET last_at=MIN(last_at,?),last_sent=MIN(last_sent,?),"
                             "observed_at=CASE WHEN observed_at>? THEN NULL ELSE observed_at END", (now, now, now))
-            self.db.execute("DELETE FROM dialogue_attention WHERE expires<=? OR created>?", (now, now))
-            self.db.execute("UPDATE dialogue_attention SET check_at=NULL WHERE check_at<=?", (now,))
             for row in self.db.execute("SELECT * FROM dialogue_waits").fetchall():
                 key = str(row["scope"])
                 quiet_due = float(row["quiet_due"]) if row["quiet_due"] is not None else None
@@ -1021,14 +980,12 @@ class SocialStore:
 
     def dialogue_status(self, key: str) -> dict[str, object]:
         wait = self.db.execute("SELECT * FROM dialogue_waits WHERE scope=?", (key,)).fetchone()
-        focus = self.db.execute("SELECT * FROM dialogue_attention WHERE scope=?", (key,)).fetchone()
-        return {"wait": dict(wait) if wait else None, "attention": dict(focus) if focus else None}
+        return {"wait": dict(wait) if wait else None}
 
     def defer(self, key: str, turn: str, *, sleeping: bool, seconds: float | None, on_timeout: bool) -> None:
         shown = self._shown_sequences(key, turn)
         with self.db:
             self.db.execute("DELETE FROM dialogue_waits WHERE scope=?", (key,))
-            self.db.execute("DELETE FROM dialogue_attention WHERE scope=?", (key,))
             self.db.execute(
                 "UPDATE scopes SET mode=?,wake_at=?,wake_on_timeout=?,wait_after_seq=?,wait_infinite=? WHERE key=?",
                 ("sleeping" if sleeping else "waiting", self.now() + seconds if seconds is not None else None,
@@ -1036,7 +993,7 @@ class SocialStore:
             )
             # A newly arrived direct address must survive a simultaneous wait.
             self.db.execute("UPDATE wakes SET status='cancelled' WHERE scope=? AND status='scheduled' "
-                            "AND reason NOT IN ('directed','nickname','judge') AND (trigger_seq<=? OR ?)",
+                            "AND reason <> 'judge' AND (trigger_seq<=? OR ?)",
                             (key, max(shown, default=0), int(sleeping)))
 
     def set_wake_config(self, key: str, body: str) -> None:
@@ -1054,16 +1011,10 @@ class SocialStore:
                 self.db.execute("UPDATE scopes SET mode='observing',wait_infinite=0,wake_at=NULL WHERE key=? "
                                 "AND wait_infinite=1 AND mode IN ('waiting','sleeping')", (key,))
 
-    def schedule(self, key: str, seq: int, reason: str, delay: float) -> None:
-        with self.db:
-            self._schedule(key, seq, reason, delay)
-
     def _schedule(self, key: str, seq: int, reason: str, delay: float) -> None:
         """Caller owns the transaction, including observation/dedup when applicable."""
         now = self.now()
-        rank = {"judge": 4, "proactive": -1, "timeout": 0, "wait_reply": 1, "wait_messages": 1,
-                "probability": 0, "attention": 1, "message": 1, "sender": 2, "keyword": 3,
-                "question": 4, "nickname": 5, "directed": 6}
+        rank = {"judge": 4, "wait_reply": 1, "wait_messages": 1, "timeout": 0, "proactive": -1}
         state = self.state(key)
         if state["mode"] == "paused":
             return
@@ -1071,16 +1022,9 @@ class SocialStore:
         # conversation replace it; its old bus item will fail ordinary claim.
         for opportunity in self.db.execute("SELECT id FROM wakes WHERE scope=? AND reason='proactive' AND status='queued'", (key,)).fetchall():
             self.cancel_opportunity(str(opportunity[0]), "conversation arrived")
-        for queued in self.db.execute("SELECT * FROM wakes WHERE scope=? AND status='queued' AND turn_id IS NULL",
-                                      (key,)).fetchall():
-            if reason in {"probability", "timeout"} and rank[str(queued["reason"])] > rank[reason]:
-                return  # An unclaimed higher-priority conversation already has the slot.
-            if queued["reason"] in {"probability", "timeout"} and reason in {"directed", "nickname", "question", "keyword", "sender"}:
-                self._refund_unclaimed_opportunity(queued)
-                self.db.execute("UPDATE wakes SET status='cancelled' WHERE id=?", (queued["id"],))
         row = self.db.execute("SELECT * FROM wakes WHERE scope=? AND version=? "
                               "AND status='scheduled'", (key, state["version"])).fetchone()
-        condition_config = state["wake_config"] if reason in {"keyword", "sender", "message", "question", "probability"} else "{}"
+        condition_config = "{}"
         if row is not None:
             chosen = reason if rank[reason] >= rank[str(row["reason"])] else str(row["reason"])
             source = seq if chosen == reason else int(row["source_seq"] or row["trigger_seq"])
@@ -1197,8 +1141,7 @@ class SocialStore:
                               "UNION ALL SELECT MIN(total_due) FROM dialogue_waits "
                               "UNION ALL SELECT MIN(condition_expires) FROM dialogue_waits "
                               "UNION ALL SELECT MIN(CAST(json_extract(wake_config,'$.expires_at') AS REAL)) FROM scopes WHERE wake_config<>'{}' "
-                              "UNION ALL SELECT MIN(pending_due) FROM judge_state WHERE inflight=0 "
-                              "UNION ALL SELECT MIN(MIN(COALESCE(check_at,expires),expires)) FROM dialogue_attention)").fetchone()
+                              "UNION ALL SELECT MIN(pending_due) FROM judge_state WHERE inflight=0)").fetchone()
         return float(row[0]) if row[0] is not None else None
 
     def last_send(self, key: str) -> float | None:

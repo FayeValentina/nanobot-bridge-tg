@@ -30,6 +30,7 @@ Codex 的短处：
 - **用好 Codex 的推理能力。** 高风险阶段（P0-3 状态机、P0-4 曝光、P0-5 投递）动手前，先派**只读分析任务**（`-s read-only`）：
   让 Codex 从现有代码中穷举状态转换、调用点和边界情况，产出事实清单。Claude 据此做设计，再派实施任务。
   实施完成后，也可以再派一次只读任务，让 Codex 找新代码中的逻辑错误，作为验收的补充。
+- **简报里写的“事实”由 Claude 负责核实，而且必须用全仓库搜索核实**（`grep -rn <name> nanobot tests`），不能只搜被改动的模块。P1-a 教训：简报说 `allows_personal_delivery` 没有调用者，其实 `cli/gateway_runtime.py` 在用；Codex 按简报的范围检查，没有发现。验收时，对每个被删除的名字都做一次全仓库搜索。
 - **验收时专门检查 Codex 的典型问题**：
   - 新增的防御代码：在 diff 中搜索新增的 `if ... raise`、`try:`、`except`、`assert`、`revision`、`version`、`fallback`，
     每一处都要能对应到简报中的要求，对应不上就退回。

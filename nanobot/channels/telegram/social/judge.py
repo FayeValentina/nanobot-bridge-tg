@@ -87,12 +87,6 @@ class SocialJudge:
             "prompt_version": JUDGE_PROMPT_VERSION, "prompt": self.prompt,
         }, sort_keys=True), force=provider_changed)
 
-    @classmethod
-    def from_config(cls, store: SocialStore, config: Config,
-                    settings: TelegramSocialJudgeConfig) -> SocialJudge:
-        provider, _ = make_judge_provider(config, settings)
-        return cls(store, settings, provider)
-
     def system_prompt(self, snapshot: JudgeSnapshot) -> str:
         """Anchor the assessed account in runtime facts, outside chat history."""
         identity = {"bot_username": snapshot.bot_username, "bot_name": snapshot.bot_name,

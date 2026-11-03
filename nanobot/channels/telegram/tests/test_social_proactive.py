@@ -674,7 +674,7 @@ def test_schema_four_upgrade_preserves_memory_watermarks_and_history(tmp_path):
     store.db.execute("DROP TABLE proactive_state")
     store.db.execute("ALTER TABLE wakes DROP COLUMN proactive_source")
     store.db.execute("DROP TABLE message_deliveries")
-    for table in ("wake_samples", "dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
+    for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
         store.db.execute(f"DROP TABLE {table}")
     store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
     store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")

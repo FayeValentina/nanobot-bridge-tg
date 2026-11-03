@@ -10,7 +10,6 @@ from pydantic import ValidationError
 
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.events import DeliveryReceipt
-from nanobot.channels.telegram.social.models import SocialDeliveryUnknownError
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
@@ -385,39 +384,6 @@ async def test_confirmed_context_survives_restart_without_idle_model_calls(dialo
         restored.close()
 
 
-async def test_send_confirmed_after_configuration_change_does_not_create_attention(dialogue):
-    ctx = expose(dialogue)
-    async def sender(scope, text, reply_to):
-        dialogue.config.scopes[0].background = "new revision"
-        dialogue.configure(dialogue.config)
-        return 800
-    dialogue.set_sender(sender)
-    assert (await dialogue.send(ctx, "几点出发？", None))["status"] == "sent"
-    assert dialogue.store.dialogue_status(A.session_key)["attention"] is None
-
-
-def test_ordinary_receipt_from_old_configuration_does_not_create_attention(dialogue):
-    ctx = expose(dialogue)
-    delivery = dialogue.record_message_receipt(A, DeliveryReceipt(status="queued"), ctx.turn_id, [])
-    dialogue.config.scopes[0].background = "new revision"
-    dialogue.configure(dialogue.config)
-    dialogue.record_message_receipt(A, DeliveryReceipt(status="sent", message_ids=(800,)), ctx.turn_id, [(800, "几点出发？")], delivery)
-    assert dialogue.store.dialogue_status(A.session_key)["attention"] is None
-
-
-@pytest.mark.parametrize("kind", ["unknown", "failed", "queued"])
-async def test_only_confirmed_sends_establish_attention(dialogue, kind):
-    ctx = expose(dialogue)
-    error = {"unknown": SocialDeliveryUnknownError(), "failed": ValueError(), "queued": None}[kind]
-    if kind == "queued":
-        dialogue.record_message_receipt(A, DeliveryReceipt(status="queued"), ctx.turn_id, [])
-    else:
-        dialogue.set_sender(AsyncMock(side_effect=error))
-        result = await dialogue.send(ctx, "你什么时候出发？", None)
-        assert result["status"] == kind
-    assert dialogue.store.dialogue_status(A.session_key)["attention"] is None
-
-
 def test_ordinary_message_receipt_records_confirmed_context_once(dialogue):
     ctx = expose(dialogue)
     delivery = dialogue.record_message_receipt(A, DeliveryReceipt(status="queued"), ctx.turn_id, [])
@@ -429,7 +395,6 @@ def test_ordinary_message_receipt_records_confirmed_context_once(dialogue):
     dialogue.record_message_receipt(A, receipt, ctx.turn_id, [(800, "何时出发？")], delivery)
     assert dialogue.store.db.execute("SELECT last_sent FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()[0] == sent
     assert dialogue.store.db.execute("SELECT COUNT(*) FROM messages WHERE message_id=800 AND is_self=1").fetchone()[0] == 1
-    assert dialogue.store.dialogue_status(A.session_key)["attention"] is None
 
 
 async def test_paced_group_records_confirmed_context_after_last_child(dialogue):
@@ -441,11 +406,9 @@ async def test_paced_group_records_confirmed_context_after_last_child(dialogue):
     dialogue.set_sender(AsyncMock(side_effect=[800, 801, 802]))
     await dialogue.send_parts(ctx, ["第一条", "第二条", "几点出发？"], None)
     await dialogue.run_due()
-    assert dialogue.store.dialogue_status(A.session_key)["attention"] is None
     for _ in range(2):
         clock(dialogue).advance(2)
         await dialogue.run_due()
-    assert dialogue.store.dialogue_status(A.session_key)["attention"] is None
     assert dialogue.store.db.execute("SELECT COUNT(*) FROM actions WHERE status='sent'").fetchone()[0] == 3
     assert dialogue.store.db.execute("SELECT last_sent FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()[0] == dialogue.now()
 
@@ -522,9 +485,9 @@ async def test_model_error_does_not_leave_a_running_lock(tmp_path, dialogue):
 
 
 @pytest.mark.parametrize("text", ["晚安", "再见！", "good night"])
-def test_explicit_farewell_can_sleep_directly(dialogue, text):
+def test_explicit_farewell_enters_sleep_observation(dialogue, text):
     ctx = expose(dialogue, text=text)
-    assert dialogue.wait(ctx, 600, sleeping=True)["mode"] == "sleeping"
+    assert dialogue.wait(ctx, 600, sleeping=True)["purpose"] == "observe"
 
 
 async def test_confirmed_publication_resets_observation_evidence(dialogue):
@@ -636,7 +599,7 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
     ctx = expose(dialogue)
     dialogue.store.mark_read(A.session_key, ctx.turn_id, 1)
     root = dialogue.root
-    for table in ("wake_samples", "dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
+    for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
         dialogue.store.db.execute(f"DROP TABLE {table}")
     dialogue.store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
     dialogue.store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")

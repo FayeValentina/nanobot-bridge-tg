@@ -6,6 +6,7 @@ import time
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -81,7 +82,15 @@ def observed(social, seq=1, *, scope=A, **kwargs):
 
 def context(social, *, scope=A, turn="test-turn"):
     _, version = social._persona(scope)
-    job = social.store.wake(scope.session_key, 1, 100, now=social.now())
+    job = uuid4().hex
+    now = social.now()
+    with social.store.db:
+        social.store.db.execute(
+            "INSERT INTO wakes(id,scope,version,trigger_seq,status,created,expires,due,requested) "
+            "VALUES(?,?,?,1,'queued',?,?,?,?)",
+            (job, scope.session_key, social.store.state(scope.session_key)["version"], now, now + 120, now, now),
+        )
+        social.store.db.execute("INSERT INTO requests VALUES(?,?)", (scope.session_key, now))
     ctx = RequestContext(
         channel=scope.channel, chat_id=str(scope.chat_id), session_key=scope.session_key,
         turn_id=turn, metadata={"message_thread_id": scope.thread_id, "_social_job": job},

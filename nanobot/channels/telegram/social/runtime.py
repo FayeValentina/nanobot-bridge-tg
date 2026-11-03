@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import re
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable
@@ -190,8 +189,7 @@ Temporary intent TTL still expires independently of an infinite wait.
 social_set_wake describes what you are waiting for: keywords, members or questions are semantic
 intent for the intermediary, not local string tests. A clear new call may interrupt a different
 wait without fulfilling it. One-shot conditions are consumed only when a matching judgement is
-admitted or actually displayed; clear completed/cancelled intent explicitly. Probability sampling
-has retired; do not request probability>0. Coalescing remains bounded timing, not a language rule.
+admitted or actually displayed; clear completed/cancelled intent explicitly. Coalescing remains bounded timing, not a language rule.
 Ground follow-ups in the displayed conversation and live memories. Do not fill gaps with assumed
 weather, location, transport, dates or personal experiences; ask when a missing detail matters.
 A short answer only establishes what it says: an afternoon departure time does not establish
@@ -364,10 +362,6 @@ class TelegramSocialRuntime:
         if ref.animated or ref.video or ref.kind != "sticker":
             raise ValueError("only static stickers can be sent in this release")
         return await self.send(ctx, f"[sticker:{ref.unique_id}]", reply_to, sticker=ref)
-
-    def allows_personal_delivery(self, channel: str, chat_id: str) -> bool:
-        """Social routing does not add permissions to ordinary background delivery."""
-        return True
 
     def memory_action(self, ctx: RequestContext, request: MemoryRequest) -> dict[str, object]:
         scope = self.validate_context(ctx)
@@ -551,7 +545,7 @@ class TelegramSocialRuntime:
         self._persona(message.scope)
         eligible = not (message.is_self or message.is_edit or binding.paused) and 0 <= self.now() - message.timestamp < 120
         _, new = self.store.observe(message, self.config.retention_messages,
-                                      fresh=eligible, wait_relevant=False,
+                                      fresh=eligible,
                                       judge_event=eligible, directed=directed,
                                       judge_delay=self.judging.coalesce_delay(message.scope),
                                       max_delay=self.config.dynamic_wait.max_seconds)
@@ -559,10 +553,6 @@ class TelegramSocialRuntime:
         if new and eligible:
             if self.config.coalesce_seconds == 0:
                 await self.run_due()
-
-    def _quiet_seconds(self, text: str, *, base: float | None = None) -> float:
-        # Timing only: no sentence-ending, nickname or urgency keyword rules.
-        return self.config.dynamic_wait.quiet_seconds if base is None else base
 
     async def run_due(self) -> None:
         async with self._cycle_lock:
@@ -659,8 +649,6 @@ class TelegramSocialRuntime:
                           "intent": intent.model_dump() if intent else None,
                           "participation": {"keywords": binding.wake_keywords, "senders": binding.wake_senders,
                                             "on_messages": binding.wake_on_messages, "on_question": binding.wake_on_question}},
-                "retired_config": ["wakeProbability", "sleepInterrupts.probability", "replyAttention",
-                                   "dynamicWait.enabled", "dynamicWait.unfinishedSeconds"],
                 "base_wake": {"sleep_interrupts": binding.sleep_interrupts.model_dump(exclude={"probability"}),
                               "coalesce_seconds": binding.coalesce_seconds,
                               "max_coalesce_seconds": self.config.max_coalesce_seconds},
@@ -713,10 +701,8 @@ class TelegramSocialRuntime:
         if quiet_seconds is not None:
             raise ValueError("quiet_seconds requires an explicit purpose")
         if sleeping and self.config.sleep_observation.enabled:
-            farewell = re.search(r"(?:晚安|再见|拜拜|先走了|good\s*night|goodbye)\s*[。.!！~～]*$",
-                                 self.store.last_shown_member_text(scope.session_key, ctx.turn_id), re.I) is not None
             due = self.store.sleep_observation_due(scope.session_key, self.config.sleep_observation.window_seconds)
-            if due is not None and not farewell:
+            if due is not None:
                 if deadline is not None:
                     due = min(due, deadline)
                 conditions, dynamic = self._wake_conditions(scope.session_key)
@@ -736,7 +722,7 @@ class TelegramSocialRuntime:
 
     def set_wake(self, ctx: RequestContext, *, keywords: list[str], senders: list[str],
                  on_messages: bool, ttl_seconds: float = 3600, one_shot: bool = True,
-                 on_question: bool = False, probability: float = 0,
+                 on_question: bool = False,
                  sleep_interrupts: TelegramSocialSleepInterruptConfig | None = None,
                  coalesce_seconds: float | None = None,
                  proactive_paused: bool | None = None) -> dict[str, Any]:
@@ -755,8 +741,6 @@ class TelegramSocialRuntime:
             for name in TelegramSocialSleepInterruptConfig.model_fields
         ):
             raise PermissionError("sleep interruption exceeds the operator policy")
-        if not math.isfinite(probability) or probability != 0:
-            raise ValueError("probability sampling has retired; describe semantic waiting intent instead")
         if proactive_paused is not None:
             with self.store.db:
                 self.store.db.execute("UPDATE proactive_state SET stopped=? WHERE scope=?",
@@ -767,11 +751,11 @@ class TelegramSocialRuntime:
             self.scheduler.notify()
             if not keywords and not senders and not on_messages and not on_question:
                 return {"proactive_paused": proactive_paused}
-        if not keywords and not senders and not on_messages and not on_question and probability == 0:
+        if not keywords and not senders and not on_messages and not on_question:
             self.store.set_wake_config(scope.session_key, "{}")
             return {"cleared": True}
         conditions = TelegramSocialWakeConfig(keywords=keywords, senders=senders, on_messages=on_messages,
-                                              on_question=on_question, probability=probability,
+                                              on_question=on_question,
                                               sleep_interrupts=sleep_interrupts, coalesce_seconds=coalesce_seconds,
                                               expires_at=self.now() + ttl_seconds, one_shot=one_shot)
         result = conditions.model_dump()

@@ -11,6 +11,7 @@ import json
 import tempfile
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 
@@ -93,7 +94,15 @@ async def evaluate(args):
                     runtime.store.observe(ObservedMessage(scope, seq, seq, sender, sender, time.time()-10, text,
                                                           is_self=sender == "bot"), 500)
                 if case.get("wait") or case.get("observe_sleep"):
-                    job = runtime.store.wake(scope.session_key, 1, 100, now=runtime.now())
+                    job = uuid4().hex
+                    now = runtime.now()
+                    with runtime.store.db:
+                        runtime.store.db.execute(
+                            "INSERT INTO wakes(id,scope,version,trigger_seq,status,created,expires,due,requested) "
+                            "VALUES(?,?,?,1,'queued',?,?,?,?)",
+                            (job, scope.session_key, runtime.store.state(scope.session_key)["version"], now, now + 120, now, now),
+                        )
+                        runtime.store.db.execute("INSERT INTO requests VALUES(?,?)", (scope.session_key, now))
                     ctx = RequestContext(channel="telegram", chat_id=str(scope.chat_id), session_key=scope.session_key,
                         turn_id="setup", metadata={"message_thread_id": 53, "_social_job": job},
                         attributes={"context_version": runtime.store.state(scope.session_key)["version"]})

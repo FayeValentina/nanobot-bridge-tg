@@ -69,7 +69,7 @@ async def test_every_new_batch_reaches_model_even_with_legacy_probability_zero(s
     view=json.loads(inbound.content.split("\n",1)[1])
     assert view["wake_reason"]=="judge" and view["judgement"][0]["decision"]["decision"]=="wake"
     assert social.store.state(A.session_key)["seen_through"]==0
-    assert social.store.db.execute("SELECT COUNT(*) FROM wake_samples").fetchone()[0]==0
+    assert social.store.db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='wake_samples'").fetchone() is None
 
 
 @pytest.mark.parametrize("directed", [False,True])
@@ -400,7 +400,6 @@ def test_state_distinguishes_retired_configuration_and_effective_preferences(soc
     assert "probability" not in state["base_wake"]
     assert "reply_attention" not in state["dialogue_config"]
     assert "unfinished_seconds" not in state["dialogue_config"]["dynamic_wait"]
-    assert "wakeProbability" in state["retired_config"]
 
 
 async def test_restart_with_changed_judge_rebuilds_pending_input_without_reusing_old_intent(social):

@@ -284,7 +284,7 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
     import sqlite3
     with sqlite3.connect(root / "social.sqlite3") as db:
         db.execute("DROP TABLE message_deliveries")
-        for table in ("wake_samples", "dialogue_jobs", "dialogue_attention", "dialogue_waits", "dialogue_state"):
+        for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
             db.execute(f"DROP TABLE {table}")
         db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
         db.execute("ALTER TABLE wakes DROP COLUMN source_seq")

@@ -71,7 +71,6 @@ class SocialProactive:
         result: dict[str, object] = dict(row) if row is not None else {"next_check": None, "last_check": None, "decision": "disabled"}
         if row is not None:
             result["metrics"] = json.loads(row["metrics"])
-            result["retired_config"] = ["intervalSeconds"]
             result["requireContext_applies_to"] = "legacy source candidates only"
             wake = self.db.execute("SELECT id,status,turn_id,proactive_source FROM wakes WHERE scope=? AND reason='proactive' "
                                    "ORDER BY created DESC LIMIT 1", (key,)).fetchone()

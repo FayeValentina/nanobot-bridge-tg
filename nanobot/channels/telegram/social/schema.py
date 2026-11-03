@@ -16,7 +16,7 @@ from nanobot.channels.telegram.social.learning import (
 if TYPE_CHECKING:
     from nanobot.channels.telegram.social.store import SocialStore
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 def initialize_social_schema(store: SocialStore) -> None:
@@ -322,6 +322,11 @@ def initialize_social_schema(store: SocialStore) -> None:
                 store.db.execute("ALTER TABLE proactive_state ADD COLUMN next_activity_check REAL")
             store.db.execute("UPDATE proactive_state SET next_activity_check=next_check WHERE next_check IS NOT NULL")
             store.db.execute("PRAGMA user_version=19")
+    if version < 20:
+        with store.db:
+            store.db.execute("DROP TABLE IF EXISTS dialogue_attention")
+            store.db.execute("DROP TABLE IF EXISTS wake_samples")
+            store.db.execute("PRAGMA user_version=20")
 
 
 def _upgrade_without_hashes(store: SocialStore) -> None:

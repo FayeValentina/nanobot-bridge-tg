@@ -254,7 +254,6 @@ def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
     finish(v2b, ctx)
     root = v2b.root
     db = v2b.store.db
-    db.execute("DROP TABLE wake_samples")
     db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
     db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
     db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
@@ -308,7 +307,7 @@ async def test_tools_accept_infinite_wait_and_new_temporary_conditions(v2b):
     ctx = context(v2b)
     with request_context(ctx):
         wake = json.loads(await TelegramSocialTool(v2b, "social_set_wake").execute(
-            probability=0, on_question=True, sleep_interrupts={"question": True}, coalesce_seconds=1,
+            on_question=True, sleep_interrupts={"question": True}, coalesce_seconds=1,
         ))
         assert wake["probability"] == 0 and wake["on_question"]
         wait = json.loads(await TelegramSocialTool(v2b, "social_wait").execute(infinite=True, sleeping=True))

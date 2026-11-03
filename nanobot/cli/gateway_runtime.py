@@ -203,7 +203,6 @@ def _pick_heartbeat_target_from_sessions(
     sessions: Iterable[dict[str, Any]],
     archived_keys: Iterable[str],
     unified_session_metadata: dict[str, Any] | None = None,
-    target_allowed: Callable[[str, str], bool] | None = None,
 ) -> tuple[str, str]:
     enabled = set(enabled_channels)
     archived = set(archived_keys)
@@ -215,10 +214,7 @@ def _pick_heartbeat_target_from_sessions(
             route = last_channel_from_metadata(unified_session_metadata)
             if route is not None:
                 channel, chat_id = route
-                if (
-                    channel not in {"cli", "system"} and channel in enabled
-                    and (target_allowed is None or target_allowed(channel, chat_id))
-                ):
+                if channel not in {"cli", "system"} and channel in enabled:
                     return channel, chat_id
             continue
         if ":" not in key:
@@ -226,7 +222,7 @@ def _pick_heartbeat_target_from_sessions(
         channel, chat_id = key.split(":", 1)
         if channel in {"cli", "system"}:
             continue
-        if channel in enabled and chat_id and (target_allowed is None or target_allowed(channel, chat_id)):
+        if channel in enabled and chat_id:
             return channel, chat_id
     return "cli", "direct"
 
@@ -801,7 +797,6 @@ def _run_gateway(
             sessions=session_manager.list_sessions(),
             archived_keys=sidebar_state.get("archived_keys", []),
             unified_session_metadata=unified_metadata,
-            target_allowed=telegram_social.allows_personal_delivery,
         )
 
     if channels.enabled_channels:
