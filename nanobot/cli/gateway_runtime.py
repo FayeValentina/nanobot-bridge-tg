@@ -364,7 +364,9 @@ def _run_gateway(
     from nanobot.cron.session_turns import is_bound_cron_job
     from nanobot.cron.types import CronJob, CronRunResult
     from nanobot.llm_usage import record_llm_call
+    from nanobot.llm_usage.alerts import ModelFailureAlert
     from nanobot.llm_usage.context import llm_usage_source
+    from nanobot.llm_usage.models import LLMCallRecord
     from nanobot.providers.factory import (
         ProviderSnapshot,
         build_provider_snapshot,
@@ -418,10 +420,15 @@ def _run_gateway(
         )
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
+    model_failure_alert = ModelFailureAlert(bus, config.gateway.model_failure_alert)
     fallback_model_observer = build_webui_fallback_model_observer(bus)
 
+    def _observe_llm_call(call: LLMCallRecord) -> None:
+        record_llm_call(call)
+        model_failure_alert.observe(call)
+
     def _observe_provider(snapshot: ProviderSnapshot) -> ProviderSnapshot:
-        snapshot.provider.set_llm_call_observer(record_llm_call)
+        snapshot.provider.set_llm_call_observer(_observe_llm_call)
         if isinstance(snapshot.provider, FallbackProvider):
             snapshot.provider.set_fallback_model_observer(fallback_model_observer)
         return snapshot

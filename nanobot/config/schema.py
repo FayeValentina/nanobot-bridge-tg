@@ -678,6 +678,12 @@ class ApiConfig(Base):
         )
 
 
+class ModelFailureAlertConfig(Base):
+    channel: str = "telegram"
+    chat_id: str = ""  # Empty means log only; no direct message.
+    consecutive_failures: int = Field(default=3, ge=1, le=100)
+
+
 class GatewayConfig(Base):
     """Gateway/server configuration."""
 
@@ -685,6 +691,7 @@ class GatewayConfig(Base):
     port: int = 18790
     restart_mode: Literal["auto", "exec", "spawn", "exit"] = "auto"
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    model_failure_alert: ModelFailureAlertConfig = Field(default_factory=ModelFailureAlertConfig)
 
 
 class MCPServerConfig(Base):
