@@ -13,10 +13,11 @@ from uuid import uuid4
 from loguru import logger
 
 from nanobot.channels.telegram.social.activity import SocialActivity
-from nanobot.channels.telegram.social.db.connection import open_social_db, transaction
+from nanobot.channels.telegram.social.db.connection import open_social_db, savepoint, transaction
 from nanobot.channels.telegram.social.db.deliveries import Deliveries
 from nanobot.channels.telegram.social.db.judge import Judge
 from nanobot.channels.telegram.social.db.messages import Messages
+from nanobot.channels.telegram.social.db.proactive_state import ProactiveState
 from nanobot.channels.telegram.social.db.schema import initialize_social_schema
 from nanobot.channels.telegram.social.db.scopes import Scopes
 from nanobot.channels.telegram.social.db.stickers import StickerLibrary
@@ -47,6 +48,7 @@ class SocialStore:
         self.wakes = Wakes(self.db, now, self.scopes, self.messages, self.views)
         self.judge = Judge(self.db, now, self.scopes, self.messages, self.views, self.wakes)
         self.deliveries = Deliveries(self.db, now, self.scopes)
+        self.proactive_state = ProactiveState(self.db, now)
         self.activities = SocialActivity(self)
         self.learning = SocialLearning(self)
         self.followups = SocialFollowups(self)
@@ -69,15 +71,12 @@ class SocialStore:
 
     def _collect_learning(self, message: ObservedMessage, seq: int, revision: int) -> None:
         # A collector fault must not roll back the ordinary observation or V3 event.
-        self.db.execute("SAVEPOINT learning_collection")
         try:
-            self.learning.observe(message, seq, revision)
+            with savepoint(self.db, "learning_collection"):
+                self.learning.observe(message, seq, revision)
         except Exception:
-            self.db.execute("ROLLBACK TO learning_collection")
             logger.exception("V5 material capture failed for message {}", message.message_id)
             self.learning.count(message.scope.session_key, "capture_error", 1, message.message_id, message.message_id)
-        finally:
-            self.db.execute("RELEASE learning_collection")
 
     def observe(self, msg: ObservedMessage, retention: int, *,
                 max_delay: float = 12, fresh: bool = False,

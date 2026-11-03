@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import random
+import sqlite3
 from collections.abc import Callable
 from datetime import datetime
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from nanobot.channels.telegram.social.db.connection import transaction
@@ -46,7 +48,7 @@ class SocialProactive:
         version = self.store.scopes.state(key)["version"]
         enabled = binding is not None and binding.proactive.enabled and not binding.paused
         activity_enabled = binding is not None and binding.proactive.activity_enabled
-        row = self.db.execute("SELECT * FROM proactive_state WHERE scope=?", (key,)).fetchone()
+        row = self.store.proactive_state.get(key)
         name = f"proactive_schedule:{key}"
         source = json.dumps({"enabled": enabled, "policy": binding.proactive.model_dump() if binding else None}, sort_keys=True)
         previous = self.store.scopes.setting_value(name)
@@ -59,15 +61,11 @@ class SocialProactive:
                     else self._next_idle_check(binding) if enabled and binding is not None else None)
         activity_due = (row["next_activity_check"] if row is not None and row["next_activity_check"] is not None and enabled and activity_enabled and same_policy
                         else self._next_activity_check(binding) if enabled and activity_enabled and binding is not None else None)
-        with self.db:
-            self.db.execute("INSERT INTO proactive_state(scope,version,next_check,next_activity_check,decision,tracked_since) VALUES(?,?,?,?,?,?) "
-                            "ON CONFLICT(scope) DO UPDATE SET version=excluded.version,next_check=excluded.next_check,"
-                            "next_activity_check=excluded.next_activity_check,decision=excluded.decision",
-                            (key, version, idle_due, activity_due, "waiting" if enabled else "disabled", self.store.now()))
+        with transaction(self.db):
+            self.store.proactive_state.sync(key, version, idle_due, activity_due, "waiting" if enabled else "disabled", self.store.now())
 
     def status(self, key: str) -> dict[str, object]:
-        row = self.db.execute("SELECT next_check,next_activity_check,last_check,decision,opportunity_seq,probability,sample,selected,metrics,stopped "
-                              "FROM proactive_state WHERE scope=?", (key,)).fetchone()
+        row = self.store.proactive_state.status(key)
         result: dict[str, object] = dict(row) if row is not None else {"next_check": None, "last_check": None, "decision": "disabled"}
         if row is not None:
             result["metrics"] = json.loads(row["metrics"])
@@ -93,7 +91,7 @@ class SocialProactive:
         now = self.store.now()
         rows = self.store.messages.participation(key)
         recent = [row for row in rows if now - 3600 < float(row["at"]) <= now]
-        tracked = self.db.execute("SELECT tracked_since FROM proactive_state WHERE scope=?", (key,)).fetchone()[0]
+        tracked = self.store.proactive_state.tracked_since(key)[0]
         first = self.store.messages.first(key)
         coverage = float(tracked)
         if first is not None and first["seq"] > 1:
@@ -110,15 +108,15 @@ class SocialProactive:
             return "disabled"
         if is_quiet(binding, now):
             return "quiet_hours"
-        if self.db.execute("SELECT stopped FROM proactive_state WHERE scope=?", (key,)).fetchone()[0]:
+        # Bound scopes are synced before candidate validation.
+        if cast(sqlite3.Row, self.store.proactive_state.stopped(key))[0]:
             return "stopped"
         if self.store.scopes.state(key)["mode"] == "paused" or (not for_send and self._deferred(key)):
             return "deferred"
         if candidate.expires_at <= now:
             return "expired"
         if candidate.kind == "memory":
-            row = self.db.execute("SELECT status,revision,expires FROM memories WHERE scope=? AND id=?",
-                                  (key, candidate.memory_id)).fetchone()
+            row = self.memory.candidate_state(key, candidate.memory_id)
             if row is None or row["status"] not in {"candidate", "confirmed"} or row["revision"] != candidate.revision or (row["expires"] is not None and float(row["expires"]) <= now):
                 return "memory_changed"
         elif candidate.kind == "unread":
@@ -141,7 +139,7 @@ class SocialProactive:
 
     def tick(self, scope: ConversationScope, binding: TelegramSocialScopeConfig, config: TelegramSocialConfig) -> None:
         key, now = scope.session_key, self.store.now()
-        row = self.db.execute("SELECT * FROM proactive_state WHERE scope=?", (key,)).fetchone()
+        row = self.store.proactive_state.get(key)
         if row is None:
             return
         policy = binding.proactive
@@ -226,13 +224,8 @@ class SocialProactive:
                     candidate = ProactiveCandidate(kind="activity", seq=0, expires_at=now + policy.activity_ttl_seconds,
                                                    opportunity_id=int(row["opportunity_seq"]) + 1)
         decision = idle_decision if activity_decision is None else f"idle:{idle_decision or 'not_due'};activity:{activity_decision}"
-        with self.db:
-            self.db.execute("UPDATE proactive_state SET next_check=?,next_activity_check=?,last_check=?,decision=?,opportunity_seq=opportunity_seq+1,"
-                            "probability=?,sample=?,selected=?,metrics=? WHERE scope=?",
-                            (self._next_idle_check(binding) if idle_ready else row["next_check"],
-                             self._next_activity_check(binding) if activity_ready else row["next_activity_check"],
-                             now, decision, probability, sample,
-                             int(candidate is not None) if sample is not None or activity_decision is not None else None, json.dumps(metrics), key))
+        with transaction(self.db):
+            self.store.proactive_state.record_check(self._next_idle_check(binding) if idle_ready else row["next_check"], self._next_activity_check(binding) if activity_ready else row["next_activity_check"], now, decision, probability, sample, int(candidate is not None) if sample is not None or activity_decision is not None else None, json.dumps(metrics), key)
             if candidate is not None:
                 # A configured timer event has no source member message or read credit.
                 self.store.wakes.schedule_opportunity(key, self.store.scopes.state(key)["version"], candidate, now)
@@ -247,7 +240,7 @@ class SocialProactive:
     def _cancel(self, job: str, key: str, reason: str) -> None:
         with transaction(self.db):
             self.store.cancel_opportunity(job, reason)
-            self.db.execute("UPDATE proactive_state SET decision=? WHERE scope=?", (reason, key))
+            self.store.proactive_state.set_decision(reason, key)
 
     def check_job(self, key: str, job: str, binding: TelegramSocialScopeConfig | None, *, for_send: bool = False) -> None:
         row = self.store.wakes.opportunity(key, job)

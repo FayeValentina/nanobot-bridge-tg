@@ -4,14 +4,16 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.expressions import (
     ExpressionLearner,
     ExpressionSource,
@@ -59,54 +61,52 @@ class JargonLearner(ExpressionLearner):
         for scope in scopes:
             if self.store.scopes.state(scope)["mode"] == "paused":
                 continue
-            entries = self.store.db.execute("SELECT id FROM jargon WHERE scope=? AND review_requested=1 ORDER BY updated LIMIT 20", (scope,)).fetchall()
-            if not entries or self.store.db.execute("SELECT 1 FROM learning_batches WHERE scope=? AND kind='jargon' AND status IN ('ready','running','failed')", (scope,)).fetchone():
+            entries = self.jargon.requested_reviews(scope)
+            if not entries or self.store.learning.active_jargon_batch(scope):
                 continue
             sources: dict[int, dict[str, object]] = {}
             for entry in entries:
-                for row in self.store.db.execute("SELECT * FROM jargon_evidence WHERE memory_id=? ORDER BY seq DESC LIMIT 10", (entry[0],)):
+                for row in self.jargon.review_evidence(entry[0]):
                     sources[row["message_id"]] = {"message_id": row["message_id"], "revision": row["revision"], "sender_id": row["sender_id"],
                         "seq": row["seq"], "at": row["at"], "source": row["source"], "text": row["excerpt"], "context": row["context"]}
             if not sources:
                 continue
-            with self.store.db:
-                self.store.db.execute("INSERT OR IGNORE INTO learning_cursors(scope,kind) VALUES(?,'jargon')", (scope,))
-                after = self.store.db.execute("SELECT event_id FROM learning_cursors WHERE scope=? AND kind='jargon'", (scope,)).fetchone()[0]
-                self.store.db.execute("INSERT INTO learning_batches(id,scope,kind,scope_version,config_revision,after_event,through_event,sources,status,created,updated,due,source_count,purpose,targets) VALUES(?,?,'jargon',?,?,?,?,?,'ready',?,?,?,?,'review',?)",
-                    (uuid4().hex, scope, self.store.scopes.state(scope)["version"], self.store.learning.config_revision, after, after,
-                     json.dumps(list(sources.values()), ensure_ascii=False), self.store.now(), self.store.now(), self.store.now(), len(sources), json.dumps([e[0] for e in entries])))
+            with transaction(self.store.db):
+                self.store.learning.ensure_jargon_cursor(scope)
+                after = self.store.learning.jargon_cursor(scope)[0]
+                self.store.learning.prepare_jargon_review(uuid4().hex, scope, self.store.scopes.state(scope)["version"], self.store.learning.config_revision, after, after, json.dumps(list(sources.values()), ensure_ascii=False), self.store.now(), self.store.now(), self.store.now(), len(sources), json.dumps([e[0] for e in entries]))
 
     async def ask(self, batch: str, prompt: str, payload: object, settings: TelegramSocialLearningModelConfig) -> str:
         if self.provider is None:
             raise ValueError("jargon provider unavailable")
-        with self.store.db:
-            self.store.db.execute("UPDATE learning_batches SET model_calls=model_calls+1 WHERE id=?", (batch,))
+        with transaction(self.store.db):
+            self.store.learning.charge_jargon_call(batch)
         async with asyncio.timeout(settings.timeout_seconds):
             response = await self.provider.chat(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
                 tools=None, tool_choice="none", model=self.model, temperature=0, max_tokens=settings.max_tokens)
-        with self.store.db:
+        with transaction(self.store.db):
             if response.usage:
-                self.store.db.execute("UPDATE learning_batches SET input_tokens=input_tokens+?,output_tokens=output_tokens+? WHERE id=?",
-                    (response.usage.input_tokens, response.usage.output_tokens, batch))
+                self.store.learning.record_jargon_usage(response.usage.input_tokens, response.usage.output_tokens, batch)
         if response.finish_reason != "stop" or response.tool_calls or response.content is None or len(response.content) > 32000:
             raise ValueError("invalid jargon response")
         return response.content
 
     async def read_public(self, batch: str, terms: list[str], settings: TelegramSocialLearningModelConfig) -> list[ReadPage]:
         config = self.store.learning.config
-        row = self.store.db.execute("SELECT documents FROM learning_batches WHERE id=?", (batch,)).fetchone()
+        row = self.store.learning.batch_documents(batch)
         pages = [ReadPage.model_validate(p) for p in json.loads(row[0])]
         if self.tools is None or self.tools.get("web_search") is None or self.tools.get("web_fetch") is None:
             return pages
         for term in terms:
             if any(normalized(term) in normalized(page.text) for page in pages):
                 continue
-            budget = self.store.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
+            # run() retains this active batch throughout its bounded research.
+            budget = cast(sqlite3.Row, self.store.learning.batch(batch))
             if budget["search_calls"] >= config.research_max_searches or budget["fetch_calls"] >= config.research_max_fetches or budget["research_chars"] >= config.research_max_chars:
                 break
             # Charge BEFORE every call; retries/restart cannot reset network budgets.
-            with self.store.db:
-                self.store.db.execute("UPDATE learning_batches SET search_calls=search_calls+1 WHERE id=?", (batch,))
+            with transaction(self.store.db):
+                self.store.learning.charge_jargon_search(batch)
             try:
                 async with asyncio.timeout(settings.timeout_seconds):
                     result = await self.tools.execute("web_search", {"query": f'{term} 网络用语 含义 来源', "count": 3})
@@ -117,12 +117,12 @@ class JargonLearner(ExpressionLearner):
                 continue
             urls = list(dict.fromkeys(re.findall(r"https?://[^\s<>\]\)\"']+", result)))
             for url in urls[:3]:
-                budget = self.store.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
+                budget = cast(sqlite3.Row, self.store.learning.batch(batch))
                 remaining = config.research_max_chars - int(budget["research_chars"])
                 if budget["fetch_calls"] >= config.research_max_fetches or remaining <= 0:
                     break
-                with self.store.db:
-                    self.store.db.execute("UPDATE learning_batches SET fetch_calls=fetch_calls+1 WHERE id=?", (batch,))
+                with transaction(self.store.db):
+                    self.store.learning.charge_jargon_fetch(batch)
                 try:
                     async with asyncio.timeout(settings.timeout_seconds):
                         body = await self.tools.execute("web_fetch", {"url": url, "extractMode": "text", "maxChars": remaining})
@@ -135,8 +135,8 @@ class JargonLearner(ExpressionLearner):
                         continue
                     page = ReadPage(url=data.final_url or data.url, text=data.text[:remaining], extractor=data.extractor, at=self.store.now())
                     pages.append(page)
-                    with self.store.db:
-                        self.store.db.execute("UPDATE learning_batches SET documents=?,research_chars=research_chars+? WHERE id=?", (json.dumps([p.model_dump() for p in pages], ensure_ascii=False), len(page.text), batch))
+                    with transaction(self.store.db):
+                        self.store.learning.record_jargon_documents(json.dumps([p.model_dump() for p in pages], ensure_ascii=False), len(page.text), batch)
                     # One actual body is enough to attempt verification for this term.
                     if term.casefold() in page.text.casefold():
                         break
@@ -150,7 +150,7 @@ class JargonLearner(ExpressionLearner):
         error = ""
         error_detail: str | None = None
         try:
-            row = self.store.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
+            row = self.store.learning.batch(batch)
             if row is None or self.provider is None:
                 return
             scope = ConversationScope.from_session_key(str(row["scope"]))
@@ -158,12 +158,12 @@ class JargonLearner(ExpressionLearner):
             if scope is None or (binding := self.runtime.binding(scope)) is None or binding.paused or self.busy() or row["attempts"] >= 1 + settings.max_retries:
                 return
             sources = [ExpressionSource.model_validate(s) for s in json.loads(row["sources"])]
-            with self.store.db:
+            with transaction(self.store.db):
                 self.jargon.expire(scope.session_key)
             generation = self.jargon.generation(scope.session_key)
             self.store.learning.start(batch)
-            with self.store.db:
-                self.store.db.execute("UPDATE learning_batches SET due=?,model=? WHERE id=?", (self.store.now() + self.store.learning.config.interval_seconds, self.model, batch))
+            with transaction(self.store.db):
+                self.store.learning.start_jargon_call(self.store.now() + self.store.learning.config.interval_seconds, self.model, batch)
             discovery = JargonDiscovery(jargon=[])
             terms: list[str] = []
             if row["purpose"] == "discovery":
@@ -194,7 +194,7 @@ class JargonLearner(ExpressionLearner):
             binding = self.runtime.binding(scope)
             if binding is None or binding.paused or self.jargon.generation(scope.session_key) != generation:
                 raise ValueError("jargon/scope changed during extraction")
-            with self.store.db:
+            with transaction(self.store.db):
                 ids = self.jargon.discover(scope.session_key, discovery, sources)
                 for finding in findings.findings:
                     if finding.term not in terms:
@@ -206,7 +206,7 @@ class JargonLearner(ExpressionLearner):
                 for term in terms:
                     entry_id = self.jargon.find(scope.session_key, term)
                     if entry_id:
-                        self.store.db.execute("UPDATE jargon SET research_revision=revision,review_requested=0,last_inferred=? WHERE id=?", (self.store.now(), entry_id))
+                        self.jargon.finish_research(self.store.now(), entry_id)
                 self.store.learning.finish(batch, success=True, result_count=len(ids))
         except asyncio.CancelledError:
             error = "interrupted"
@@ -225,13 +225,13 @@ class JargonLearner(ExpressionLearner):
             logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
         finally:
             if not self.store.closed:
-                with self.store.db:
-                    row = self.store.db.execute("SELECT status,scope,sources FROM learning_batches WHERE id=?", (batch,)).fetchone()
+                with transaction(self.store.db):
+                    row = self.store.learning.batch_status(batch)
                     if row and row["status"] == "running" and error:
-                        self.store.db.execute("UPDATE learning_batches SET status='failed',reason=?,error_detail=COALESCE(?,error_detail),updated=? WHERE id=?", (error, error_detail, self.store.now(), batch))
+                        self.store.learning.fail_batch(error, error_detail, self.store.now(), batch)
                         sources = json.loads(row["sources"])
                         self.store.learning.count(str(row["scope"]), "jargon:failed", 1, sources[0]["message_id"], sources[-1]["message_id"])
                     if row and row["status"] == "succeeded":
-                        self.store.db.execute("UPDATE learning_batches SET error_detail=NULL WHERE id=?", (batch,))
+                        self.store.learning.clear_batch_error(batch)
                     if row:
-                        self.store.db.execute("UPDATE learning_batches SET latency_ms=latency_ms+? WHERE id=?", (int((time.monotonic() - started) * 1000), batch))
+                        self.store.learning.record_jargon_latency(int((time.monotonic() - started) * 1000), batch)

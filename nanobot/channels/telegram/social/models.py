@@ -209,3 +209,12 @@ class SocialRateLimitError(RuntimeError):
     def __init__(self, retry_after: float) -> None:
         super().__init__("platform rate limit")
         self.retry_after = retry_after
+
+
+class MemoryEvidence(BaseModel):
+    message_id: int
+    seq: int
+    sender_id: str
+    timestamp: float
+    excerpt: str
+    revision: int = 1

@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.expressions import ExpressionSource, Scene, normalized
-from nanobot.channels.telegram.social.memory import displayed_evidence
 from nanobot.channels.telegram.social.store import SocialStore
 
 JargonStatus = Literal["candidate", "understand_only", "usable", "disabled"]
@@ -114,7 +115,7 @@ class JargonLibrary:
         self.db = store.db
 
     def generation(self, scope: str) -> int:
-        return int(self.db.execute("SELECT COALESCE(MAX(id),0) FROM learning_changes WHERE scope=? AND kind='jargon'", (scope,)).fetchone()[0])
+        return int(self.store.learning.jargon_generation(scope)[0])
 
     def expire(self, scope: str) -> None:
         for row in self.db.execute("SELECT id FROM jargon WHERE scope=? AND status<>'disabled' AND expires<=?", (scope, self.store.now())).fetchall():
@@ -145,8 +146,7 @@ class JargonLibrary:
 
     def change_log(self, scope: str, entry_id: str, action: str, origin: str, reason: str) -> None:
         revision = self.db.execute("SELECT revision FROM jargon WHERE id=?", (entry_id,)).fetchone()[0]
-        self.db.execute("INSERT INTO learning_changes(scope,kind,entry_id,revision,action,origin,reason,at) VALUES(?,'jargon',?,?,?,?,?,?)",
-                        (scope, entry_id, revision, action, origin, reason, self.store.now()))
+        self.store.learning.record_jargon_change(scope, entry_id, revision, action, origin, reason, self.store.now())
 
     def retire_sources(self, scope: str, entry_id: str, keep: tuple[int, ...] = ()) -> None:
         self.db.executemany("INSERT OR IGNORE INTO jargon_suppressions VALUES(?,'message',?)",
@@ -173,7 +173,7 @@ class JargonLibrary:
     def sources(self, scope: str, turn_id: str, ids: list[int]) -> list[ExpressionSource]:
         if not ids:
             raise ValueError("human source message_ids are required")
-        shown = displayed_evidence(self.store, scope, turn_id)
+        shown = self.store.views.displayed_evidence(scope, turn_id)
         cutoff = self.db.execute("SELECT through_seq FROM jargon_resets WHERE scope=?", (scope,)).fetchone()
         result: list[ExpressionSource] = []
         for message_id in dict.fromkeys(ids):
@@ -212,7 +212,7 @@ class JargonLibrary:
         self.change_log(scope, entry_id, "correct", origin, json.dumps({"reason": reason, "previous_local_meaning": old["local_meaning"]}, ensure_ascii=False))
 
     def apply(self, scope: str, turn_id: str, request: JargonRequest) -> dict[str, object]:
-        with self.db:
+        with transaction(self.db):
             self.expire(scope)
             if request.action == "list":
                 items = [e for e in self.entries(scope) if (request.include_inactive or e["status"] != "disabled")
@@ -253,8 +253,7 @@ class JargonLibrary:
                 return {"jargon": self.get(scope, entry_id)}
             assert entry_id and current
             if request.action == "review":
-                self.db.execute("UPDATE learning_batches SET status='cancelled',reason='explicit_recheck' WHERE scope=? AND kind='jargon' AND status='failed' AND attempts>=?",
-                    (scope, 1 + self.store.learning.config.jargon.max_retries))
+                self.store.learning.recheck_jargon(scope, 1 + self.store.learning.config.jargon.max_retries)
                 self.db.execute("UPDATE jargon SET review_requested=1 WHERE id=?", (entry_id,))
                 self.change_log(scope, entry_id, "review", "operator", request.reason or "explicit recheck")
             else:
@@ -369,3 +368,15 @@ class JargonLibrary:
              local or finding.public_meaning, self.store.now(), self.store.now(), entry_id))
         self.db.execute("UPDATE jargon SET inference_basis=? WHERE id=?", (json.dumps({**hints.model_dump(), "public_citations": [c.model_dump() for c in valid], "uncertain": False}, ensure_ascii=False), entry_id))
         self.change_log(scope, entry_id, "research", "research", "read body evidence; local meaning takes precedence")
+
+    def requested_reviews(self, scope: str) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT id FROM jargon WHERE scope=? AND review_requested=1 ORDER BY updated LIMIT 20", (scope,)).fetchall()
+
+    def review_evidence(self, entry_id: str) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM jargon_evidence WHERE memory_id=? ORDER BY seq DESC LIMIT 10", (entry_id,)).fetchall()
+
+    def finish_research(self, last_inferred: float, entry_id: str) -> None:
+        self.db.execute("UPDATE jargon SET research_revision=revision,review_requested=0,last_inferred=? WHERE id=?", (last_inferred, entry_id))
+
+    def active_count(self, scope: str) -> int:
+        return self.db.execute("SELECT COUNT(*) n FROM jargon WHERE scope=? AND status IN ('candidate','understand_only','usable')", (scope,)).fetchone()[0]

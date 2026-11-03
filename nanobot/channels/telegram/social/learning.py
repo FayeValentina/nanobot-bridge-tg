@@ -6,13 +6,14 @@ there are no leases, backlog snapshots, content keys, or main-model exposure cal
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import deque
-from contextlib import nullcontext
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from loguru import logger
 
+from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.models import ObservedMessage
 from nanobot.config.schema import TelegramSocialLearningConfig
 
@@ -20,137 +21,6 @@ if TYPE_CHECKING:
     from nanobot.channels.telegram.social.store import SocialStore
 
 LearningKind = Literal["expression", "jargon"]
-
-
-def upgrade_jargon_schema(store: SocialStore) -> None:
-    with store.db:
-        store.db.execute("BEGIN IMMEDIATE")
-        for field in ("authority TEXT NOT NULL DEFAULT 'inference'", "authority_seq INTEGER NOT NULL DEFAULT 0",
-                      "review_requested INTEGER NOT NULL DEFAULT 0", "research_revision INTEGER NOT NULL DEFAULT 0"):
-            if field.split()[0] not in {r[1] for r in store.db.execute("PRAGMA table_info(jargon)")}:
-                store.db.execute(f"ALTER TABLE jargon ADD COLUMN {field}")
-        for field in ("purpose TEXT NOT NULL DEFAULT 'discovery'", "targets TEXT NOT NULL DEFAULT '[]'",
-                      "search_calls INTEGER NOT NULL DEFAULT 0", "fetch_calls INTEGER NOT NULL DEFAULT 0",
-                      "research_chars INTEGER NOT NULL DEFAULT 0", "documents TEXT NOT NULL DEFAULT '[]'",
-                      "model_calls INTEGER NOT NULL DEFAULT 0"):
-            if field.split()[0] not in {r[1] for r in store.db.execute("PRAGMA table_info(learning_batches)")}:
-                store.db.execute(f"ALTER TABLE learning_batches ADD COLUMN {field}")
-        store.db.execute("UPDATE jargon SET authority='human',authority_seq=COALESCE((SELECT MAX(seq) FROM jargon_evidence WHERE memory_id=jargon.id),0) WHERE status='confirmed'")
-        store.db.execute("UPDATE jargon SET status=CASE WHEN status='confirmed' THEN 'understand_only' "
-                         "WHEN status IN ('deleted','expired') THEN 'disabled' ELSE status END")
-        store.db.execute("PRAGMA user_version=16")
-
-
-def upgrade_expression_schema(store: SocialStore) -> None:
-    with store.db:
-        store.db.execute("BEGIN IMMEDIATE")
-        store.db.execute("""CREATE TABLE IF NOT EXISTS expression_guards (
-            id INTEGER PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
-            entry_id TEXT NOT NULL REFERENCES expressions(id), revision INTEGER NOT NULL,
-            situation TEXT NOT NULL, expression TEXT NOT NULL, intent_category TEXT NOT NULL,
-            scene_tags TEXT NOT NULL, created REAL NOT NULL)""")
-        store.db.execute("CREATE INDEX IF NOT EXISTS expression_guards_scope ON expression_guards(scope)")
-        store.db.execute("PRAGMA user_version=15")
-
-
-def upgrade_learning_schema(store: SocialStore) -> None:
-    db = store.db
-    # There is deliberately no legacy slang conversion or ID mapping.
-    if db.execute("SELECT 1 FROM memories WHERE kind='slang' LIMIT 1").fetchone():
-        raise ValueError("V5-A requires the verified empty legacy slang baseline")
-    with db:
-        db.execute("BEGIN IMMEDIATE")
-        columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
-        if "learning_source" not in columns:
-            db.execute("ALTER TABLE messages ADD COLUMN learning_source TEXT NOT NULL DEFAULT 'unknown'")
-            db.execute("ALTER TABLE messages ADD COLUMN learning_text TEXT NOT NULL DEFAULT ''")
-        # IF NOT EXISTS also supports the repository's partial historical-schema fixtures.
-        statements = [
-            """CREATE TABLE IF NOT EXISTS learning_message_revisions (
-                scope TEXT NOT NULL REFERENCES scopes(key), message_id INTEGER NOT NULL,
-                revision INTEGER NOT NULL, PRIMARY KEY(scope,message_id))""",
-            """CREATE TABLE IF NOT EXISTS learning_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL REFERENCES scopes(key),
-                message_id INTEGER NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL,
-                sender_id TEXT NOT NULL, at REAL NOT NULL, source TEXT NOT NULL, text TEXT NOT NULL,
-                context TEXT NOT NULL, UNIQUE(scope,message_id,revision))""",
-            "CREATE INDEX IF NOT EXISTS learning_events_scope ON learning_events(scope,id)",
-            """CREATE TABLE IF NOT EXISTS learning_cursors (
-                scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL,
-                event_id INTEGER NOT NULL DEFAULT 0, message_id INTEGER, revision INTEGER,
-                updated REAL, PRIMARY KEY(scope,kind))""",
-            """CREATE TABLE IF NOT EXISTS learning_batches (
-                id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL,
-                scope_version TEXT NOT NULL, config_revision INTEGER NOT NULL,
-                after_event INTEGER NOT NULL, through_event INTEGER NOT NULL, sources TEXT NOT NULL,
-                status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-                created REAL NOT NULL, updated REAL NOT NULL, due REAL NOT NULL,
-                reason TEXT NOT NULL DEFAULT '', source_count INTEGER NOT NULL,
-                result_count INTEGER NOT NULL DEFAULT 0, model TEXT,
-                input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
-                latency_ms INTEGER NOT NULL DEFAULT 0)""",
-            "CREATE INDEX IF NOT EXISTS learning_batches_scope ON learning_batches(scope,kind,status,created)",
-            """CREATE UNIQUE INDEX IF NOT EXISTS learning_batch_active ON learning_batches(scope,kind)
-                WHERE status IN ('ready','running','failed')""",
-            """CREATE TABLE IF NOT EXISTS learning_counts (
-                scope TEXT NOT NULL REFERENCES scopes(key), reason TEXT NOT NULL, count INTEGER NOT NULL,
-                first_message_id INTEGER, last_message_id INTEGER, updated REAL NOT NULL,
-                PRIMARY KEY(scope,reason))""",
-            """CREATE TABLE IF NOT EXISTS expressions (
-                id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), situation TEXT NOT NULL,
-                expression TEXT NOT NULL, tone TEXT NOT NULL DEFAULT '', intent_category TEXT NOT NULL DEFAULT '',
-                scene_tags TEXT NOT NULL DEFAULT '[]', suitable TEXT NOT NULL DEFAULT '',
-                unsuitable TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'candidate',
-                revision INTEGER NOT NULL DEFAULT 1, occurrences INTEGER NOT NULL DEFAULT 0,
-                last_selected REAL, last_confirmed REAL, created REAL NOT NULL, updated REAL NOT NULL)""",
-            "CREATE INDEX IF NOT EXISTS expressions_scene ON expressions(scope,status,intent_category,updated)",
-            """CREATE TABLE IF NOT EXISTS jargon (
-                id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL DEFAULT 'slang',
-                content TEXT NOT NULL, members TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL,
-                basis TEXT NOT NULL, revision INTEGER NOT NULL, created REAL NOT NULL, updated REAL NOT NULL,
-                expires REAL, term TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '[]',
-                local_meaning TEXT NOT NULL DEFAULT '', public_meaning TEXT NOT NULL DEFAULT '',
-                usage TEXT NOT NULL DEFAULT '', examples TEXT NOT NULL DEFAULT '[]', unsuitable TEXT NOT NULL DEFAULT '',
-                source_links TEXT NOT NULL DEFAULT '[]', inference_basis TEXT NOT NULL DEFAULT '[]',
-                meaning_status TEXT NOT NULL DEFAULT 'uncertain', intent_category TEXT NOT NULL DEFAULT '',
-                scene_tags TEXT NOT NULL DEFAULT '[]', occurrences INTEGER NOT NULL DEFAULT 0,
-                last_inferred REAL, last_selected REAL, last_confirmed REAL)""",
-            "CREATE INDEX IF NOT EXISTS jargon_scene ON jargon(scope,status,intent_category,updated)",
-            "CREATE INDEX IF NOT EXISTS jargon_term ON jargon(scope,status,term)",
-            """CREATE TABLE IF NOT EXISTS jargon_evidence (
-                memory_id TEXT NOT NULL REFERENCES jargon(id), message_id INTEGER NOT NULL,
-                seq INTEGER NOT NULL, sender_id TEXT NOT NULL, at REAL NOT NULL, excerpt TEXT NOT NULL,
-                revision INTEGER NOT NULL, source TEXT NOT NULL, context TEXT NOT NULL DEFAULT '{}',
-                PRIMARY KEY(memory_id,message_id))""",
-            """CREATE TABLE IF NOT EXISTS expression_evidence (
-                expression_id TEXT NOT NULL REFERENCES expressions(id), message_id INTEGER NOT NULL,
-                seq INTEGER NOT NULL, sender_id TEXT NOT NULL, at REAL NOT NULL, excerpt TEXT NOT NULL,
-                revision INTEGER NOT NULL, source TEXT NOT NULL, context TEXT NOT NULL DEFAULT '{}',
-                PRIMARY KEY(expression_id,message_id))""",
-            """CREATE TABLE IF NOT EXISTS jargon_suppressions (
-                scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL, value TEXT NOT NULL,
-                PRIMARY KEY(scope,kind,value))""",
-            """CREATE TABLE IF NOT EXISTS jargon_resets (
-                scope TEXT PRIMARY KEY REFERENCES scopes(key), through_seq INTEGER NOT NULL)""",
-            """CREATE TABLE IF NOT EXISTS learning_changes (
-                id INTEGER PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL,
-                entry_id TEXT NOT NULL, revision INTEGER NOT NULL, action TEXT NOT NULL,
-                origin TEXT NOT NULL, reason TEXT NOT NULL, at REAL NOT NULL)""",
-            "CREATE INDEX IF NOT EXISTS learning_changes_entry ON learning_changes(scope,kind,entry_id,revision)",
-            """CREATE TABLE IF NOT EXISTS expression_turns (
-                scope TEXT NOT NULL REFERENCES scopes(key), turn_id TEXT NOT NULL,
-                target_message_id INTEGER, calls INTEGER NOT NULL, candidate_count INTEGER NOT NULL,
-                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, latency_ms INTEGER NOT NULL,
-                status TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY(scope,turn_id))""",
-            """CREATE TABLE IF NOT EXISTS expression_selections (
-                scope TEXT NOT NULL, turn_id TEXT NOT NULL, kind TEXT NOT NULL, entry_id TEXT NOT NULL,
-                revision INTEGER NOT NULL, delivery_id TEXT,
-                PRIMARY KEY(scope,turn_id,kind,entry_id),
-                FOREIGN KEY(scope,turn_id) REFERENCES expression_turns(scope,turn_id) ON DELETE CASCADE)""",
-        ]
-        for statement in statements:
-            db.execute(statement)
-        db.execute("PRAGMA user_version=14")
 
 
 class SocialLearning:
@@ -166,7 +36,7 @@ class SocialLearning:
         self.config_revision = self.store.scopes.setting_revision("learning", config.model_dump_json())
         self.recent = {scope: deque(rows, maxlen=config.selection_history_turns)
                        for scope, rows in self.recent.items()}
-        with nullcontext() if self.db.in_transaction else self.db:
+        with transaction(self.db):
             self.db.execute("UPDATE learning_batches SET status='cancelled',reason='config_changed',updated=? "
                             "WHERE status IN ('ready','running','failed') AND config_revision<>?",
                             (self.store.now(), self.config_revision))
@@ -265,7 +135,7 @@ class SocialLearning:
         """Persist one bounded ready batch per chain. A never calls it 'learned'."""
         if not self.config.enabled or self.store.scopes.state(scope)["mode"] == "paused":
             return None
-        with nullcontext() if self.db.in_transaction else self.db:
+        with transaction(self.db):
             active = self.db.execute("SELECT id FROM learning_batches WHERE scope=? AND kind=? AND status IN ('ready','running','failed')",
                                      (scope, kind)).fetchone()
             if active:
@@ -287,7 +157,7 @@ class SocialLearning:
             return batch
 
     def collect_due(self, scopes: list[str]) -> None:
-        with nullcontext() if self.db.in_transaction else self.db:
+        with transaction(self.db):
             for scope in scopes:
                 version = self.store.scopes.state(scope)["version"]
                 self.db.execute("UPDATE learning_batches SET status='cancelled',reason='scope_changed',updated=? "
@@ -304,7 +174,7 @@ class SocialLearning:
 
     def start(self, batch: str) -> None:
         """Single-owner attempt accounting before a future B/C network request."""
-        with nullcontext() if self.db.in_transaction else self.db:
+        with transaction(self.db):
             row = self.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
             if row is None or row["status"] not in {"ready", "failed"}:
                 raise ValueError("batch is no longer active")
@@ -317,7 +187,7 @@ class SocialLearning:
 
     def finish(self, batch: str, *, success: bool, reason: str = "", result_count: int = 0) -> None:
         """B/C commit entries/evidence in this SAME transaction, then finish; failure keeps cursor."""
-        with nullcontext() if self.db.in_transaction else self.db:
+        with transaction(self.db):
             row = self.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
             if row is None or row["status"] not in {"ready", "running", "failed"}:
                 raise ValueError("batch is no longer active")
@@ -343,7 +213,7 @@ class SocialLearning:
                                 (row["through_event"], last["message_id"], last["revision"], self.store.now(), row["scope"], row["kind"]))
 
     def recover(self) -> None:
-        with nullcontext() if self.db.in_transaction else self.db:
+        with transaction(self.db):
             for kind in ("expression", "jargon"):
                 limit = 1 + getattr(self.config, kind).max_retries
                 self.db.execute("UPDATE learning_batches SET status='ready',reason='interrupted',updated=? WHERE kind=? AND status='running' AND attempts<?", (self.store.now(), kind, limit))
@@ -353,7 +223,7 @@ class SocialLearning:
                          candidates: int, selected: list[tuple[str, str, int]], explanation: dict[str, object],
                          status: str = "selected", input_tokens: int = 0, output_tokens: int = 0, latency_ms: int = 0,
                          calls: int = 1) -> None:
-        with nullcontext() if self.db.in_transaction else self.db:
+        with transaction(self.db):
             for kind, entry, revision in selected:
                 table = {"expression": "expressions", "jargon": "jargon", "sticker": "stickers"}.get(kind)
                 if table is None:
@@ -387,7 +257,7 @@ class SocialLearning:
         D will call this with actually used IDs. A does not attribute every selected
         item just because some text was sent, and never increases human occurrences.
         """
-        with nullcontext() if self.db.in_transaction else self.db:
+        with transaction(self.db):
             if kind == "jargon" and not self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status='usable'", (scope, entry_id, revision)).fetchone():
                 raise ValueError("only current usable jargon can be attributed as natural use")
             receipt = self.store.deliveries.confirmed_receipt(scope, turn_id, delivery_id)
@@ -415,3 +285,90 @@ class SocialLearning:
                 "jargon_entries": self.db.execute("SELECT COUNT(*) FROM jargon WHERE scope=? AND status IN ('candidate','understand_only','usable')", (scope,)).fetchone()[0],
                 "jargon_states": {row[0]: row[1] for row in self.db.execute("SELECT status,COUNT(*) FROM jargon WHERE scope=? GROUP BY status", (scope,))},
                 "recent_selections": list(self.recent.get(scope, []))}
+
+    def expression_generation(self, scope: str) -> sqlite3.Row:
+        return self.db.execute("SELECT COALESCE(MAX(id),0) FROM learning_changes WHERE scope=? AND kind='expression'", (scope,)).fetchone()
+
+    def record_expression_change(self, scope: str, entry_id: str, revision: int, action: str, reason: str, at: float) -> None:
+        self.db.execute("INSERT INTO learning_changes(scope,kind,entry_id,revision,action,origin,reason,at) VALUES(?,'expression',?,?,?,'operator',?,?)", (scope, entry_id, revision, action, reason, at))
+
+    def jargon_generation(self, scope: str) -> sqlite3.Row:
+        return self.db.execute("SELECT COALESCE(MAX(id),0) FROM learning_changes WHERE scope=? AND kind='jargon'", (scope,)).fetchone()
+
+    def record_jargon_change(self, scope: str, entry_id: str, revision: int, action: str, origin: str, reason: str, at: float) -> None:
+        self.db.execute("INSERT INTO learning_changes(scope,kind,entry_id,revision,action,origin,reason,at) VALUES(?,'jargon',?,?,?,?,?,?)", (scope, entry_id, revision, action, origin, reason, at))
+
+    def recheck_jargon(self, scope: str, attempts: int) -> None:
+        self.db.execute("UPDATE learning_batches SET status='cancelled',reason='explicit_recheck' WHERE scope=? AND kind='jargon' AND status='failed' AND attempts>=?", (scope, attempts))
+
+    def batch(self, batch: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
+
+    def batch_status(self, batch: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT status,scope,sources FROM learning_batches WHERE id=?", (batch,)).fetchone()
+
+    def fail_batch(self, error: str, detail: str | None, updated: float, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET status='failed',reason=?,error_detail=COALESCE(?,error_detail),updated=? WHERE id=?", (error, detail, updated, batch))
+
+    def clear_batch_error(self, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET error_detail=NULL WHERE id=?", (batch,))
+
+    def last_batch_due(self) -> sqlite3.Row:
+        return self.db.execute("SELECT MAX(due) FROM learning_batches WHERE attempts>0").fetchone()
+
+    def pending_batches(self, kind: LearningKind) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT id,scope,attempts FROM learning_batches WHERE kind=? AND status IN ('ready','failed') ORDER BY created,id", (kind,)).fetchall()
+
+    def expression_context_budget(self, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET reason='library_context_budget' WHERE id=?", (batch,))
+
+    def start_expression_call(self, due: float, model: str, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET due=?,model=?,model_calls=model_calls+1 WHERE id=?", (due, model, batch))
+
+    def record_expression_usage(self, input_tokens: int, output_tokens: int, latency_ms: int, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET input_tokens=input_tokens+?,output_tokens=output_tokens+?,latency_ms=latency_ms+? WHERE id=?", (input_tokens, output_tokens, latency_ms, batch))
+
+    def earliest_batch(self, kind: LearningKind, attempts: int) -> sqlite3.Row:
+        return self.db.execute("SELECT COALESCE(MIN(created),1e30) FROM learning_batches WHERE kind=? AND status IN ('ready','failed') AND attempts<?", (kind, attempts)).fetchone()
+
+    def active_jargon_batch(self, scope: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT 1 FROM learning_batches WHERE scope=? AND kind='jargon' AND status IN ('ready','running','failed')", (scope,)).fetchone()
+
+    def ensure_jargon_cursor(self, scope: str) -> None:
+        self.db.execute("INSERT OR IGNORE INTO learning_cursors(scope,kind) VALUES(?,'jargon')", (scope,))
+
+    def jargon_cursor(self, scope: str) -> sqlite3.Row:
+        return self.db.execute("SELECT event_id FROM learning_cursors WHERE scope=? AND kind='jargon'", (scope,)).fetchone()
+
+    def prepare_jargon_review(self, batch: str, scope: str, scope_version: str, config_revision: int, after_event: int, through_event: int, sources: str, created: float, updated: float, due: float, source_count: int, targets: str) -> None:
+        self.db.execute("INSERT INTO learning_batches(id,scope,kind,scope_version,config_revision,after_event,through_event,sources,status,created,updated,due,source_count,purpose,targets) VALUES(?,?,'jargon',?,?,?,?,?,'ready',?,?,?,?,'review',?)", (batch, scope, scope_version, config_revision, after_event, through_event, sources, created, updated, due, source_count, targets))
+
+    def charge_jargon_call(self, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET model_calls=model_calls+1 WHERE id=?", (batch,))
+
+    def record_jargon_usage(self, input_tokens: int, output_tokens: int, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET input_tokens=input_tokens+?,output_tokens=output_tokens+? WHERE id=?", (input_tokens, output_tokens, batch))
+
+    def batch_documents(self, batch: str) -> sqlite3.Row:
+        return self.db.execute("SELECT documents FROM learning_batches WHERE id=?", (batch,)).fetchone()
+
+    def charge_jargon_search(self, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET search_calls=search_calls+1 WHERE id=?", (batch,))
+
+    def charge_jargon_fetch(self, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET fetch_calls=fetch_calls+1 WHERE id=?", (batch,))
+
+    def record_jargon_documents(self, documents: str, research_chars: int, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET documents=?,research_chars=research_chars+? WHERE id=?", (documents, research_chars, batch))
+
+    def start_jargon_call(self, due: float, model: str, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET due=?,model=? WHERE id=?", (due, model, batch))
+
+    def record_jargon_latency(self, latency_ms: int, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET latency_ms=latency_ms+? WHERE id=?", (latency_ms, batch))
+
+    def has_selection(self, scope: str, turn: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT 1 FROM expression_turns WHERE scope=? AND turn_id=?", (scope, turn)).fetchone()
+
+    def selected_sticker(self, scope: str, turn: str, sticker_id: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT revision FROM expression_selections WHERE scope=? AND turn_id=? AND kind='sticker' AND entry_id=?", (scope, turn, sticker_id)).fetchone()

@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from nanobot.channels.telegram.social.db.connection import transaction
+
 if TYPE_CHECKING:
     from nanobot.channels.telegram.social.store import SocialStore
 
@@ -25,22 +27,6 @@ class ActivityRequest(BaseModel):
     artifacts: list[str] = Field(default_factory=list, max_length=8)
 
 
-def upgrade_activity_schema(store: SocialStore) -> None:
-    with store.db:
-        store.db.execute("BEGIN IMMEDIATE")
-        store.db.execute("CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), "
-                         "revision INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, title TEXT NOT NULL, "
-                         "goal TEXT NOT NULL, motivation TEXT NOT NULL, checkpoint TEXT NOT NULL DEFAULT '', "
-                         "next_step TEXT NOT NULL, artifacts TEXT NOT NULL DEFAULT '[]', "
-                         "created REAL NOT NULL, updated REAL NOT NULL, last_turn TEXT NOT NULL DEFAULT '')")
-        store.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS activity_running_scope ON activities(scope) WHERE status='active'")
-        store.db.execute("CREATE TABLE IF NOT EXISTS activity_steps (activity_id TEXT NOT NULL REFERENCES activities(id), "
-                         "revision INTEGER NOT NULL, turn_id TEXT NOT NULL, status TEXT NOT NULL, "
-                         "checkpoint TEXT NOT NULL, next_step TEXT NOT NULL, artifacts TEXT NOT NULL, at REAL NOT NULL, "
-                         "PRIMARY KEY(activity_id,revision))")
-        store.db.execute("PRAGMA user_version=17")
-
-
 class SocialActivity:
     def __init__(self, store: SocialStore) -> None:
         self.store = store
@@ -55,7 +41,7 @@ class SocialActivity:
         if request.action == "list":
             return {"activities": self.context(scope)}
         now = self.store.now()
-        with self.db:
+        with transaction(self.db):
             if request.action == "start":
                 if not request.title.strip():
                     raise ValueError("start requires a short title describing what caught your interest")

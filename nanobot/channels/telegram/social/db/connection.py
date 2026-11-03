@@ -30,3 +30,16 @@ def transaction(db: sqlite3.Connection) -> Generator[None, None, None]:
         db.rollback()
         raise
     db.commit()
+
+
+@contextmanager
+def savepoint(db: sqlite3.Connection, name: str) -> Generator[None, None, None]:
+    """Roll back only this block on error, then re-raise."""
+    db.execute(f"SAVEPOINT {name}")
+    try:
+        yield
+    except BaseException:
+        db.execute(f"ROLLBACK TO {name}")
+        raise
+    finally:
+        db.execute(f"RELEASE {name}")

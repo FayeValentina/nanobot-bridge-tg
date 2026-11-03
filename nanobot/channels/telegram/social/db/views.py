@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Callable
 
 from nanobot.channels.telegram.social.db.scopes import Scopes
+from nanobot.channels.telegram.social.models import MemoryEvidence
 
 
 class Views:
@@ -45,3 +46,20 @@ class Views:
             "DELETE FROM views WHERE scope=? AND id NOT IN "
             "(SELECT id FROM views WHERE scope=? ORDER BY created DESC LIMIT 128)", (key, key),
         )
+
+    def displayed_evidence(self, key: str, turn_id: str) -> dict[int, MemoryEvidence]:
+        # Read the EXACT excerpts the model saw, not a larger or later edited
+        # message from the observation table. Read-tool output is eligible only
+        # after the exposure hook has seen it in a real provider request.
+        shown: dict[int, MemoryEvidence] = {}
+        for row in self.displayed_bodies(key, turn_id):
+            view = json.loads(row["body"])
+            for message in view["messages"]:
+                item = MemoryEvidence.model_validate({
+                    "message_id": message["message_id"], "seq": message["seq"],
+                    "sender_id": message["sender_id"], "timestamp": message["timestamp"],
+                    "excerpt": message["text"], "revision": message.get("revision", 0),
+                })
+                if not message["is_self"]:
+                    shown[item.message_id] = item
+        return shown

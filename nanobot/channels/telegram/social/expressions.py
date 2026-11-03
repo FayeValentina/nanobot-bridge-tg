@@ -14,6 +14,7 @@ from uuid import uuid4
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
+from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.learning import LearningKind
 from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.store import SocialStore
@@ -127,7 +128,7 @@ class ExpressionLibrary:
             return {"expressions": self.list(scope)}
         if not request.entry_id:
             raise ValueError("entry_id is required")
-        with self.db:
+        with transaction(self.db):
             current = self.get(scope, request.entry_id)
             if request.action == "get":
                 return current
@@ -149,12 +150,11 @@ class ExpressionLibrary:
                 self.db.execute(f"UPDATE expressions SET {field}=? WHERE id=?", (json.dumps(value, ensure_ascii=False) if isinstance(value, list) else value, request.entry_id))
             status = "disabled" if request.action == "disable" else "available" if request.action == "enable" else current["status"]
             self.db.execute("UPDATE expressions SET status=?,revision=?,updated=? WHERE id=?", (status, revision, self.store.now(), request.entry_id))
-            self.db.execute("INSERT INTO learning_changes(scope,kind,entry_id,revision,action,origin,reason,at) VALUES(?,'expression',?,?,?,'operator',?,?)",
-                            (scope, request.entry_id, revision, request.action, request.reason, self.store.now()))
+            self.store.learning.record_expression_change(scope, request.entry_id, revision, request.action, request.reason, self.store.now())
             return self.get(scope, request.entry_id)
 
     def generation(self, scope: str) -> int:
-        return int(self.db.execute("SELECT COALESCE(MAX(id),0) FROM learning_changes WHERE scope=? AND kind='expression'", (scope,)).fetchone()[0])
+        return int(self.store.learning.expression_generation(scope)[0])
 
     def payload(self, scope: str) -> dict[str, object]:
         # All protected wording is included, even when inactive. No hash/content keys.
@@ -163,8 +163,8 @@ class ExpressionLibrary:
         return {"existing": entries, "protected_wording": guards}
 
     def commit(self, batch: str, result: ExtractionResult, generation: int) -> list[str]:
-        with self.db:
-            row = self.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
+        with transaction(self.db):
+            row = self.store.learning.batch(batch)
             if row is None or row["kind"] != "expression" or row["status"] != "running":
                 raise ValueError("expression batch is no longer running")
             scope = str(row["scope"])
@@ -289,10 +289,10 @@ class ExpressionLearner:
                 or (self.runtime.learning_task is not None and not self.runtime.learning_task.done()) or self.busy()):
             return
         # Durable global start interval also covers failed/cancelled requests and restarts.
-        last = self.store.db.execute("SELECT MAX(due) FROM learning_batches WHERE attempts>0").fetchone()[0]
+        last = self.store.learning.last_batch_due()[0]
         if last is not None and self.store.now() < last:
             return
-        for row in self.store.db.execute("SELECT id,scope,attempts FROM learning_batches WHERE kind=? AND status IN ('ready','failed') ORDER BY created,id", (self.kind,)):
+        for row in self.store.learning.pending_batches(self.kind):
             settings = getattr(self.store.learning.config, self.kind)
             if row["scope"] in scopes and row["attempts"] < 1 + settings.max_retries:
                 self.task = asyncio.create_task(self.run(str(row["id"])), name=f"social-{self.kind}-learning")
@@ -305,7 +305,7 @@ class ExpressionLearner:
         error = ""
         error_detail: str | None = None
         try:
-            row = self.store.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
+            row = self.store.learning.batch(batch)
             if row is None or self.provider is None:
                 return
             scope = ConversationScope.from_session_key(str(row["scope"]))
@@ -321,12 +321,12 @@ class ExpressionLearner:
             # Refuse oversized library context rather than truncate tombstones.
             content = json.dumps(payload, ensure_ascii=False)
             if len(content) > 180000:
-                with self.store.db:
-                    self.store.db.execute("UPDATE learning_batches SET reason='library_context_budget' WHERE id=?", (batch,))
+                with transaction(self.store.db):
+                    self.store.learning.expression_context_budget(batch)
                 return
             self.store.learning.start(batch)
-            with self.store.db:
-                self.store.db.execute("UPDATE learning_batches SET due=?,model=?,model_calls=model_calls+1 WHERE id=?", (self.store.now() + self.store.learning.config.interval_seconds, self.model, batch))
+            with transaction(self.store.db):
+                self.store.learning.start_expression_call(self.store.now() + self.store.learning.config.interval_seconds, self.model, batch)
             async with asyncio.timeout(settings.timeout_seconds):
                 response = await self.provider.chat(messages=[{"role": "system", "content": self.prompt}, {"role": "user", "content": content}],
                     tools=None, tool_choice="none", model=self.model, max_tokens=settings.max_tokens, temperature=0)
@@ -354,15 +354,14 @@ class ExpressionLearner:
             logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
         finally:
             if not self.store.closed:
-                with self.store.db:
-                    current = self.store.db.execute("SELECT status,scope,sources FROM learning_batches WHERE id=?", (batch,)).fetchone()
+                with transaction(self.store.db):
+                    current = self.store.learning.batch_status(batch)
                     if current and current[0] == "running" and error:
-                        self.store.db.execute("UPDATE learning_batches SET status='failed',reason=?,error_detail=COALESCE(?,error_detail),updated=? WHERE id=?", (error, error_detail, self.store.now(), batch))
+                        self.store.learning.fail_batch(error, error_detail, self.store.now(), batch)
                         sources = json.loads(current["sources"])
                         self.store.learning.count(str(current["scope"]), "expression:failed", 1, sources[0]["message_id"], sources[-1]["message_id"])
                     if current and current[0] == "succeeded":
-                        self.store.db.execute("UPDATE learning_batches SET error_detail=NULL WHERE id=?", (batch,))
+                        self.store.learning.clear_batch_error(batch)
                     if current and current[0] in {"running", "succeeded", "failed", "cancelled"}:
                         usage = response.usage if response else None
-                        self.store.db.execute("UPDATE learning_batches SET input_tokens=input_tokens+?,output_tokens=output_tokens+?,latency_ms=latency_ms+? WHERE id=?",
-                            (usage.input_tokens if usage else 0, usage.output_tokens if usage else 0, int((time.monotonic() - started) * 1000), batch))
+                        self.store.learning.record_expression_usage(usage.input_tokens if usage else 0, usage.output_tokens if usage else 0, int((time.monotonic() - started) * 1000), batch)

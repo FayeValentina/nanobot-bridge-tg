@@ -81,7 +81,7 @@ class SocialFollowups:
                             "WHERE memory_id=? AND followup_state='active'", (memory_id,))
 
     def _live(self, scope: str, memory_id: str, *, finishing: bool = False) -> int:
-        stopped = self.db.execute("SELECT stopped FROM proactive_state WHERE scope=?", (scope,)).fetchone()
+        stopped = self.store.proactive_state.stopped(scope)
         if self.store.scopes.state(scope)["mode"] == "paused" or (stopped is not None and stopped[0]):
             raise PermissionError("proactive follow-up contact is paused or stopped")
         row = self.db.execute("SELECT m.revision,m.status,m.expires,f.* FROM memories m "
@@ -195,3 +195,7 @@ class SocialFollowups:
             result.append({"memory_id":row["id"],"memory_status":row["status"],"expires":row["expires"],
                            **record,"attempts":attempts})
         return result
+
+    def delete(self, memory_id: str) -> None:
+        self.db.execute("UPDATE memory_followups SET pending_question='',pending_thought='',motivation='',"
+            "followup_state='dropped',state_reason='deleted' WHERE memory_id=?", (memory_id,))

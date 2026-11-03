@@ -218,7 +218,7 @@ class ContextSelector:
             self.cache[key] = cached
             while len(self.cache) > 100:
                 self.cache.popitem(last=False)
-            if store.db.execute("SELECT 1 FROM expression_turns WHERE scope=? AND turn_id=?", key).fetchone():
+            if store.learning.has_selection(*key):
                 return []  # Restart/eviction never buys a second call in this turn.
             started = time.monotonic()
             pool: list[Candidate] = []
@@ -355,6 +355,6 @@ class ContextSelector:
     def confirm_sticker(self, scope: str, turn: str | None, delivery: str, sticker_id: str) -> None:
         if turn is None:
             return
-        row = self.runtime.store.db.execute("SELECT revision FROM expression_selections WHERE scope=? AND turn_id=? AND kind='sticker' AND entry_id=?", (scope, turn, sticker_id)).fetchone()
+        row = self.runtime.store.learning.selected_sticker(scope, turn, sticker_id)
         if row:
             self.runtime.store.learning.confirm_use(scope, turn, "sticker", sticker_id, int(row[0]), delivery)

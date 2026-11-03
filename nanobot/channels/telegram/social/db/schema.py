@@ -6,13 +6,6 @@ import json
 import re
 from typing import TYPE_CHECKING
 
-from nanobot.channels.telegram.social.activity import upgrade_activity_schema
-from nanobot.channels.telegram.social.learning import (
-    upgrade_expression_schema,
-    upgrade_jargon_schema,
-    upgrade_learning_schema,
-)
-
 if TYPE_CHECKING:
     from nanobot.channels.telegram.social.store import SocialStore
 
@@ -304,13 +297,13 @@ def initialize_social_schema(store: SocialStore) -> None:
             COMMIT;
             """)
     if version < 14:
-        upgrade_learning_schema(store)
+        _upgrade_learning_schema(store)
     if version < 15:
-        upgrade_expression_schema(store)
+        _upgrade_expression_schema(store)
     if version < 16:
-        upgrade_jargon_schema(store)
+        _upgrade_jargon_schema(store)
     if version < 17:
-        upgrade_activity_schema(store)
+        _upgrade_activity_schema(store)
     if version < 18:
         with store.db:
             if "error_detail" not in {row[1] for row in store.db.execute("PRAGMA table_info(learning_batches)")}:
@@ -400,4 +393,155 @@ def _upgrade_without_hashes(store: SocialStore) -> None:
             store.db.execute("PRAGMA user_version=11")
     finally:
         store.db.execute("PRAGMA foreign_keys=ON")
+
+
+
+def _upgrade_jargon_schema(store: SocialStore) -> None:
+    with store.db:
+        store.db.execute("BEGIN IMMEDIATE")
+        for field in ("authority TEXT NOT NULL DEFAULT 'inference'", "authority_seq INTEGER NOT NULL DEFAULT 0",
+                      "review_requested INTEGER NOT NULL DEFAULT 0", "research_revision INTEGER NOT NULL DEFAULT 0"):
+            if field.split()[0] not in {r[1] for r in store.db.execute("PRAGMA table_info(jargon)")}:
+                store.db.execute(f"ALTER TABLE jargon ADD COLUMN {field}")
+        for field in ("purpose TEXT NOT NULL DEFAULT 'discovery'", "targets TEXT NOT NULL DEFAULT '[]'",
+                      "search_calls INTEGER NOT NULL DEFAULT 0", "fetch_calls INTEGER NOT NULL DEFAULT 0",
+                      "research_chars INTEGER NOT NULL DEFAULT 0", "documents TEXT NOT NULL DEFAULT '[]'",
+                      "model_calls INTEGER NOT NULL DEFAULT 0"):
+            if field.split()[0] not in {r[1] for r in store.db.execute("PRAGMA table_info(learning_batches)")}:
+                store.db.execute(f"ALTER TABLE learning_batches ADD COLUMN {field}")
+        store.db.execute("UPDATE jargon SET authority='human',authority_seq=COALESCE((SELECT MAX(seq) FROM jargon_evidence WHERE memory_id=jargon.id),0) WHERE status='confirmed'")
+        store.db.execute("UPDATE jargon SET status=CASE WHEN status='confirmed' THEN 'understand_only' "
+                         "WHEN status IN ('deleted','expired') THEN 'disabled' ELSE status END")
+        store.db.execute("PRAGMA user_version=16")
+
+
+
+def _upgrade_expression_schema(store: SocialStore) -> None:
+    with store.db:
+        store.db.execute("BEGIN IMMEDIATE")
+        store.db.execute("""CREATE TABLE IF NOT EXISTS expression_guards (
+            id INTEGER PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
+            entry_id TEXT NOT NULL REFERENCES expressions(id), revision INTEGER NOT NULL,
+            situation TEXT NOT NULL, expression TEXT NOT NULL, intent_category TEXT NOT NULL,
+            scene_tags TEXT NOT NULL, created REAL NOT NULL)""")
+        store.db.execute("CREATE INDEX IF NOT EXISTS expression_guards_scope ON expression_guards(scope)")
+        store.db.execute("PRAGMA user_version=15")
+
+
+
+def _upgrade_learning_schema(store: SocialStore) -> None:
+    db = store.db
+    # There is deliberately no legacy slang conversion or ID mapping.
+    if db.execute("SELECT 1 FROM memories WHERE kind='slang' LIMIT 1").fetchone():
+        raise ValueError("V5-A requires the verified empty legacy slang baseline")
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+        if "learning_source" not in columns:
+            db.execute("ALTER TABLE messages ADD COLUMN learning_source TEXT NOT NULL DEFAULT 'unknown'")
+            db.execute("ALTER TABLE messages ADD COLUMN learning_text TEXT NOT NULL DEFAULT ''")
+        # IF NOT EXISTS also supports the repository's partial historical-schema fixtures.
+        statements = [
+            """CREATE TABLE IF NOT EXISTS learning_message_revisions (
+                scope TEXT NOT NULL REFERENCES scopes(key), message_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL, PRIMARY KEY(scope,message_id))""",
+            """CREATE TABLE IF NOT EXISTS learning_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL REFERENCES scopes(key),
+                message_id INTEGER NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL,
+                sender_id TEXT NOT NULL, at REAL NOT NULL, source TEXT NOT NULL, text TEXT NOT NULL,
+                context TEXT NOT NULL, UNIQUE(scope,message_id,revision))""",
+            "CREATE INDEX IF NOT EXISTS learning_events_scope ON learning_events(scope,id)",
+            """CREATE TABLE IF NOT EXISTS learning_cursors (
+                scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL,
+                event_id INTEGER NOT NULL DEFAULT 0, message_id INTEGER, revision INTEGER,
+                updated REAL, PRIMARY KEY(scope,kind))""",
+            """CREATE TABLE IF NOT EXISTS learning_batches (
+                id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL,
+                scope_version TEXT NOT NULL, config_revision INTEGER NOT NULL,
+                after_event INTEGER NOT NULL, through_event INTEGER NOT NULL, sources TEXT NOT NULL,
+                status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                created REAL NOT NULL, updated REAL NOT NULL, due REAL NOT NULL,
+                reason TEXT NOT NULL DEFAULT '', source_count INTEGER NOT NULL,
+                result_count INTEGER NOT NULL DEFAULT 0, model TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+                latency_ms INTEGER NOT NULL DEFAULT 0)""",
+            "CREATE INDEX IF NOT EXISTS learning_batches_scope ON learning_batches(scope,kind,status,created)",
+            """CREATE UNIQUE INDEX IF NOT EXISTS learning_batch_active ON learning_batches(scope,kind)
+                WHERE status IN ('ready','running','failed')""",
+            """CREATE TABLE IF NOT EXISTS learning_counts (
+                scope TEXT NOT NULL REFERENCES scopes(key), reason TEXT NOT NULL, count INTEGER NOT NULL,
+                first_message_id INTEGER, last_message_id INTEGER, updated REAL NOT NULL,
+                PRIMARY KEY(scope,reason))""",
+            """CREATE TABLE IF NOT EXISTS expressions (
+                id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), situation TEXT NOT NULL,
+                expression TEXT NOT NULL, tone TEXT NOT NULL DEFAULT '', intent_category TEXT NOT NULL DEFAULT '',
+                scene_tags TEXT NOT NULL DEFAULT '[]', suitable TEXT NOT NULL DEFAULT '',
+                unsuitable TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'candidate',
+                revision INTEGER NOT NULL DEFAULT 1, occurrences INTEGER NOT NULL DEFAULT 0,
+                last_selected REAL, last_confirmed REAL, created REAL NOT NULL, updated REAL NOT NULL)""",
+            "CREATE INDEX IF NOT EXISTS expressions_scene ON expressions(scope,status,intent_category,updated)",
+            """CREATE TABLE IF NOT EXISTS jargon (
+                id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL DEFAULT 'slang',
+                content TEXT NOT NULL, members TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL,
+                basis TEXT NOT NULL, revision INTEGER NOT NULL, created REAL NOT NULL, updated REAL NOT NULL,
+                expires REAL, term TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '[]',
+                local_meaning TEXT NOT NULL DEFAULT '', public_meaning TEXT NOT NULL DEFAULT '',
+                usage TEXT NOT NULL DEFAULT '', examples TEXT NOT NULL DEFAULT '[]', unsuitable TEXT NOT NULL DEFAULT '',
+                source_links TEXT NOT NULL DEFAULT '[]', inference_basis TEXT NOT NULL DEFAULT '[]',
+                meaning_status TEXT NOT NULL DEFAULT 'uncertain', intent_category TEXT NOT NULL DEFAULT '',
+                scene_tags TEXT NOT NULL DEFAULT '[]', occurrences INTEGER NOT NULL DEFAULT 0,
+                last_inferred REAL, last_selected REAL, last_confirmed REAL)""",
+            "CREATE INDEX IF NOT EXISTS jargon_scene ON jargon(scope,status,intent_category,updated)",
+            "CREATE INDEX IF NOT EXISTS jargon_term ON jargon(scope,status,term)",
+            """CREATE TABLE IF NOT EXISTS jargon_evidence (
+                memory_id TEXT NOT NULL REFERENCES jargon(id), message_id INTEGER NOT NULL,
+                seq INTEGER NOT NULL, sender_id TEXT NOT NULL, at REAL NOT NULL, excerpt TEXT NOT NULL,
+                revision INTEGER NOT NULL, source TEXT NOT NULL, context TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(memory_id,message_id))""",
+            """CREATE TABLE IF NOT EXISTS expression_evidence (
+                expression_id TEXT NOT NULL REFERENCES expressions(id), message_id INTEGER NOT NULL,
+                seq INTEGER NOT NULL, sender_id TEXT NOT NULL, at REAL NOT NULL, excerpt TEXT NOT NULL,
+                revision INTEGER NOT NULL, source TEXT NOT NULL, context TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(expression_id,message_id))""",
+            """CREATE TABLE IF NOT EXISTS jargon_suppressions (
+                scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL, value TEXT NOT NULL,
+                PRIMARY KEY(scope,kind,value))""",
+            """CREATE TABLE IF NOT EXISTS jargon_resets (
+                scope TEXT PRIMARY KEY REFERENCES scopes(key), through_seq INTEGER NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS learning_changes (
+                id INTEGER PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), kind TEXT NOT NULL,
+                entry_id TEXT NOT NULL, revision INTEGER NOT NULL, action TEXT NOT NULL,
+                origin TEXT NOT NULL, reason TEXT NOT NULL, at REAL NOT NULL)""",
+            "CREATE INDEX IF NOT EXISTS learning_changes_entry ON learning_changes(scope,kind,entry_id,revision)",
+            """CREATE TABLE IF NOT EXISTS expression_turns (
+                scope TEXT NOT NULL REFERENCES scopes(key), turn_id TEXT NOT NULL,
+                target_message_id INTEGER, calls INTEGER NOT NULL, candidate_count INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, latency_ms INTEGER NOT NULL,
+                status TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY(scope,turn_id))""",
+            """CREATE TABLE IF NOT EXISTS expression_selections (
+                scope TEXT NOT NULL, turn_id TEXT NOT NULL, kind TEXT NOT NULL, entry_id TEXT NOT NULL,
+                revision INTEGER NOT NULL, delivery_id TEXT,
+                PRIMARY KEY(scope,turn_id,kind,entry_id),
+                FOREIGN KEY(scope,turn_id) REFERENCES expression_turns(scope,turn_id) ON DELETE CASCADE)""",
+        ]
+        for statement in statements:
+            db.execute(statement)
+        db.execute("PRAGMA user_version=14")
+
+
+
+def _upgrade_activity_schema(store: SocialStore) -> None:
+    with store.db:
+        store.db.execute("BEGIN IMMEDIATE")
+        store.db.execute("CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), "
+                         "revision INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, title TEXT NOT NULL, "
+                         "goal TEXT NOT NULL, motivation TEXT NOT NULL, checkpoint TEXT NOT NULL DEFAULT '', "
+                         "next_step TEXT NOT NULL, artifacts TEXT NOT NULL DEFAULT '[]', "
+                         "created REAL NOT NULL, updated REAL NOT NULL, last_turn TEXT NOT NULL DEFAULT '')")
+        store.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS activity_running_scope ON activities(scope) WHERE status='active'")
+        store.db.execute("CREATE TABLE IF NOT EXISTS activity_steps (activity_id TEXT NOT NULL REFERENCES activities(id), "
+                         "revision INTEGER NOT NULL, turn_id TEXT NOT NULL, status TEXT NOT NULL, "
+                         "checkpoint TEXT NOT NULL, next_step TEXT NOT NULL, artifacts TEXT NOT NULL, at REAL NOT NULL, "
+                         "PRIMARY KEY(activity_id,revision))")
+        store.db.execute("PRAGMA user_version=17")
 

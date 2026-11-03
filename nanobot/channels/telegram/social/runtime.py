@@ -403,9 +403,7 @@ class TelegramSocialRuntime:
                 scopes = [key for key, binding in bindings.items() if not binding.paused]
                 self.jargon.prepare_reviews(scopes)
                 self.store.learning.collect_due(scopes)
-                workers = sorted([self.expressions, self.jargon], key=lambda worker: self.store.db.execute(
-                    "SELECT COALESCE(MIN(created),1e30) FROM learning_batches WHERE kind=? AND status IN ('ready','failed') AND attempts<?",
-                    (worker.kind, 1 + getattr(self.config.learning, worker.kind).max_retries)).fetchone()[0])
+                workers = sorted([self.expressions, self.jargon], key=lambda worker: self.store.learning.earliest_batch(worker.kind, 1 + getattr(self.config.learning, worker.kind).max_retries)[0])
                 for worker in workers:
                     worker.start_due(scopes)
             except Exception:
@@ -549,9 +547,8 @@ class TelegramSocialRuntime:
         ):
             raise PermissionError("sleep interruption exceeds the operator policy")
         if proactive_paused is not None:
-            with self.store.db:
-                self.store.db.execute("UPDATE proactive_state SET stopped=? WHERE scope=?",
-                                      (int(proactive_paused), scope.session_key))
+            with transaction(self.store.db):
+                self.store.proactive_state.set_stopped(int(proactive_paused), scope.session_key)
             if proactive_paused:
                 self.proactive.cancel_invalid({item.session_key: current for item in self.store.scopes.all()
                                                if (current := self.binding(item)) is not None})
@@ -623,7 +620,7 @@ class TelegramSocialRuntime:
                 raise PermissionError("an earlier send is awaiting a platform retry")
             action = self.store.reserve_send(scope.session_key, version, text, self.config.max_sends_per_hour,
                                              turn=ctx.turn_id, sticker=sticker, followup_id=followup_id)
-            with self.store.db:
+            with transaction(self.store.db):
                 self.store.deliveries.set_reply_expiry(reply_to, ctx.turn_id, action)
             self.validate_context(ctx)
             return await self._deliver(scope, action, version, text, reply_to)
