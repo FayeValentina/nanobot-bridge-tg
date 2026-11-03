@@ -43,15 +43,15 @@ class SocialProactive:
 
     def sync(self, scope: ConversationScope, binding: TelegramSocialScopeConfig | None) -> None:
         key = scope.session_key
-        version = self.store.state(key)["version"]
+        version = self.store.scopes.state(key)["version"]
         enabled = binding is not None and binding.proactive.enabled and not binding.paused
         activity_enabled = binding is not None and binding.proactive.activity_enabled
         row = self.db.execute("SELECT * FROM proactive_state WHERE scope=?", (key,)).fetchone()
         name = f"proactive_schedule:{key}"
         source = json.dumps({"enabled": enabled, "policy": binding.proactive.model_dump() if binding else None}, sort_keys=True)
-        previous = self.db.execute("SELECT value FROM runtime_settings WHERE name=?", (name,)).fetchone()
-        same_policy = previous is None or previous[0] == source
-        self.store.setting_revision(name, source)
+        previous = self.store.scopes.setting_value(name)
+        same_policy = previous is None or previous == source
+        self.store.scopes.setting_revision(name, source)
         if (row is not None and row["version"] == version and (row["next_check"] is not None) == enabled
                 and (row["next_activity_check"] is not None) == (enabled and activity_enabled) and same_policy):
             return
@@ -86,7 +86,7 @@ class SocialProactive:
         return result
 
     def _deferred(self, key: str) -> bool:
-        state = self.store.state(key)
+        state = self.store.scopes.state(key)
         return (state["mode"] in {"waiting", "paused"}
                 or self.db.execute("SELECT 1 FROM dialogue_waits WHERE scope=? AND purpose<>'sleep'", (key,)).fetchone() is not None
                 or (state["wake_config"] != "{}" and state["mode"] == "sleeping"))
@@ -94,14 +94,10 @@ class SocialProactive:
     def _participation(self, key: str) -> dict[str, object]:
         """Only confirmed public message IDs count, including the ordinary message tool."""
         now = self.store.now()
-        rows = self.db.execute("SELECT m.message_id,MAX(m.at) AS at,COALESCE(a.group_id,d.id,CAST(m.message_id AS TEXT)) AS send_group "
-                              "FROM messages m LEFT JOIN actions a ON a.scope=m.scope AND a.message_id=m.message_id AND a.status='sent' "
-                              "LEFT JOIN message_deliveries d ON d.scope=m.scope AND d.status='sent' "
-                              "AND m.message_id IN (SELECT value FROM json_each(d.message_ids)) "
-                              "WHERE m.scope=? AND m.is_self=1 GROUP BY m.message_id", (key,)).fetchall()
+        rows = self.store.messages.participation(key)
         recent = [row for row in rows if now - 3600 < float(row["at"]) <= now]
         tracked = self.db.execute("SELECT tracked_since FROM proactive_state WHERE scope=?", (key,)).fetchone()[0]
-        first = self.db.execute("SELECT seq,at FROM messages WHERE scope=? ORDER BY seq LIMIT 1", (key,)).fetchone()
+        first = self.store.messages.first(key)
         coverage = float(tracked)
         if first is not None and first["seq"] > 1:
             coverage = max(coverage, float(first["at"]))
@@ -119,7 +115,7 @@ class SocialProactive:
             return "quiet_hours"
         if self.db.execute("SELECT stopped FROM proactive_state WHERE scope=?", (key,)).fetchone()[0]:
             return "stopped"
-        if self.store.state(key)["mode"] == "paused" or (not for_send and self._deferred(key)):
+        if self.store.scopes.state(key)["mode"] == "paused" or (not for_send and self._deferred(key)):
             return "deferred"
         if candidate.expires_at <= now:
             return "expired"
@@ -129,15 +125,15 @@ class SocialProactive:
             if row is None or row["status"] not in {"candidate", "confirmed"} or row["revision"] != candidate.revision or (row["expires"] is not None and float(row["expires"]) <= now):
                 return "memory_changed"
         elif candidate.kind == "unread":
-            state = self.store.state(key)
-            row = self.db.execute("SELECT at FROM messages WHERE scope=? AND seq=?", (key, candidate.seq)).fetchone()
+            state = self.store.scopes.state(key)
+            row = self.store.messages.timestamp(key, candidate.seq)
             if row is None or (not for_send and state["read_through"] >= candidate.seq) or not 0 <= now - float(row[0]) < binding.proactive.context_max_age_seconds:
                 return "context_expired"
         elif candidate.kind in {"idle", "activity"}:
             if candidate.kind == "activity" and not binding.proactive.activity_enabled:
                 return "disabled"
             if not for_send:
-                state = self.db.execute("SELECT last_member_at FROM scopes WHERE key=?", (key,)).fetchone()
+                state = self.store.scopes.last_member_at(key)
                 if state[0] is not None and now - float(state[0]) < binding.proactive.idle_seconds:
                     return "member_active"
                 if self.db.execute("SELECT 1 FROM judge_state WHERE scope=? AND (pending_due IS NOT NULL OR inflight=1)", (key,)).fetchone():
@@ -161,7 +157,7 @@ class SocialProactive:
         sample: float | None = None
         metrics = self._participation(key)
         hourly = metrics["confirmed_messages_hour"]
-        member_at = self.db.execute("SELECT last_member_at FROM scopes WHERE key=?", (key,)).fetchone()[0]
+        member_at = self.store.scopes.last_member_at(key)[0]
         idle = now - float(member_at if member_at is not None else row["tracked_since"])
         metrics.update({"last_member_at": member_at, "idle_seconds": idle, "base_probability": policy.probability})
         common = None
@@ -177,7 +173,7 @@ class SocialProactive:
             common = "busy"
         elif self.db.execute("SELECT 1 FROM judge_state WHERE scope=? AND (pending_due IS NOT NULL OR inflight=1)", (key,)).fetchone():
             common = "busy"
-        elif self.store.state(key)["mode"] == "active":
+        elif self.store.scopes.state(key)["mode"] == "active":
             common = "busy"
         elif idle < policy.idle_seconds:
             common = "member_active"
@@ -223,8 +219,7 @@ class SocialProactive:
                 # Work is independent of the probability and budget for public speech.
                 # With allTopics, use the conversation members most recently used rather
                 # than running identical idle projects in every dormant topic.
-                target = self.db.execute("SELECT key FROM scopes WHERE channel=? AND chat_id=? "
-                                         "ORDER BY last_member_at DESC,key LIMIT 1", (scope.channel, scope.chat_id)).fetchone()
+                target = self.store.scopes.latest_member_scope(scope.channel, scope.chat_id)
                 if binding.all_topics and target is not None and target[0] != key:
                     activity_decision = "other_topic_active"
                 elif self.db.execute("SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_requests_per_hour:
@@ -245,7 +240,7 @@ class SocialProactive:
                 # A configured timer event has no source member message or read credit.
                 self.db.execute("INSERT INTO wakes(id,scope,version,trigger_seq,source_seq,status,created,expires,due,reason,proactive_source) "
                                 "VALUES(?,?,?,0,0,'scheduled',?,?,?,'proactive',?)",
-                                (uuid4().hex, key, self.store.state(key)["version"], now, candidate.expires_at,
+                                (uuid4().hex, key, self.store.scopes.state(key)["version"], now, candidate.expires_at,
                                  now, candidate.model_dump_json()))
 
     def cancel_invalid(self, bindings: dict[str, TelegramSocialScopeConfig]) -> None:

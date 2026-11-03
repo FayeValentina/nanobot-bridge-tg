@@ -14,12 +14,12 @@ from telegram.error import RetryAfter
 
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.models import (
     SocialDeliveryUnknownError,
     SocialRateLimitError,
 )
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, channel, message
 from nanobot.config.schema import TelegramSocialConfig
@@ -82,14 +82,14 @@ def observed(social, seq=1, *, scope=A, **kwargs):
 
 def context(social, *, scope=A, turn="test-turn"):
     social.sync_scope(scope)
-    version = social.store.state(scope.session_key)["version"]
+    version = social.store.scopes.state(scope.session_key)["version"]
     job = uuid4().hex
     now = social.now()
     with social.store.db:
         social.store.db.execute(
             "INSERT INTO wakes(id,scope,version,trigger_seq,status,created,expires,due,requested) "
             "VALUES(?,?,?,1,'queued',?,?,?,?)",
-            (job, scope.session_key, social.store.state(scope.session_key)["version"], now, now + 120, now, now),
+            (job, scope.session_key, social.store.scopes.state(scope.session_key)["version"], now, now + 120, now, now),
         )
         social.store.db.execute("INSERT INTO requests VALUES(?,?)", (scope.session_key, now))
     ctx = RequestContext(
@@ -180,7 +180,7 @@ async def test_wait_tool_ends_agent_turn_without_an_extra_model_request(tmp_path
     await social.run_due()
     await loop._dispatch(social.bus.inbound.get_nowait())
     assert loop.provider.chat_stream_with_retry.await_count == 1
-    assert social.store.state(A.session_key)["mode"] == "waiting"
+    assert social.store.scopes.state(A.session_key)["mode"] == "waiting"
     assert social.bus.outbound.empty()
     lock = loop._session_locks.get(A.session_key)
     assert lock is None or not lock.locked()
@@ -205,10 +205,10 @@ async def test_sleep_ignores_ambient_but_direct_address_interrupts(social):
     inbound = social.bus.inbound.get_nowait()
     new_ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                              turn_id="interrupt", metadata=inbound.metadata,
-                             attributes={"context_version": social.store.state(A.session_key)["version"]})
+                             attributes={"context_version": social.store.scopes.state(A.session_key)["version"]})
     social.admit_request(new_ctx)
-    assert social.store.state(A.session_key)["mode"] == "active"
-    assert social.store.state(A.session_key)["wake_at"] is None
+    assert social.store.scopes.state(A.session_key)["mode"] == "active"
+    assert social.store.scopes.state(A.session_key)["wake_at"] is None
 
 
 @pytest.mark.parametrize("sleeping", [False, True])
@@ -220,7 +220,7 @@ async def test_wait_and_sleep_deadlines_are_one_shot(social, sleeping, on_timeou
     clock(social).advance(31)
     await social.run_due()
     assert social.bus.inbound.qsize() == int(on_timeout)
-    assert social.store.state(A.session_key)["wake_at"] is None
+    assert social.store.scopes.state(A.session_key)["wake_at"] is None
     for _ in range(3):
         clock(social).advance(60)
         await social.run_due()
@@ -236,7 +236,7 @@ async def test_rearming_timeout_without_new_external_messages_does_not_poll_mode
     inbound = social.bus.inbound.get_nowait()
     followup = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                               turn_id="followup", metadata=inbound.metadata,
-                              attributes={"context_version": social.store.state(A.session_key)["version"]})
+                              attributes={"context_version": social.store.scopes.state(A.session_key)["version"]})
     social.admit_request(followup)
     social.wait(followup, 30, on_timeout=True)
     finish(social, followup)
@@ -244,7 +244,7 @@ async def test_rearming_timeout_without_new_external_messages_does_not_poll_mode
     clock(social).advance(31)
     await social.run_due()
     assert social.bus.inbound.empty()
-    assert social.store.state(A.session_key)["wake_at"] is None
+    assert social.store.scopes.state(A.session_key)["wake_at"] is None
 
 
 async def test_missed_wait_deadline_does_not_create_a_fresh_stale_wake(social):
@@ -254,8 +254,8 @@ async def test_missed_wait_deadline_does_not_create_a_fresh_stale_wake(social):
     clock(social).advance(300)
     await social.run_due()
     assert social.bus.inbound.empty()
-    assert social.store.state(A.session_key)["mode"] == "observing"
-    assert social.store.state(A.session_key)["wake_at"] is None
+    assert social.store.scopes.state(A.session_key)["mode"] == "observing"
+    assert social.store.scopes.state(A.session_key)["wake_at"] is None
 
 
 @pytest.mark.parametrize("seconds", [0, -1, 3601, float("nan"), float("inf")])
@@ -309,7 +309,7 @@ async def test_busy_addresses_merge_and_survive_a_simultaneous_sleep(social):
     clock(social).advance(10)
     await social.run_due()
     assert social.bus.inbound.qsize() == 1
-    assert social.store.state(A.session_key)["read_through"] == 0
+    assert social.store.scopes.state(A.session_key)["read_through"] == 0
     job = social.store.db.execute("SELECT * FROM wakes WHERE status='queued'").fetchone()
     assert job["trigger_seq"] == 2
 
@@ -376,7 +376,7 @@ async def test_expired_address_is_not_replayed_after_budget_delay(social):
     clock(social).advance(3600)
     await social.run_due()
     assert social.bus.inbound.empty()
-    assert social.store.state(A.session_key)["next_seq"] == 2
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 2
 
 
 async def test_expired_execution_lease_does_not_leave_a_permanently_busy_scope(social):
@@ -399,7 +399,7 @@ async def test_pause_invalidates_running_tools_timers_and_pending_addresses(soci
     clock(social).advance(40)
     await social.run_due()
     assert social.bus.inbound.empty()
-    assert social.store.state(A.session_key)["mode"] == "paused"
+    assert social.store.scopes.state(A.session_key)["mode"] == "paused"
     with pytest.raises(PermissionError):
         social.validate_context(ctx)
     social.config.scopes[0].paused = False
@@ -418,7 +418,7 @@ async def test_restart_restores_wait_deadline_once_without_replaying_provider_st
     social.close()
     restored = TelegramSocialRuntime(config, root, MessageBus(), now=now)
     try:
-        assert restored.store.state(A.session_key)["mode"] == "waiting"
+        assert restored.store.scopes.state(A.session_key)["mode"] == "waiting"
         clock(restored).advance(31)
         await restored.recover()
         assert restored.bus.inbound.qsize() == 1
@@ -439,7 +439,7 @@ async def test_restart_after_wait_decision_does_not_replay_the_unfinished_old_tu
     try:
         await restored.recover()
         assert restored.bus.inbound.empty()
-        assert restored.store.state(A.session_key)["mode"] == "waiting"
+        assert restored.store.scopes.state(A.session_key)["mode"] == "waiting"
         clock(restored).advance(31)
         await restored.run_due()
         assert restored.bus.inbound.qsize() == 1
@@ -453,7 +453,7 @@ async def test_observation_dedup_and_wake_creation_commit_together(social):
                             "BEGIN SELECT RAISE(ABORT,'simulated disk error'); END")
     with pytest.raises(sqlite3.IntegrityError):
         await social.observe(observed(social), directed=True)
-    assert social.store.state(A.session_key)["next_seq"] == 1
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 1
     assert social.store.db.execute("SELECT COUNT(*) FROM updates").fetchone()[0] == 0
     assert social.store.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
     social.store.db.execute("DROP TRIGGER reject_wake")
@@ -661,7 +661,7 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
     store = SocialStore(root)
     try:
         assert store.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        state = store.state(A.session_key)
+        state = store.scopes.state(A.session_key)
         assert (state["next_seq"], state["read_through"], state["seen_through"]) == (7, 4, 5)
         assert state["mode"] == "observing"
         assert store.db.execute("SELECT content,message_id FROM actions").fetchone()[:] == ("hello", 501)

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge import A, case, updated
 from nanobot.channels.telegram.tests.test_social_scheduler import remove_v4_columns
@@ -76,7 +76,7 @@ def test_schema_ten_upgrade_removes_keys_and_preserves_journals(case, tmp_path):
         assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
         assert [tuple(row)[:-1] for row in restored.db.execute("SELECT * FROM messages ORDER BY seq")] == messages
         assert tuple(restored.db.execute("SELECT * FROM memories").fetchone()) == memory
-        state = restored.state(A.session_key)
+        state = restored.scopes.state(A.session_key)
         assert (state["read_through"], state["seen_through"], state["next_seq"]) == (1, 2, 4)
         assert state["version"] == "1" and state["mode"] == "waiting" and state["wake_at"] == 1070
         assert restored.judge_record(batch.id).status == "cancelled"

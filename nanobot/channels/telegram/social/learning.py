@@ -163,7 +163,7 @@ class SocialLearning:
 
     def configure(self, config: TelegramSocialLearningConfig) -> None:
         self.config = config
-        self.config_revision = self.store.setting_revision("learning", config.model_dump_json())
+        self.config_revision = self.store.scopes.setting_revision("learning", config.model_dump_json())
         self.recent = {scope: deque(rows, maxlen=config.selection_history_turns)
                        for scope, rows in self.recent.items()}
         with nullcontext() if self.db.in_transaction else self.db:
@@ -204,8 +204,7 @@ class SocialLearning:
         """Called inside the observation transaction, BEFORE rolling-history pruning."""
         key = message.scope.session_key
         source, text = self.source(message)
-        self.db.execute("UPDATE messages SET learning_source=?,learning_text=? WHERE scope=? AND message_id=?",
-                        (source, text, key, message.message_id))
+        self.store.messages.set_learning_source(key, message.message_id, source, text)
         # Even when collection is disabled, edited/deleted sources invalidate old results.
         self.invalidate(key, message.message_id, revision)
         if not self.config.enabled:
@@ -218,8 +217,7 @@ class SocialLearning:
             return
         neighbors: list[dict[str, object]] = []
         remaining = self.config.context_chars
-        for row in self.db.execute("SELECT message_id,revision,sender_id,learning_source,text FROM messages "
-                                   "WHERE scope=? AND seq<? ORDER BY seq DESC LIMIT ?", (key, seq, self.config.context_messages)):
+        for row in self.store.messages.learning_neighbors(key, seq, self.config.context_messages):
             excerpt = str(row["text"])[:remaining]
             remaining -= len(excerpt)
             neighbors.append({"message_id": row["message_id"], "revision": row["revision"], "sender_id": row["sender_id"],
@@ -265,7 +263,7 @@ class SocialLearning:
 
     def prepare(self, scope: str, kind: LearningKind) -> str | None:
         """Persist one bounded ready batch per chain. A never calls it 'learned'."""
-        if not self.config.enabled or self.store.state(scope)["mode"] == "paused":
+        if not self.config.enabled or self.store.scopes.state(scope)["mode"] == "paused":
             return None
         with nullcontext() if self.db.in_transaction else self.db:
             active = self.db.execute("SELECT id FROM learning_batches WHERE scope=? AND kind=? AND status IN ('ready','running','failed')",
@@ -284,14 +282,14 @@ class SocialLearning:
             batch = uuid4().hex
             self.db.execute("INSERT INTO learning_batches(id,scope,kind,scope_version,config_revision,after_event,through_event,sources,"
                             "status,created,updated,due,source_count) VALUES(?,?,?,?,?,?,?,?,'ready',?,?,?,?)",
-                            (batch, scope, kind, self.store.state(scope)["version"], self.config_revision, after, rows[-1]["id"],
+                            (batch, scope, kind, self.store.scopes.state(scope)["version"], self.config_revision, after, rows[-1]["id"],
                              json.dumps([dict(row) for row in rows], ensure_ascii=False), self.store.now(), self.store.now(), self.store.now(), len(rows)))
             return batch
 
     def collect_due(self, scopes: list[str]) -> None:
         with nullcontext() if self.db.in_transaction else self.db:
             for scope in scopes:
-                version = self.store.state(scope)["version"]
+                version = self.store.scopes.state(scope)["version"]
                 self.db.execute("UPDATE learning_batches SET status='cancelled',reason='scope_changed',updated=? "
                                 "WHERE scope=? AND scope_version<>? AND status IN ('ready','running','failed')", (self.store.now(), scope, version))
                 for kind in ("expression", "jargon"):
@@ -312,8 +310,8 @@ class SocialLearning:
                 raise ValueError("batch is no longer active")
             if row["attempts"] >= 2:
                 raise ValueError("batch attempt budget exhausted")
-            if (not self.config.enabled or self.store.state(row["scope"])["mode"] == "paused"
-                    or row["config_revision"] != self.config_revision or row["scope_version"] != self.store.state(row["scope"])["version"]):
+            if (not self.config.enabled or self.store.scopes.state(row["scope"])["mode"] == "paused"
+                    or row["config_revision"] != self.config_revision or row["scope_version"] != self.store.scopes.state(row["scope"])["version"]):
                 raise ValueError("batch configuration changed or paused")
             self.db.execute("UPDATE learning_batches SET status='running',attempts=attempts+1,updated=? WHERE id=?", (self.store.now(), batch))
 
@@ -325,15 +323,14 @@ class SocialLearning:
                 raise ValueError("batch is no longer active")
             if row["status"] != "running":
                 self.start(batch)
-            if (not self.config.enabled or self.store.state(row["scope"])["mode"] == "paused"
-                    or row["config_revision"] != self.config_revision or row["scope_version"] != self.store.state(row["scope"])["version"]):
+            if (not self.config.enabled or self.store.scopes.state(row["scope"])["mode"] == "paused"
+                    or row["config_revision"] != self.config_revision or row["scope_version"] != self.store.scopes.state(row["scope"])["version"]):
                 raise ValueError("batch configuration changed")
             sources = json.loads(row["sources"])
             # An evicted observation remains readable in the durable bounded batch;
             # explicit edits/deletes cancel it in invalidate(), rather than masquerading as eviction.
             for source in sources:
-                current = self.db.execute("SELECT revision,learning_source,learning_text FROM messages WHERE scope=? AND message_id=?",
-                                          (row["scope"], source["message_id"])).fetchone()
+                current = self.store.messages.learning_text(row["scope"], source["message_id"])
                 if current and (current["revision"] != source["revision"] or current["learning_source"] != "human_text"
                                 or not current["learning_text"].startswith(source["text"])):
                     raise ValueError("batch source changed")
@@ -362,7 +359,7 @@ class SocialLearning:
                 if table is None:
                     raise ValueError("unknown selection kind")
                 if kind == "sticker":
-                    valid = self.db.execute("SELECT 1 FROM stickers WHERE scope=? AND id=?", (scope, entry)).fetchone()
+                    valid = self.store.stickers.exists(scope, entry)
                 elif kind == "jargon":
                     valid = self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status IN ('usable','understand_only')", (scope, entry, revision)).fetchone()
                 else:

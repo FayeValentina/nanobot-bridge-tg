@@ -128,7 +128,7 @@ async def pump(runtime: TelegramSocialRuntime, clock: Clock) -> None:
 
 
 def seed_message(runtime: TelegramSocialRuntime, text: str, *, own: bool = False) -> int:
-    seq = int(runtime.store.state(SCOPE.session_key)["next_seq"])
+    seq = int(runtime.store.scopes.state(SCOPE.session_key)["next_seq"])
     runtime.store.observe(ObservedMessage(SCOPE, -seq, seq, "bot" if own else "123", "肥鱼" if own else "林林",
         runtime.now()-7200, text, is_self=own), 500)
     return seq
@@ -153,7 +153,7 @@ def seed_intention(runtime: TelegramSocialRuntime, *, thought: bool = False) -> 
 
 
 def seed_attempt(runtime: TelegramSocialRuntime, memory_id: str, index: int) -> None:
-    action = runtime.store.reserve_send(SCOPE.session_key, runtime.store.state(SCOPE.session_key)["version"],
+    action = runtime.store.reserve_send(SCOPE.session_key, runtime.store.scopes.state(SCOPE.session_key)["version"],
         "明天几点出发、和谁一起去郊游？", 60, turn=f"prior-{index}", followup_id=memory_id)
     runtime.store.delivery(action, "sent", message_id=300+index)
     seed_message(runtime, "明天几点出发、和谁一起去郊游？", own=True)
@@ -231,7 +231,7 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                 input_text = "没人说话" if name == "chat_invitation" else "？"
             # All historical evidence has already been read/considered. Idle runs
             # must be produced by the timer, not by an artificial inbound snapshot.
-            last = int(runtime.store.state(SCOPE.session_key)["next_seq"])-1
+            last = int(runtime.store.scopes.state(SCOPE.session_key)["next_seq"])-1
             with runtime.store.db:
                 runtime.store.db.execute("UPDATE scopes SET read_through=?,seen_through=? WHERE key=?", (last, last, SCOPE.session_key))
                 runtime.store.db.execute("UPDATE judge_state SET assessed_through=? WHERE scope=?", (last, SCOPE.session_key))

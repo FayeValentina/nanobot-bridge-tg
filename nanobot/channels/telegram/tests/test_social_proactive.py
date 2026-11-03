@@ -13,11 +13,11 @@ from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.manifest import SETUP_SPEC
 from nanobot.channels.telegram.runtime import TelegramConfig
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import ConversationScope, ProactiveCandidate
 from nanobot.channels.telegram.social.proactive import is_quiet
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
@@ -120,7 +120,7 @@ async def test_probability_modifiers_and_confirmed_message_groups(social):
     receipt = DeliveryReceipt("sent", (501, 502, 503))
     social.record_message_receipt(A, receipt, "ordinary", [(i, "confirmed") for i in receipt.message_ids])
     for i in (601, 602):
-        action = social.store.reserve_send(A.session_key, social.store.state(A.session_key)["version"], f"part {i}", 60)
+        action = social.store.reserve_send(A.session_key, social.store.scopes.state(A.session_key)["version"], f"part {i}", 60)
         social.store.db.execute("UPDATE actions SET group_id='burst' WHERE id=?", (action,))
         social.store.delivery(action, "sent", message_id=i)
         social.store.observe(replace(observed(social, i, is_self=True), message_id=i), 500)
@@ -255,7 +255,7 @@ async def test_consumed_messages_do_not_block_later_idle_opportunity(social):
     social.store.finish(ctx.turn_id, "completed")
     await tick(social)
     assert view(social.bus.inbound.get_nowait())["opportunity"]["kind"] == "idle"
-    assert social.store.state(A.session_key)["read_through"] == 0
+    assert social.store.scopes.state(A.session_key)["read_through"] == 0
 
 
 async def test_context_free_opportunity_ignores_legacy_require_context(social):
@@ -543,7 +543,7 @@ async def test_wait_after_queuing_parts_keeps_existing_delivery_without_new_wake
     await social.run_due()
     await tick(social, 2)
     assert sender.await_count == 2
-    assert social.store.state(A.session_key)["mode"] == "waiting"
+    assert social.store.scopes.state(A.session_key)["mode"] == "waiting"
     assert social.bus.inbound.empty()
 
 
@@ -617,7 +617,7 @@ async def test_model_can_silently_decline_opportunity_and_return_to_observing(tm
     await loop._dispatch(social.bus.inbound.get_nowait())
     loop.provider.chat_stream_with_retry.assert_awaited_once()
     assert social.bus.outbound.empty()
-    assert social.store.state(A.session_key)["mode"] == "observing"
+    assert social.store.scopes.state(A.session_key)["mode"] == "observing"
 
 
 async def test_real_tool_turn_can_read_candidate_by_id_and_publish_once(tmp_path, social):
@@ -634,7 +634,7 @@ async def test_real_tool_turn_can_read_candidate_by_id_and_publish_once(tmp_path
     await loop._dispatch(social.bus.inbound.get_nowait())
     sender.assert_awaited_once_with(A, "接着聊茶？", None)
     assert social.bus.outbound.empty()
-    assert social.store.state(A.session_key)["mode"] == "waiting"
+    assert social.store.scopes.state(A.session_key)["mode"] == "waiting"
 
 
 def test_scope_config_and_settings_json_contract_round_trip():
@@ -687,8 +687,8 @@ def test_schema_four_upgrade_preserves_memory_watermarks_and_history(tmp_path):
     try:
         assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert upgraded.db.execute("SELECT content FROM memories WHERE id='id'").fetchone()[0] == "remember me"
-        assert upgraded.state(A.session_key)["read_through"] == 4
-        assert upgraded.state(A.session_key)["seen_through"] == 5
+        assert upgraded.scopes.state(A.session_key)["read_through"] == 4
+        assert upgraded.scopes.state(A.session_key)["seen_through"] == 5
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
     finally:
         upgraded.close()

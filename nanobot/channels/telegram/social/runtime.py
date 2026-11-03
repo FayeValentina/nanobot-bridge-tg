@@ -132,7 +132,7 @@ class TelegramSocialRuntime:
 
     async def get_media(self, ctx: RequestContext, message_id: int) -> list[dict[str, Any]]:
         scope = self.validate_context(ctx)
-        refs = self.store.media_for_message(scope.session_key, message_id)
+        refs = self.store.messages.media_for_message(scope.session_key, message_id)
         if self._media_loader is None:
             return [{"type": "text", "text": "Media unavailable: Telegram downloader is offline."}]
         blocks: list[dict[str, Any]] = []
@@ -184,19 +184,19 @@ class TelegramSocialRuntime:
 
     def collect_sticker(self, ctx: RequestContext, message_id: int, note: str | None) -> str:
         scope = self.validate_context(ctx)
-        refs = self.store.media_for_message(scope.session_key, message_id)
+        refs = self.store.messages.media_for_message(scope.session_key, message_id)
         ref = next((ref for ref in refs if ref.kind == "sticker"), None)
         if ref is None:
             raise ValueError("this message has no sticker")
-        return self.store.collect_sticker(scope.session_key, ref, note, self.config.sticker_limit)
+        return self.store.stickers.collect(scope.session_key, ref, note, self.config.sticker_limit)
 
     def list_stickers(self, ctx: RequestContext, query: str) -> list[dict[str, object]]:
         scope = self.validate_context(ctx)
-        return self.store.list_stickers(scope.session_key, query)
+        return self.store.stickers.search(scope.session_key, query)
 
     async def send_sticker(self, ctx: RequestContext, sticker_id: str, reply_to: int | None) -> DeliveryResult:
         scope = self.validate_context(ctx)
-        ref = self.store.sticker(scope.session_key, sticker_id)
+        ref = self.store.stickers.get(scope.session_key, sticker_id)
         if ref.animated or ref.video or ref.kind != "sticker":
             raise ValueError("only static stickers can be sent in this release")
         return await self.send(ctx, f"[sticker:{ref.unique_id}]", reply_to, sticker=ref)
@@ -220,7 +220,7 @@ class TelegramSocialRuntime:
         self.bindings.configure(config)
         self.store.learning.configure(config.learning)
         self.judging.configure()
-        for scope in self.store.scopes():
+        for scope in self.store.scopes.all():
             self.sync_scope(scope)
         for binding in config.scopes:
             # Group-wide bindings discover actual topics from incoming messages.
@@ -254,7 +254,7 @@ class TelegramSocialRuntime:
         if scope is None or scope.channel != self.channel:
             return None
         binding = self.binding(scope)
-        if binding is None and not self.store.owns(session.key):
+        if binding is None and not self.store.scopes.owns(session.key):
             return None
         mode = "ordinary"
         policy = SessionPolicy()
@@ -298,11 +298,11 @@ class TelegramSocialRuntime:
             raise PermissionError("social tool requires an authoritative group/topic turn")
         if self.binding(scope) is None:
             raise PermissionError("social tools require an enabled group/topic")
-        if self.store.state(scope.session_key)["mode"] == "paused":
+        if self.store.scopes.state(scope.session_key)["mode"] == "paused":
             raise PermissionError("social conversation is paused")
         if ctx.attributes.get("social_deferred"):
             raise PermissionError("this turn has already yielded to social_wait")
-        if require_claim and ctx.metadata.get("_social_job") is not None and not self.store.active_turn(scope.session_key, self.store.state(scope.session_key)["version"], ctx.turn_id):
+        if require_claim and ctx.metadata.get("_social_job") is not None and not self.store.active_turn(scope.session_key, self.store.scopes.state(scope.session_key)["version"], ctx.turn_id):
             raise PermissionError("social tool requires an active authorized wake")
         return scope
 
@@ -317,7 +317,7 @@ class TelegramSocialRuntime:
             raise PermissionError("social execution requires an authorized wake")
         self._wake_conditions(scope.session_key)
         self.proactive.check_job(scope.session_key, job, self.binding(scope))
-        self.store.claim(scope.session_key, job, self.store.state(scope.session_key)["version"], ctx.turn_id)
+        self.store.claim(scope.session_key, job, self.store.scopes.state(scope.session_key)["version"], ctx.turn_id)
         self.consume_wake_conditions(scope.session_key, job)
 
     def is_activity_turn(self, ctx: RequestContext) -> bool:
@@ -331,11 +331,11 @@ class TelegramSocialRuntime:
         if row is None or row[0] == "{}":
             return
         conditions, dynamic = self._wake_conditions(key)
-        if dynamic and conditions.one_shot and row[0] == self.store.state(key)["wake_config"]:
+        if dynamic and conditions.one_shot and row[0] == self.store.scopes.state(key)["wake_config"]:
             self.store.set_wake_config(key, "{}")
 
     def _wake_conditions(self, key: str) -> tuple[TelegramSocialWakeConfig, bool]:
-        raw = self.store.state(key)["wake_config"]
+        raw = self.store.scopes.state(key)["wake_config"]
         conditions = TelegramSocialWakeConfig.model_validate_json(raw)
         if conditions.expires_at is not None and conditions.expires_at <= self.now():
             self.store.set_wake_config(key, "{}")
@@ -374,15 +374,15 @@ class TelegramSocialRuntime:
     async def run_due(self) -> None:
         async with self._cycle_lock:
             # Resolve operator changes before touching timers, requests or retry actions.
-            for scope in self.store.scopes():
+            for scope in self.store.scopes.all():
                 self.sync_scope(scope)
                 if self.binding(scope) is not None:
                     self._wake_conditions(scope.session_key)
             self.store.consume_timers()
-            bindings = {scope.session_key: binding for scope in self.store.scopes()
+            bindings = {scope.session_key: binding for scope in self.store.scopes.all()
                         if (binding := self.binding(scope)) is not None}
             self.proactive.cancel_invalid(bindings)
-            for scope in self.store.scopes():
+            for scope in self.store.scopes.all():
                 binding = self.binding(scope)
                 if binding is not None:
                     self.proactive.tick(scope, binding, self.config)
@@ -442,7 +442,7 @@ class TelegramSocialRuntime:
         binding = self.binding(scope)
         assert binding is not None  # validate_context checked the current operator binding.
         conditions, _ = self._wake_conditions(scope.session_key)
-        state = self.store.state(scope.session_key)
+        state = self.store.scopes.state(scope.session_key)
         requests = self.store.db.execute("SELECT COUNT(*),MAX(at) FROM requests WHERE scope=? AND at>?",
                                          (scope.session_key, self.now() - 3600)).fetchone()
         sends = self.store.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?",
@@ -557,7 +557,7 @@ class TelegramSocialRuntime:
                 self.store.db.execute("UPDATE proactive_state SET stopped=? WHERE scope=?",
                                       (int(proactive_paused), scope.session_key))
             if proactive_paused:
-                self.proactive.cancel_invalid({item.session_key: current for item in self.store.scopes()
+                self.proactive.cancel_invalid({item.session_key: current for item in self.store.scopes.all()
                                                if (current := self.binding(item)) is not None})
             self.scheduler.notify()
             if not keywords and not senders and not on_messages and not on_question:
@@ -591,8 +591,8 @@ class TelegramSocialRuntime:
 
     def reserve_message_send(self, scope: ConversationScope, text: str, turn: str | None, *, units: int = 1) -> str:
         """Reserve an ordinary delivery envelope; caller holds the shared send lock."""
-        version = self.store.state(scope.session_key)["version"]
-        if self.store.state(scope.session_key)["mode"] == "paused":
+        version = self.store.scopes.state(scope.session_key)["version"]
+        if self.store.scopes.state(scope.session_key)["mode"] == "paused":
             raise PermissionError("social conversation is paused")
         self.proactive.check_send(scope, turn, self.binding(scope))
         previous = self.store.last_send(scope.session_key)
@@ -612,7 +612,7 @@ class TelegramSocialRuntime:
                    *, sticker: MediaReference | None = None, followup_id: str | None = None) -> DeliveryResult:
         scope = self.validate_context(ctx)
         text = self._public_text(text)
-        if reply_to is not None and not self.store.has_message(scope.session_key, reply_to):
+        if reply_to is not None and not self.store.messages.has_message(scope.session_key, reply_to):
             raise PermissionError("reply target was not observed in this group/topic")
         if (self._sticker_sender if sticker else self._sender) is None:
             raise RuntimeError("Telegram sender is unavailable")
@@ -620,7 +620,7 @@ class TelegramSocialRuntime:
         async with lock:
             self.validate_context(ctx)
             self.proactive.check_send(scope, ctx.turn_id, self.binding(scope))
-            version = self.store.state(scope.session_key)["version"]
+            version = self.store.scopes.state(scope.session_key)["version"]
             previous_action = self.store.db.execute(
                 "SELECT * FROM actions WHERE scope=? AND version=? AND turn_id=? AND kind=? AND trim(content)=trim(?) "
                 "ORDER BY created DESC LIMIT 1", (scope.session_key, version, ctx.turn_id, "sticker" if sticker else "text", text),
@@ -666,7 +666,7 @@ class TelegramSocialRuntime:
         texts = [self._public_text(text) for text in texts]
         if len(set(texts)) != len(texts):
             raise ValueError("duplicate parts are not allowed")
-        if reply_to is not None and not self.store.has_message(scope.session_key, reply_to):
+        if reply_to is not None and not self.store.messages.has_message(scope.session_key, reply_to):
             raise PermissionError("reply target was not observed in this group/topic")
         if self._sender is None:
             raise RuntimeError("Telegram sender is unavailable")
@@ -675,7 +675,7 @@ class TelegramSocialRuntime:
         async with lock:
             self.validate_context(ctx)
             self.proactive.check_send(scope, ctx.turn_id, self.binding(scope))
-            version = self.store.state(scope.session_key)["version"]
+            version = self.store.scopes.state(scope.session_key)["version"]
             # Repeated identical calls return each child's receipt, including partial failures.
             for group in self.store.db.execute("SELECT DISTINCT group_id FROM actions WHERE scope=? "
                                                "AND version=? AND turn_id=? AND group_id IS NOT NULL",
@@ -699,11 +699,11 @@ class TelegramSocialRuntime:
         row = self.store.db.execute("SELECT kind,media_ref,turn_id FROM actions WHERE id=?", (action,)).fetchone()
         sticker = MediaReference.model_validate_json(row["media_ref"]) if row["kind"] == "sticker" else None
         try:
-            if version != self.store.state(scope.session_key)["version"] or self.store.state(scope.session_key)["mode"] == "paused":
+            if version != self.store.scopes.state(scope.session_key)["version"] or self.store.scopes.state(scope.session_key)["mode"] == "paused":
                 raise PermissionError("send authorization changed")
             self.proactive.check_send(scope, str(row["turn_id"]) if row["turn_id"] else None, self.binding(scope))
             self.store.followups.check_delivery(action)
-            if reply_to is not None and not self.store.has_message(scope.session_key, reply_to):
+            if reply_to is not None and not self.store.messages.has_message(scope.session_key, reply_to):
                 raise PermissionError("reply target is no longer observed here")
             sender = self._sticker_sender if sticker else self._sender
             if sender is None:
@@ -740,7 +740,7 @@ class TelegramSocialRuntime:
         final = child["group_id"] is None or not self.store.db.execute(
             "SELECT 1 FROM actions WHERE group_id=? AND ordinal>?", (child["group_id"], child["ordinal"]),
         ).fetchone()
-        if self.store.state(scope.session_key)["version"] == version:
+        if self.store.scopes.state(scope.session_key)["version"] == version:
             self._confirmed_send(scope, action, str(row["turn_id"]) if row["turn_id"] else None, text, final=final)
         return {"action_id": action, "status": "sent", "message_id": message_id}
 
@@ -759,14 +759,14 @@ class TelegramSocialRuntime:
             self.selector.confirm_sticker(scope.session_key, turn, action,
                                           MediaReference.model_validate_json(sticker[0]).unique_id)
         self.scheduler.notify()
-        if turn is not None and self.store.state(scope.session_key)["mode"] == "observing":
+        if turn is not None and self.store.scopes.state(scope.session_key)["mode"] == "observing":
             self.keep_reply_intent(scope, turn)
 
     def keep_reply_intent(self, scope: ConversationScope, turn: str) -> None:
         """Use the existing local wait; a missing reply never calls a model."""
         key = scope.session_key
         binding = self.binding(scope)
-        if binding is None or binding.paused or self.store.state(key)["mode"] not in {"active", "observing"}:
+        if binding is None or binding.paused or self.store.scopes.state(key)["mode"] not in {"active", "observing"}:
             return
         confirmed = self.store.db.execute("SELECT 1 FROM actions WHERE scope=? AND turn_id=? AND status='sent' "
                                           "UNION ALL SELECT 1 FROM message_deliveries WHERE scope=? AND turn_id=? "
@@ -827,7 +827,7 @@ class TelegramSocialRuntime:
                 self.store.db.execute("INSERT INTO message_deliveries VALUES(?,?,?,?,?,?,?,?)",
                                       (delivery_id, scope.session_key, turn_id, self.now(),
                                        receipt.status, json.dumps(receipt.message_ids), receipt.detail,
-                                       self.store.state(scope.session_key)["version"]))
+                                       self.store.scopes.state(scope.session_key)["version"]))
             else:
                 self.store.db.execute("UPDATE message_deliveries SET status=?,message_ids=?,detail=? WHERE id=? AND scope=?",
                                       (receipt.status, json.dumps(receipt.message_ids), receipt.detail, delivery_id, scope.session_key))
@@ -840,13 +840,13 @@ class TelegramSocialRuntime:
         for message_id, text in texts:
             self.store.observe(ObservedMessage(scope, -message_id, message_id, "bot", "Bot", self.now(),
                                                text, is_self=True, is_bot=True), self.config.retention_messages)
-        if (previous is None or previous["version"] == self.store.state(scope.session_key)["version"]) and (previous is None or previous["status"] != "sent"):
+        if (previous is None or previous["version"] == self.store.scopes.state(scope.session_key)["version"]) and (previous is None or previous["status"] != "sent"):
             if receipt.status == "sent" or texts:
                 self._confirmed_send(scope, delivery_id, turn_id, "\n".join(text for _, text in texts), final=receipt.status == "sent")
         return delivery_id
 
     def hook_factory(self, turn: AgentTurnHookContext) -> AgentHook | None:
-        if turn.session_key is None or not self.store.owns(turn.session_key):
+        if turn.session_key is None or not self.store.scopes.owns(turn.session_key):
             return None
         return _SocialExposureHook(self)
 
@@ -871,7 +871,7 @@ class _SocialExposureHook(AgentHook):
     async def before_iteration(self, context: AgentHookContext) -> None:
         self._restore_memory_context()
         ctx = current_request_context()
-        if ctx is None or ctx.session_key is None or not self.runtime.store.owns(ctx.session_key):
+        if ctx is None or ctx.session_key is None or not self.runtime.store.scopes.owns(ctx.session_key):
             return
         scope = ConversationScope.from_session_key(ctx.session_key)
         if scope is None or self.runtime.binding(scope) is None:

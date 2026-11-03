@@ -15,10 +15,10 @@ from nanobot.agent.context_governance import ContextCompactionState, ContextGove
 from nanobot.agent.hook import AgentHookContext, AgentTurnHookContext
 from nanobot.agent.tools.context import RequestContext, ToolContext, request_context
 from nanobot.agent.tools.message import MessageTool
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import SocialDeliveryUnknownError
 from nanobot.channels.telegram.social.runtime import SOCIAL_PROTOCOL, TelegramSocialRuntime
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_proactive import enable, tick
@@ -361,10 +361,10 @@ async def test_reply_wait_timeout_stays_local_and_other_topics_do_not_share_inte
     item = own(social)
     social.set_sender(AsyncMock(return_value=501))
     await social.send(ordinary("ask"), "旅行怎么样？", None, followup_id=item["id"])
-    assert social.store.state(A.session_key)["mode"] == "waiting"
+    assert social.store.scopes.state(A.session_key)["mode"] == "waiting"
     clock(social).advance(31)
     await social.run_due()
-    assert social.store.state(A.session_key)["mode"] == "observing"
+    assert social.store.scopes.state(A.session_key)["mode"] == "observing"
     assert social.bus.inbound.empty()
     assert social.store.followups.summary(B.session_key) == []
     with pytest.raises(PermissionError, match="missing"):
@@ -377,13 +377,13 @@ def test_schema_twelve_upgrade_preserves_sources(social):
     social.store.db.execute("PRAGMA user_version=12")
     social.store.db.commit()
     messages = [tuple(row) for row in social.store.db.execute("SELECT * FROM messages")]
-    state = social.store.state(A.session_key)
+    state = social.store.scopes.state(A.session_key)
     social.close()
     restored = SocialStore(social.root, now=social.now)
     try:
         assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert [tuple(row) for row in restored.db.execute("SELECT * FROM messages")] == messages
-        assert restored.state(A.session_key) == state
+        assert restored.scopes.state(A.session_key) == state
         assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         restored.close()

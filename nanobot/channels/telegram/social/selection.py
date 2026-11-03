@@ -123,10 +123,7 @@ class ContextSelector:
             task.cancel()
 
     def input(self, scope: str, turn: str, model_text: str = "") -> list[TurnMessage]:
-        rows = self.runtime.store.db.execute(
-            "SELECT body,turn_id FROM views WHERE scope=? AND (turn_id=? OR turn_id IS NULL) "
-            "ORDER BY created DESC,rowid DESC LIMIT 128", (scope, turn),
-        ).fetchall()
+        rows = self.runtime.store.views.turn_bodies(scope, turn)
         for row in rows:
             if model_text and row[0] not in model_text:
                 continue
@@ -137,13 +134,7 @@ class ContextSelector:
                 # Already learned notes for the exact displayed sticker provide
                 # visual context without another model/image call. Never borrow
                 # another scope's notes or describe an unseen/unknown image.
-                notes = self.runtime.store.db.execute(
-                    "SELECT s.note FROM messages m JOIN json_each(m.media_refs) r "
-                    "JOIN stickers s ON s.scope=m.scope AND s.id=json_extract(r.value,'$.unique_id') "
-                    "WHERE m.scope=? AND m.message_id=? AND m.revision=? "
-                    "AND json_extract(r.value,'$.kind')='sticker' AND trim(s.note)<>'' LIMIT 2",
-                    (scope, message.message_id, message.revision),
-                ).fetchall()
+                notes = self.runtime.store.messages.sticker_notes(scope, message.message_id, message.revision)
                 message.known_sticker_notes = [str(note[0])[:400] for note in notes]
             return messages
         return []
@@ -200,10 +191,7 @@ class ContextSelector:
         return all(str(row[name])[:400] == value for name, value in candidate.data.items())
 
     def messages_current(self, scope: str, messages: list[TurnMessage]) -> bool:
-        return all(self.runtime.store.db.execute(
-            "SELECT 1 FROM messages WHERE scope=? AND message_id=? AND revision=?",
-            (scope, m.message_id, m.revision),
-        ).fetchone() is not None for m in messages)
+        return all(self.runtime.store.messages.current_revision(scope, m.message_id, m.revision) is not None for m in messages)
 
     async def select(self, scope: str, turn: str, model_text: str = "") -> list[Candidate]:
         # Every hook iteration reuses this direct ID/revision/value comparison.
@@ -212,7 +200,7 @@ class ContextSelector:
         async with self.locks.setdefault(scope, asyncio.Lock()):
             source = self.input(scope, turn, model_text)
             store = self.runtime.store
-            version = store.state(scope)["version"]
+            version = store.scopes.state(scope)["version"]
             key = (scope, turn)
             previous = self.cache.get(key)
             if previous is not None:
@@ -284,7 +272,7 @@ class ContextSelector:
                                 choices.append(item)
                             selected.extend(choices[:limit])
                         if (self.input(scope, turn, model_text) != source or not self.messages_current(scope, source)
-                                or store.state(scope)["version"] != version or store.learning.config_revision != cached.config_revision):
+                                or store.scopes.state(scope)["version"] != version or store.learning.config_revision != cached.config_revision):
                             raise ValueError("input changed")
                         bounded = self.context(selected)
                         included = {str(item["id"]) for entries in bounded.values() for item in entries}

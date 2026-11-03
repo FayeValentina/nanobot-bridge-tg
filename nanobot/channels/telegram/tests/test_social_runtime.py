@@ -103,14 +103,14 @@ async def wake(social, scope=A, *, seq=1, text="@bot hello"):
 
 def context(social, scope=A, *, turn="test-turn"):
     social.sync_scope(scope)
-    version = social.store.state(scope.session_key)["version"]
+    version = social.store.scopes.state(scope.session_key)["version"]
     job = uuid4().hex
     now = time.time()
     with social.store.db:
         social.store.db.execute(
             "INSERT INTO wakes(id,scope,version,trigger_seq,status,created,expires,due,requested) "
             "VALUES(?,?,?,1,'queued',?,?,?,?)",
-            (job, scope.session_key, social.store.state(scope.session_key)["version"], now, now + 120, now, now),
+            (job, scope.session_key, social.store.scopes.state(scope.session_key)["version"], now, now + 120, now, now),
         )
         social.store.db.execute("INSERT INTO requests VALUES(?,?)", (scope.session_key, now))
     ctx = RequestContext(
@@ -154,7 +154,7 @@ async def test_plain_messages_are_observed_without_llm_or_media_download(tmp_pat
     tg = channel(social)
     tg._download_message_media = AsyncMock(side_effect=AssertionError("must not download"))
     await tg._process_message_update(telegram_update(text="ordinary group conversation"), None)
-    assert social.store.state(A.session_key)["next_seq"] == 2
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 2
     assert social.bus.inbound.empty()
     loop.provider.chat_stream_with_retry.assert_not_awaited()
     tg._download_message_media.assert_not_awaited()
@@ -190,7 +190,7 @@ async def test_observer_authorization_does_not_fall_back_to_ordinary_tools(socia
     social.configure(config)
     tg = channel(social)
     await tg._process_message_update(telegram_update(text="@bot forbidden observer"), None)
-    assert social.store.state(A.session_key)["next_seq"] == 1
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 1
     assert social.bus.inbound.empty()
 
 
@@ -204,7 +204,7 @@ async def test_unconfigured_topic_keeps_ordinary_routing(social):
     tg._start_typing = MagicMock()
     await tg._process_message_update(telegram_update(thread=43), None)
     assert tg._handle_message.await_args.kwargs["session_key"] == "telegram:-1001:topic:43"
-    assert social.store.state(A.session_key)["next_seq"] == 1
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 1
 
 
 async def test_request_budget_and_stale_mentions_do_not_call_model(social):
@@ -213,7 +213,7 @@ async def test_request_budget_and_stale_mentions_do_not_call_model(social):
     await social.observe(message(A, seq=2), directed=True)
     await social.observe(replace(message(A, seq=3), timestamp=time.time() - 300), directed=True)
     assert social.bus.inbound.qsize() == 1
-    assert social.store.state(A.session_key)["next_seq"] == 4
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 4
 
 
 @pytest.mark.parametrize("reply", [False, True])
@@ -258,10 +258,10 @@ async def test_tool_send_is_scope_checked_confirmed_and_final_is_silent(tmp_path
     await loop._dispatch(await wake(social))
     sender.assert_awaited_once_with(A, "public hello", 1)
     assert loop.provider.chat_stream_with_retry.await_count == 2
-    assert social.store.state(A.session_key)["read_through"] == 1
+    assert social.store.scopes.state(A.session_key)["read_through"] == 1
     row = social.store.db.execute("SELECT status,message_id FROM actions").fetchone()
     assert tuple(row) == ("sent", 501)
-    assert social.store.has_message(A.session_key, 501)
+    assert social.store.messages.has_message(A.session_key, 501)
     assert social.bus.outbound.empty()
 
 
@@ -492,7 +492,7 @@ async def test_snapshot_ack_never_clears_new_arrivals_or_another_group(social):
     assert social.mark_read(ctx, 2) == 2
     with pytest.raises(ValueError):
         social.mark_read(ctx, 3)
-    assert social.store.state(B.session_key)["read_through"] == 0
+    assert social.store.scopes.state(B.session_key)["read_through"] == 0
     other = replace(ctx, chat_id=str(B.chat_id))
     with pytest.raises(PermissionError):
         social.read_messages(other)
@@ -513,7 +513,7 @@ async def test_duplicates_edits_and_media_markers_do_not_produce_extra_wakes(soc
     await social.observe(original, directed=True)
     await social.observe(replace(original, update_id=2, text="edited"), directed=True)
     assert social.bus.inbound.qsize() == 1
-    assert social.store.state(A.session_key)["next_seq"] == 2
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 2
     view = social.store.view(A.session_key, count=2, chars=4000)
     assert view["messages"][0]["text"] == "edited"
     assert view["messages"][0]["media"] == ["photo"]
@@ -524,7 +524,7 @@ def test_store_transaction_failure_does_not_advance_watermark(social):
         BEGIN SELECT RAISE(ABORT,'simulated write failure'); END""")
     with pytest.raises(sqlite3.IntegrityError):
         social.store.observe(message(A), 100)
-    assert social.store.state(A.session_key)["next_seq"] == 1
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 1
     social.store.db.execute("DROP TRIGGER fail_insert")
     assert social.store.observe(message(A), 100) == (1, True)
 
@@ -555,7 +555,7 @@ async def test_recovery_coalesces_pending_wakes_and_does_not_resend_actions(soci
 async def test_uncertain_send_cancels_recovery_of_the_old_question(social):
     await social.observe(message(A), directed=True)
     social.bus.inbound.get_nowait()
-    version = social.store.state(A.session_key)["version"]
+    version = social.store.scopes.state(A.session_key)["version"]
     social.store.reserve_send(A.session_key, version, "interrupted", 6)
     await social.recover()
     assert social.bus.inbound.empty()
@@ -720,7 +720,7 @@ async def test_busy_turn_defers_new_wake_without_losing_watermark(tmp_path, soci
         await asyncio.wait_for(wait_completed(), 2)
         assert len(calls) == 2
         assert "NEW MESSAGE DURING TURN" in calls[1]
-        assert social.store.state(A.session_key)["read_through"] == 2
+        assert social.store.scopes.state(A.session_key)["read_through"] == 2
         assert social.bus.outbound.empty()
     finally:
         runner.cancel()
@@ -805,7 +805,7 @@ async def test_group_wide_binding_observes_and_replies_in_each_actual_topic(tmp_
     assert "For a member-message wake, an intermediary selected the batch" in system
     tg._handle_message.assert_not_awaited()
     if target != A:
-        assert social.store.state(A.session_key)["next_seq"] == 1
+        assert social.store.scopes.state(A.session_key)["next_seq"] == 1
 
 
 @pytest.mark.parametrize("override_first", [False, True])
@@ -829,14 +829,14 @@ def test_group_wide_role_and_existing_topic_history_survive_reconfiguration(soci
     social.configure(social.config)
     other = ConversationScope("telegram", A.chat_id, 43)
     social.sync_scope(other)
-    assert social.store.state(A.session_key)["next_seq"] == 2
-    assert social.store.state(other.session_key)["next_seq"] == 1
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 2
+    assert social.store.scopes.state(other.session_key)["next_seq"] == 1
     assert "PERSONA ALPHA" in social.bindings.resolve(other).persona
     group.all_topics = False
     social.configure(social.config)
     assert social.binding(other) is None
-    assert social.store.state(other.session_key)["version"] == "disabled"
-    assert social.store.state(A.session_key)["next_seq"] == 2
+    assert social.store.scopes.state(other.session_key)["version"] == "disabled"
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 2
 
 
 @pytest.mark.parametrize("variant,expected", [
@@ -860,6 +860,6 @@ async def test_v5_material_sources_at_telegram_boundary(social, variant, expecte
         body["photo"] = [{"file_id": "photo", "file_unique_id": "unique", "width": 1, "height": 1}]
     await tg._observe_social(Update.de_json(raw, None))
     assert social.store.learning.status(A.session_key)["buffered_materials"] == expected
-    assert social.store.state(A.session_key)["seen_through"] == social.store.state(A.session_key)["read_through"] == 0
+    assert social.store.scopes.state(A.session_key)["seen_through"] == social.store.scopes.state(A.session_key)["read_through"] == 0
     # All sources still reach ordinary observation; source filtering adds no bot admission gate.
-    assert social.store.state(A.session_key)["next_seq"] == 2
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 2

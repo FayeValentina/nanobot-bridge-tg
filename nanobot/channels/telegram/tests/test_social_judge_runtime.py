@@ -68,7 +68,7 @@ async def test_every_new_batch_reaches_model_even_with_legacy_probability_zero(s
     inbound=social.bus.inbound.get_nowait()
     view=json.loads(inbound.content.split("\n",1)[1])
     assert view["wake_reason"]=="judge" and view["judgement"][0]["decision"]["decision"]=="wake"
-    assert social.store.state(A.session_key)["seen_through"]==0
+    assert social.store.scopes.state(A.session_key)["seen_through"]==0
     assert social.store.db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='wake_samples'").fetchone() is None
 
 
@@ -82,7 +82,7 @@ async def test_even_explicit_addresses_have_no_parallel_local_wake_path(social,d
     provider.chat.assert_awaited_once()
     assert social.bus.inbound.empty()
     assert social.store.judge_through(A.session_key)==1
-    assert social.store.state(A.session_key)["read_through"]==0
+    assert social.store.scopes.state(A.session_key)["read_through"]==0
 
 
 @pytest.mark.parametrize("excluded",["duplicate","edit","self","old","future","paused"])
@@ -155,7 +155,7 @@ async def test_continuous_messages_are_batched_with_a_fixed_total_cap(social):
     provider.chat.assert_awaited_once()
     snapshot=sent_snapshot(provider)
     assert snapshot.new_seqs==(1,2,3,4)
-    assert social.store.state(A.session_key)["next_seq"]==6
+    assert social.store.scopes.state(A.session_key)["next_seq"]==6
     assert social.bus.inbound.qsize()==1
 
 
@@ -191,11 +191,11 @@ async def test_judge_latency_does_not_hold_receiver_or_cycle_lock(social):
     await entered.wait()
     assert not social._cycle_lock.locked()
     await social.observe(observed(social,2,text="more"),directed=False)
-    assert social.store.state(A.session_key)["next_seq"]==3
+    assert social.store.scopes.state(A.session_key)["next_seq"]==3
     release.set()
     await asyncio.gather(*list(social.judging.tasks.values()))
     assert social.store.judge_through(A.session_key)==1
-    assert social.store.state(A.session_key)["read_through"]==0
+    assert social.store.scopes.state(A.session_key)["read_through"]==0
 
 
 async def test_network_failures_make_one_bounded_fallback_without_legacy_triggers(social):
@@ -232,7 +232,7 @@ async def test_edit_during_judgement_invalidates_even_unchanged_text(social):
     await social.run_due()
     assert social.bus.inbound.empty()
     assert social.store.db.execute("SELECT status FROM judge_batches").fetchone()[0] == "cancelled"
-    assert social.store.state(A.session_key)["read_through"] == 0
+    assert social.store.scopes.state(A.session_key)["read_through"] == 0
 
 
 async def test_decision_and_main_handoff_commit_in_one_transaction(social):
@@ -325,7 +325,7 @@ async def test_standing_preferences_do_not_invent_a_selective_wait(social, mode)
         assert social.bus.inbound.qsize() == 1
         row = social.store.db.execute("SELECT through_seq,handoff_job FROM judge_batches").fetchone()
         assert row["through_seq"] == 1 and row["handoff_job"]
-    assert social.store.state(A.session_key)["read_through"] == 0
+    assert social.store.scopes.state(A.session_key)["read_through"] == 0
 
 
 @pytest.mark.parametrize("seconds,infinite", [(30, False), (None, True)])
@@ -345,7 +345,7 @@ async def test_real_selective_wait_keeps_conditions_deadline_and_one_shot(social
     assert snapshot.intent.until == (None if infinite else snapshot.intent.condition_expires - 30)
     assert snapshot.intent.one_shot and snapshot.intent.condition_expires > social.now()
     assert social.bus.inbound.empty()
-    assert social.store.state(A.session_key)["wake_config"] != "{}"
+    assert social.store.scopes.state(A.session_key)["wake_config"] != "{}"
 
     provider = decide(social, fulfills=True)
     await social.observe(observed(social, 2, text="到家了"), directed=False)
@@ -355,9 +355,9 @@ async def test_real_selective_wait_keeps_conditions_deadline_and_one_shot(social
 
     resumed = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                              turn_id="resumed", metadata=inbound.metadata,
-                             attributes={"context_version": social.store.state(A.session_key)["version"]})
+                             attributes={"context_version": social.store.scopes.state(A.session_key)["version"]})
     social.admit_request(resumed)
-    assert social.store.state(A.session_key)["wake_config"] == "{}"
+    assert social.store.scopes.state(A.session_key)["wake_config"] == "{}"
 
 
 async def test_expired_temporary_wait_does_not_fall_back_to_question_only_observation(social):
@@ -419,7 +419,7 @@ async def test_restart_with_changed_judge_rebuilds_pending_input_without_reusing
         assert restored.store.judge_record(batch).status == "cancelled"
         assert restored.store.judge_record(batch).error_code == "provider_changed"
         assert bus.inbound.qsize() == 1
-        assert restored.store.state(A.session_key)["read_through"] == 0
+        assert restored.store.scopes.state(A.session_key)["read_through"] == 0
     finally:
         restored.close()
 
@@ -448,7 +448,7 @@ async def test_judge_sees_native_image_before_deciding_and_can_wake_main(social,
     assert "_meta" not in images[0] and str(social.root) not in json.dumps(content)
     loader.assert_awaited_once()
     assert social.bus.inbound.qsize() == 1
-    assert social.store.state(A.session_key)["read_through"] == 0
+    assert social.store.scopes.state(A.session_key)["read_through"] == 0
     metadata = social.store.db.execute("SELECT input_meta FROM judge_batches").fetchone()[0]
     assert "base64" not in metadata and "download-file" not in metadata
 

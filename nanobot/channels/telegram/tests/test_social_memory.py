@@ -13,6 +13,8 @@ from pydantic import ValidationError
 from nanobot.agent.hook import AgentHookContext, AgentRunHookContext
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
 from nanobot.channels.telegram.social.runtime import (
@@ -20,10 +22,10 @@ from nanobot.channels.telegram.social.runtime import (
     _SocialExposureHook,
     encode_view,
 )
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, message, social, wake
 from nanobot.channels.telegram.tests.test_social_scheduler import remove_v4_columns
+from nanobot.config.schema import TelegramSocialConfig
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
 __all__ = ["social"]
@@ -180,18 +182,37 @@ def test_clear_covers_all_observed_old_sources_and_allows_new_evidence(social, k
     assert apply(social, ctx, kind="topic", content="新话题", message_ids=[3])["memory"]["status"] == "candidate"
 
 
-def test_expiry_hides_fact_and_requires_new_evidence_to_relearn(social):
+def test_expiry_hides_fact_and_requires_new_evidence_to_relearn(tmp_path):
     clock = [1000.0]
-    social.store.now = lambda: clock[0]
-    ctx = expose(social)
-    record(social, ctx, ttl_seconds=10)
-    clock[0] = 1011
-    assert apply(social, ctx, "list")["memories"] == []
-    assert apply(social, ctx, "list", include_inactive=True)["memories"][0]["status"] == "expired"
-    with pytest.raises(ValueError, match="retired"):
-        record(social, ctx)
-    expose(social, ids=(2,), text="再次确认我喜欢乌龙茶")
-    assert apply(social, ctx, kind="preference", content="喜欢乌龙茶", message_ids=[2], basis="direct")["memory"]["status"] == "confirmed"
+    root = tmp_path / "data" / "telegram-social"
+    (root / "roles").mkdir(parents=True)
+    (root / "roles" / "a.md").write_text("PERSONA ALPHA", encoding="utf-8")
+    (root / "roles" / "b.md").write_text("PERSONA BETA", encoding="utf-8")
+    config = TelegramSocialConfig.model_validate({
+        "enabled": True,
+        "repairUnsentFinal": False,
+        "coalesceSeconds": 0,
+        "cooldownSeconds": 0,
+        "sendCooldownSeconds": 0,
+        "judge": {"minIntervalSeconds": 0},
+        "scopes": [
+            {"chatId": -1001, "threadId": 42, "roleId": "a", "background": "ALPHA BACKGROUND"},
+            {"chatId": -1002, "threadId": 42, "roleId": "b"},
+        ],
+    })
+    social = TelegramSocialRuntime(config, root, MessageBus(), now=lambda: clock[0])
+    try:
+        ctx = expose(social)
+        record(social, ctx, ttl_seconds=10)
+        clock[0] = 1011
+        assert apply(social, ctx, "list")["memories"] == []
+        assert apply(social, ctx, "list", include_inactive=True)["memories"][0]["status"] == "expired"
+        with pytest.raises(ValueError, match="retired"):
+            record(social, ctx)
+        expose(social, ids=(2,), text="再次确认我喜欢乌龙茶")
+        assert apply(social, ctx, kind="preference", content="喜欢乌龙茶", message_ids=[2], basis="direct")["memory"]["status"] == "confirmed"
+    finally:
+        social.close()
 
 
 def test_source_scope_is_default_retrieval_and_members_must_use_evidence_ids(social):
@@ -276,7 +297,7 @@ def test_schema_three_upgrade_preserves_observations_views_and_watermarks(social
     try:
         assert store.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert store.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-        assert store.state(A.session_key)["read_through"] == 1
+        assert store.scopes.state(A.session_key)["read_through"] == 1
         assert store.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
         assert store.db.execute("SELECT COUNT(*) FROM views").fetchone()[0] == 1
         assert SocialMemory(store).apply(A.session_key, ctx.turn_id, MemoryRequest(action="list"))["memories"] == []

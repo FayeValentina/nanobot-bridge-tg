@@ -18,9 +18,9 @@ from telegram.error import BadRequest, RetryAfter, TimedOut
 
 from nanobot.agent.tools.context import request_context
 from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.media import SocialMediaCache
 from nanobot.channels.telegram.social.models import MediaReference
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import (
     A,
@@ -90,7 +90,7 @@ async def test_observation_saves_references_without_download_or_model(social, ki
     await tg._observe_social(update)
     tg._app.bot.get_file.assert_not_awaited()
     assert social.bus.inbound.empty()
-    ref = social.store.media_for_message(A.session_key, 1)[0]
+    ref = social.store.messages.media_for_message(A.session_key, 1)[0]
     assert (ref.kind, ref.file_id, ref.unique_id) == (kind, "download-file", "unique")
     view = json.loads(social.read_messages(context(social)))
     assert view["messages"][0]["media_details"]
@@ -518,10 +518,10 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     reopened = SocialStore(root)
     try:
         assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert reopened.state(A.session_key)["read_through"] == 1
+        assert reopened.scopes.state(A.session_key)["read_through"] == 1
         row = reopened.db.execute("SELECT content,status,message_id,kind FROM actions").fetchone()
         assert tuple(row) == ("old text", "sent", 501, "text")
-        assert reopened.media_for_message(A.session_key, 1) == []
+        assert reopened.messages.media_for_message(A.session_key, 1) == []
         assert reopened.db.execute("SELECT text FROM messages").fetchone()[0] == "old photo"
     finally:
         reopened.close()

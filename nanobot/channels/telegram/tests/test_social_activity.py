@@ -8,9 +8,9 @@ import pytest
 
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
 from nanobot.channels.telegram.social.activity import ActivityRequest
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_proactive import claim, enable, tick, view
 from nanobot.channels.telegram.tests.test_social_runtime import A, agent

@@ -100,12 +100,12 @@ async def evaluate(args):
                         runtime.store.db.execute(
                             "INSERT INTO wakes(id,scope,version,trigger_seq,status,created,expires,due,requested) "
                             "VALUES(?,?,?,1,'queued',?,?,?,?)",
-                            (job, scope.session_key, runtime.store.state(scope.session_key)["version"], now, now + 120, now, now),
+                            (job, scope.session_key, runtime.store.scopes.state(scope.session_key)["version"], now, now + 120, now, now),
                         )
                         runtime.store.db.execute("INSERT INTO requests VALUES(?,?)", (scope.session_key, now))
                     ctx = RequestContext(channel="telegram", chat_id=str(scope.chat_id), session_key=scope.session_key,
                         turn_id="setup", metadata={"message_thread_id": 53, "_social_job": job},
-                        attributes={"context_version": runtime.store.state(scope.session_key)["version"]})
+                        attributes={"context_version": runtime.store.scopes.state(scope.session_key)["version"]})
                     runtime.admit_request(ctx)
                     if case.get("wait"):
                         runtime.set_wake(ctx, keywords=["到家"], senders=["456"], on_messages=False, ttl_seconds=60)
@@ -138,7 +138,7 @@ async def evaluate(args):
                     "full_chars": len(snapshot.model_dump_json()) if snapshot else 0,
                     "model_chars": len(snapshot.prompt_json()) if snapshot else 0,
                     "main_candidates": runtime.bus.inbound.qsize(), "status": row["status"] if row else "missing"}
-                assert runtime.store.state(scope.session_key)["read_through"] == 0
+                assert runtime.store.scopes.state(scope.session_key)["read_through"] == 0
                 assert runtime.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
                 # A setup wake is historical; it must not be delivered again.
                 assert result["main_candidates"] == int(decision.get("decision") == "wake")

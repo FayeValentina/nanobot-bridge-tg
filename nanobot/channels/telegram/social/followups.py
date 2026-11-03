@@ -82,7 +82,7 @@ class SocialFollowups:
 
     def _live(self, scope: str, memory_id: str, *, finishing: bool = False) -> int:
         stopped = self.db.execute("SELECT stopped FROM proactive_state WHERE scope=?", (scope,)).fetchone()
-        if self.store.state(scope)["mode"] == "paused" or (stopped is not None and stopped[0]):
+        if self.store.scopes.state(scope)["mode"] == "paused" or (stopped is not None and stopped[0]):
             raise PermissionError("proactive follow-up contact is paused or stopped")
         row = self.db.execute("SELECT m.revision,m.status,m.expires,f.* FROM memories m "
                               "JOIN memory_followups f ON f.memory_id=m.id WHERE m.scope=? AND m.id=?",

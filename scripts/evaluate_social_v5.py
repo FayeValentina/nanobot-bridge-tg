@@ -272,7 +272,7 @@ async def train(config: Config, corpus: dict[str, Any], assets: dict[str, Any], 
                 assert (alias,source['message_id'],source['revision']) in allowed
                 checked.append([alias,source['message_id'],source['revision']])
         report={'batches':batches,'expressions':expressions,'jargon':jargon,'evidence_checked':checked,
-                'learning_does_not_advance_main':all(runtime.store.state(s.session_key)['read_through']==0 and runtime.store.state(s.session_key)['seen_through']==0 for s in SCOPES.values()),
+                'learning_does_not_advance_main':all(runtime.store.scopes.state(s.session_key)['read_through']==0 and runtime.store.scopes.state(s.session_key)['seen_through']==0 for s in SCOPES.values()),
                 'public_sends':runtime.store.db.execute('SELECT COUNT(*) FROM actions').fetchone()[0]}
         save(directory/'learning.json',report)
         return report
@@ -359,7 +359,7 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
                 # by the A fixture's receipts. Not model drafts or future replies.
                 with runtime.store.db:
                     runtime.store.db.execute('INSERT INTO actions(id,scope,version,content,status,created,turn_id,kind,media_ref) VALUES(?,?,?,?,?,?,?,?,?)',
-                        (f"history-{item['message_id']}",scope.session_key,runtime.store.state(scope.session_key)['version'],item['text'],'sent',item['at'],
+                        (f"history-{item['message_id']}",scope.session_key,runtime.store.scopes.state(scope.session_key)['version'],item['text'],'sent',item['at'],
                          item['confirmed_turn'],'sticker' if item['media']==['sticker'] else 'text',
                          raw_media(assets,item['message_id'],args.source_db)[0][0].model_dump_json() if item['media']==['sticker'] and raw_media(assets,item['message_id'],args.source_db) else None))
         before_events=runtime.store.db.execute('SELECT COUNT(*) FROM learning_events').fetchone()[0]
@@ -396,7 +396,7 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
             return receipt
         registry.register(RecordedTool(MessageTool(send_callback=runtime.bus.publish_outbound,delivery_callback=ordinary_send),trace))
         turn=f'v5e-{arm}-{target}{suffix}'
-        job=runtime.store.wake(scope.session_key,int(runtime.store.state(scope.session_key)['next_seq'])-1,100,now=clock[0])
+        job=runtime.store.wake(scope.session_key,int(runtime.store.scopes.state(scope.session_key)['next_seq'])-1,100,now=clock[0])
         assert job
         view=runtime.store.view(scope.session_key,count=80,chars=24000,job_id=job)
         preset=config.resolve_preset()

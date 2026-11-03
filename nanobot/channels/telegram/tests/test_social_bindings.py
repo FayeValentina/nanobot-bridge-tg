@@ -54,8 +54,8 @@ def test_role_text_is_cached_until_stat_changes(runtime, monkeypatch):
 
 
 def test_revisions_only_follow_persona_text_and_role_id(runtime, monkeypatch):
-    revisions = Mock(wraps=runtime.store.setting_revision)
-    monkeypatch.setattr(runtime.store, "setting_revision", revisions)
+    revisions = Mock(wraps=runtime.store.scopes.setting_revision)
+    monkeypatch.setattr(runtime.store.scopes, "setting_revision", revisions)
     first = runtime.bindings.resolve(SCOPE)
     assert runtime.bindings.resolve(SCOPE) == first
     revisions.assert_not_called()
@@ -150,7 +150,7 @@ def test_validate_context_does_not_write_database(runtime, require_claim):
             runtime.store.db.execute(
                 "INSERT INTO wakes(id,scope,version,turn_id,trigger_seq,status,created,expires,due,requested) "
                 "VALUES(?,?,?,?,1,'running',?,?,?,?)",
-                ("claimed-wake", SCOPE.session_key, runtime.store.state(SCOPE.session_key)["version"],
+                ("claimed-wake", SCOPE.session_key, runtime.store.scopes.state(SCOPE.session_key)["version"],
                  ctx.turn_id, runtime.now(), runtime.now() + 120, runtime.now(), runtime.now()),
             )
         ctx.metadata["_social_job"] = "claimed-wake"

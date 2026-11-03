@@ -80,16 +80,16 @@ async def evaluate(args):
                             calls.append({"name": call.name, "arguments": call.arguments, "result": summary})
                             messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
                             print(json.dumps({"tool": call.name, "action": call.arguments.get("action"),
-                                "learned": sum(bool(row["note"]) for row in runtime.store.sticker_catalog(scope.session_key))}, ensure_ascii=False), flush=True)
+                                "learned": sum(bool(row["note"]) for row in runtime.store.stickers.catalog(scope.session_key))}, ensure_ascii=False), flush=True)
                         if not response.tool_calls or ctx.attributes.get("social_deferred"):
                             break
 
             try:
                 await run_turn("learn-request")
-                learning_catalog = runtime.store.sticker_catalog(scope.session_key)
+                learning_catalog = runtime.store.stickers.catalog(scope.session_key)
                 messages.append({"role": "user", "content": "学得不错，本大爷现在得意得很，来张合适的表情，不用文字。"})
                 await run_turn("sticker-request")
-                catalog = runtime.store.sticker_catalog(scope.session_key)
+                catalog = runtime.store.stickers.catalog(scope.session_key)
                 report = {"model": preset.model, "available": len(catalog),
                     "learned_after_request": sum(bool(row["note"]) for row in learning_catalog),
                     "learned": sum(bool(row["note"]) for row in catalog),

@@ -94,7 +94,7 @@ class JudgeCoordinator:
         binding = self.runtime.binding(scope)
         assert binding is not None
         conditions, dynamic = self.runtime._wake_conditions(scope.session_key)
-        state = self.store.state(scope.session_key)  # Expiring conditions can end an infinite wait.
+        state = self.store.scopes.state(scope.session_key)  # Expiring conditions can end an infinite wait.
         wait = self.store.db.execute("SELECT * FROM dialogue_waits WHERE scope=?", (scope.session_key,)).fetchone()
         dynamic = dynamic and bool(conditions.keywords or conditions.senders or conditions.on_messages or conditions.on_question)
         if not (wait or dynamic or state["mode"] in {"waiting", "sleeping"}):
@@ -146,7 +146,7 @@ class JudgeCoordinator:
                 async with self.runtime._media_lock:
                     for message_id, label in targets:
                         validate()
-                        for ref in self.store.media_for_message(snapshot.scope, message_id):
+                        for ref in self.store.messages.media_for_message(snapshot.scope, message_id):
                             image_label = label
                             identity = (message_id, ref.unique_id)
                             if identity in used:
@@ -177,8 +177,7 @@ class JudgeCoordinator:
         reply = JudgeReply(kind="topic_root" if quoted.is_topic_root else "bot" if quoted.is_bot else "member",
                            message_id=quoted.message_id, sender_id=quoted.sender_id, text=quoted.text) if quoted else None
         if reply is None and row["reply_to"] is not None:
-            target = self.store.db.execute("SELECT * FROM messages WHERE scope=? AND message_id=?",
-                                           (row["scope"], row["reply_to"])).fetchone()
+            target = self.store.messages.by_message_id(row["scope"], row["reply_to"])
             if target is not None:
                 reply = JudgeReply(kind="bot" if target["is_self"] else "member", message_id=int(target["message_id"]),
                                    sender_id=str(target["sender_id"]), text=str(target["text"])[:1000])
@@ -193,7 +192,7 @@ class JudgeCoordinator:
         metadata = json.loads(row[0])
         messages: list[JudgeMessage] = []
         for excerpt in metadata.pop("excerpts"):
-            source = self.store.db.execute("SELECT * FROM messages WHERE scope=? AND seq=?", (metadata["scope"], excerpt["seq"])).fetchone()
+            source = self.store.messages.by_seq(metadata["scope"], excerpt["seq"])
             if source is None:
                 raise ValueError("judge source no longer retained")
             message = self._message(source)
@@ -207,8 +206,7 @@ class JudgeCoordinator:
         key = scope.session_key
         pending = self.store.db.execute("SELECT * FROM judge_state WHERE scope=?", (key,)).fetchone()
         after = self.store.judge_through(key)
-        rows = self.store.db.execute("SELECT * FROM messages WHERE scope=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
-                                    (key, after, pending["pending_seq"], self.runtime.config.judge.context_messages)).fetchall()
+        rows = self.store.messages.range(key, after, pending["pending_seq"], self.runtime.config.judge.context_messages)
         # Leading non-events can be passed locally; this is assessment, never main read.
         while rows:
             facts = json.loads(rows[0]["judge_facts"])
@@ -221,7 +219,7 @@ class JudgeCoordinator:
             return None
         binding = self.runtime.binding(scope)
         assert binding is not None
-        state = self.store.state(key)
+        state = self.store.scopes.state(key)
         new = [self._message(row) for row in rows]
         through = new[-1].seq if new else after
         while new and not json.loads(rows[len(new)-1]["judge_facts"]).get("eligible"):
@@ -229,13 +227,8 @@ class JudgeCoordinator:
         through = new[-1].seq if new else after
         if not new and pending["opportunity"] is None:
             return None
-        history = [self._message(row) for row in reversed(self.store.db.execute(
-            "SELECT * FROM messages WHERE scope=? AND seq<=? ORDER BY seq DESC LIMIT ?",
-            (key, after, max(0, self.runtime.config.judge.context_messages-len(new))),
-        ).fetchall())]
-        confirmed_after = [self._message(row) for row in self.store.db.execute(
-            "SELECT * FROM messages WHERE scope=? AND seq>? AND is_self=1 ORDER BY seq LIMIT 3", (key,through),
-        )]
+        history = [self._message(row) for row in reversed(self.store.messages.history_through(key, after, max(0, self.runtime.config.judge.context_messages-len(new))))]
+        confirmed_after = [self._message(row) for row in self.store.messages.self_after(key, through)]
         while history and len(history+new+confirmed_after) > self.runtime.config.judge.context_messages:
             history.pop(0)
         confirmed_after = confirmed_after[:max(0,self.runtime.config.judge.context_messages-len(history)-len(new))]
@@ -298,7 +291,7 @@ class JudgeCoordinator:
             if key in self.tasks:
                 continue
             scope = ConversationScope.from_session_key(key)
-            if scope is None or self.runtime.binding(scope) is None or self.store.state(key)["mode"] == "paused":
+            if scope is None or self.runtime.binding(scope) is None or self.store.scopes.state(key)["mode"] == "paused":
                 continue
             with self.store.db:
                 self.store.db.execute("UPDATE judge_state SET inflight=1 WHERE scope=?", (key,))
@@ -352,8 +345,7 @@ class JudgeCoordinator:
                         if snapshot is not None and (result is None or result.error_code != "provider_changed"):
                             self.store.db.execute("UPDATE judge_state SET assessed_through=MAX(assessed_through,?) WHERE scope=?",
                                                   (snapshot.through_seq,key))
-                        remaining = self.store.db.execute("SELECT 1 FROM messages WHERE scope=? AND seq>? AND json_extract(judge_facts,'$.eligible')=1",
-                                                          (key,self.store.judge_through(key))).fetchone()
+                        remaining = self.store.messages.eligible_after(key, self.store.judge_through(key))
                         due = self.runtime.now() if remaining or state["opportunity"] is not None else None
                         if remaining and state["pending_first"] is not None:
                             due = min(float(state["pending_last"])+self.coalesce_delay(scope),float(state["pending_max"]))
@@ -363,7 +355,7 @@ class JudgeCoordinator:
                             if self.runtime.now() >= end:
                                 self.store.db.execute("UPDATE judge_state SET assessed_through=MAX(assessed_through,pending_seq),opportunity=NULL WHERE scope=?", (key,))
                                 due = None
-                        if self.store.state(key)["mode"] == "paused" or self.runtime.binding(scope) is None:
+                        if self.store.scopes.state(key)["mode"] == "paused" or self.runtime.binding(scope) is None:
                             due = None
                         self.store.db.execute("UPDATE judge_state SET inflight=0,batch_id=NULL,pending_due=? WHERE scope=?", (due,key))
                 self.runtime.scheduler.notify()

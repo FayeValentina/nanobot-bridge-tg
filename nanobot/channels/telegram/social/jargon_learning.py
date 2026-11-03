@@ -57,7 +57,7 @@ class JargonLearner(ExpressionLearner):
         if not self.store.learning.config.enabled:
             return
         for scope in scopes:
-            if self.store.state(scope)["mode"] == "paused":
+            if self.store.scopes.state(scope)["mode"] == "paused":
                 continue
             entries = self.store.db.execute("SELECT id FROM jargon WHERE scope=? AND review_requested=1 ORDER BY updated LIMIT 20", (scope,)).fetchall()
             if not entries or self.store.db.execute("SELECT 1 FROM learning_batches WHERE scope=? AND kind='jargon' AND status IN ('ready','running','failed')", (scope,)).fetchone():
@@ -73,7 +73,7 @@ class JargonLearner(ExpressionLearner):
                 self.store.db.execute("INSERT OR IGNORE INTO learning_cursors(scope,kind) VALUES(?,'jargon')", (scope,))
                 after = self.store.db.execute("SELECT event_id FROM learning_cursors WHERE scope=? AND kind='jargon'", (scope,)).fetchone()[0]
                 self.store.db.execute("INSERT INTO learning_batches(id,scope,kind,scope_version,config_revision,after_event,through_event,sources,status,created,updated,due,source_count,purpose,targets) VALUES(?,?,'jargon',?,?,?,?,?,'ready',?,?,?,?,'review',?)",
-                    (uuid4().hex, scope, self.store.state(scope)["version"], self.store.learning.config_revision, after, after,
+                    (uuid4().hex, scope, self.store.scopes.state(scope)["version"], self.store.learning.config_revision, after, after,
                      json.dumps(list(sources.values()), ensure_ascii=False), self.store.now(), self.store.now(), self.store.now(), len(sources), json.dumps([e[0] for e in entries])))
 
     async def ask(self, batch: str, prompt: str, payload: object, settings: TelegramSocialLearningModelConfig) -> str:

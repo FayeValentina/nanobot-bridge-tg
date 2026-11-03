@@ -45,7 +45,7 @@ async def test_reviewed_scenarios_assemble_and_validate_with_canned_decisions(so
         social.store.db.execute("UPDATE judge_state SET assessed_through=? WHERE scope=?", (seq-1, A.session_key))
     followups = (JudgeFollowup(id="stable-matter", content="旅行计划", pending_question="和谁去？",
         pending_thought="", motivation="关心近况", followup_state="active", confirmed_attempts=1),) if sample.get("followup") else ()
-    snapshot = JudgeSnapshot(scope=A.session_key, version=social.store.state(A.session_key)["version"],
+    snapshot = JudgeSnapshot(scope=A.session_key, version=social.store.scopes.state(A.session_key)["version"],
         after_seq=seq-1, through_seq=seq, new_seqs=(seq,), messages=tuple(messages), created=now,
         expires=now+120, bot_name="肥鱼", bot_username="Deep_Fat_Fish_bot", nicknames=("肥鱼", "肥魚"),
         role_summary=role[:600], followups=followups, history_truncated=sample.get("history_truncated", False))
@@ -67,7 +67,7 @@ async def test_reviewed_scenarios_assemble_and_validate_with_canned_decisions(so
     assert payload["history_truncated"] == sample.get("history_truncated", False)
     assert request["tools"] is None and request["tool_choice"] == "none"
     assert request["reasoning_effort"] == "low" and request["temperature"] == 0
-    assert social.store.state(A.session_key)["read_through"] == 0
+    assert social.store.scopes.state(A.session_key)["read_through"] == 0
     assert not social.store.db.execute("SELECT 1 FROM actions").fetchone()
 
 

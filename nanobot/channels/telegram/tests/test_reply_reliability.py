@@ -12,8 +12,8 @@ from nanobot.agent.tools.context import RequestContext, ToolContext, request_con
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.telegram_social import TelegramSocialTool
 from nanobot.bus.events import OutboundMessage
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, channel, message
 from nanobot.channels.telegram.tests.test_social_scheduler import (
@@ -48,7 +48,7 @@ async def test_unsent_answer_gets_one_delivery_check_and_explicit_send(tmp_path,
     sender.assert_awaited_once_with(A, "published answer", None)
     assert loop.provider.chat_stream_with_retry.await_count == 3
     assert "Runtime delivery check" in str(loop.provider.chat_stream_with_retry.call_args_list[1].kwargs["messages"])
-    assert social.store.state(A.session_key)["read_through"] == 1
+    assert social.store.scopes.state(A.session_key)["read_through"] == 1
     assert social.bus.outbound.empty()
 
 
@@ -73,7 +73,7 @@ async def test_explicit_silence_never_gets_a_delivery_check(tmp_path, social):
     loop = agent(tmp_path, social, [LLMResponse(content="")])
     await loop._dispatch(await wake(social))
     assert loop.provider.chat_stream_with_retry.await_count == 1
-    assert social.store.state(A.session_key)["read_through"] == 1
+    assert social.store.scopes.state(A.session_key)["read_through"] == 1
 
 
 async def test_conditional_wait_filters_numbers_and_consumes_keyword_once(social):
@@ -93,11 +93,11 @@ async def test_conditional_wait_filters_numbers_and_consumes_keyword_once(social
     inbound = social.bus.inbound.get_nowait()
     assert json.loads(inbound.content.split("\n", 1)[1])["wake_reason"] == "judge"
     # A delayed candidate must not consume the condition before model admission.
-    assert json.loads(social.store.state(A.session_key)["wake_config"])["keywords"] == ["5", "五"]
+    assert json.loads(social.store.scopes.state(A.session_key)["wake_config"])["keywords"] == ["5", "五"]
     social.admit_request(RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                                        turn_id="consume-keyword", metadata=dict(inbound.metadata)))
-    assert social.store.state(A.session_key)["wake_config"] == "{}"
-    assert social.store.state(B.session_key)["wake_config"] == "{}"
+    assert social.store.scopes.state(A.session_key)["wake_config"] == "{}"
+    assert social.store.scopes.state(B.session_key)["wake_config"] == "{}"
 
 
 async def test_conditional_wait_direct_mention_interrupts_without_consuming_condition(social):
@@ -109,7 +109,7 @@ async def test_conditional_wait_direct_mention_interrupts_without_consuming_cond
     clock(social).advance(11)
     await social.run_due()
     assert social.bus.inbound.qsize() == 1
-    assert json.loads(social.store.state(A.session_key)["wake_config"])["keywords"] == ["5"]
+    assert json.loads(social.store.scopes.state(A.session_key)["wake_config"])["keywords"] == ["5"]
 
 
 async def test_condition_deadline_survives_restart_and_expiry_clears_it(social):
@@ -121,10 +121,10 @@ async def test_condition_deadline_survives_restart_and_expiry_clears_it(social):
     social.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
-        assert json.loads(restored.store.state(A.session_key)["wake_config"])["expires_at"] == now() + 5
+        assert json.loads(restored.store.scopes.state(A.session_key)["wake_config"])["expires_at"] == now() + 5
         clock(social).advance(6)
         await restored.observe(replace(observed(social), text="ordinary after expiry"), directed=False)
-        assert restored.store.state(A.session_key)["wake_config"] == "{}"
+        assert restored.store.scopes.state(A.session_key)["wake_config"] == "{}"
     finally:
         restored.close()
 
@@ -140,8 +140,8 @@ async def test_turn_ack_does_not_ack_new_arrivals_during_send(tmp_path, social):
         LLMResponse(content="internal"),
     ])
     await loop._dispatch(await wake(social))
-    assert social.store.state(A.session_key)["read_through"] == 1
-    assert social.store.state(A.session_key)["next_seq"] == 4
+    assert social.store.scopes.state(A.session_key)["read_through"] == 1
+    assert social.store.scopes.state(A.session_key)["next_seq"] == 4
 
 
 def test_auto_ack_stops_at_a_gap_in_actual_exposure(social):
@@ -294,7 +294,7 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
     upgraded = SocialStore(root, now=social.now)
     try:
         assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert upgraded.state(A.session_key)["next_seq"] == 2
+        assert upgraded.scopes.state(A.session_key)["next_seq"] == 2
         assert upgraded.db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()[0] == 0
     finally:
         upgraded.close()

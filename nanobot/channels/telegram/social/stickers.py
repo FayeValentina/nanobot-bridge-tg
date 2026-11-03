@@ -66,8 +66,8 @@ class SocialStickers:
         refs = tuple(ref for ref in pack.stickers if not ref.animated and not ref.video)
         if not refs:
             raise ValueError("this release can only import static stickers; set contains none")
-        imported = runtime.store.import_stickers(scope.session_key, refs, runtime.config.sticker_limit)
-        catalog = runtime.store.sticker_catalog(scope.session_key, pack.name)
+        imported = runtime.store.stickers.import_set(scope.session_key, refs, runtime.config.sticker_limit)
+        catalog = runtime.store.stickers.catalog(scope.session_key, pack.name)
         return {"set_name": pack.name, "title": pack.title, "total": len(pack.stickers),
                 "imported": imported, "available": len(catalog), "skipped_motion": len(pack.stickers) - len(refs),
                 "unlearned": sum(not row["note"] for row in catalog),
@@ -80,7 +80,7 @@ class SocialStickers:
         if offset < 0 or not 1 <= limit <= 30:
             raise ValueError("sticker view requires offset >= 0 and limit between 1 and 30")
         name = sticker_set_name(set_name) if set_name else ""
-        rows = runtime.store.sticker_catalog(scope.session_key, name)
+        rows = runtime.store.stickers.catalog(scope.session_key, name)
         if sticker_id:
             rows = [row for row in rows if row["sticker_id"] == sticker_id]
             if not rows:
@@ -104,7 +104,7 @@ class SocialStickers:
             for index, row in enumerate(selected):
                 runtime.validate_context(ctx)
                 identity = str(row["sticker_id"])
-                ref = runtime.store.sticker(scope.session_key, identity)
+                ref = runtime.store.stickers.get(scope.session_key, identity)
                 blocks = await runtime.prepare_media(scope, ref, f"Sticker {index + 1}",
                     validate=lambda: runtime.validate_context(ctx), max_edge=320)
                 x, y = index % columns * 320, index // columns * 348
@@ -143,10 +143,10 @@ class SocialStickers:
                 raise ValueError("sticker notes must contain 1–400 characters")
             if identity not in viewed:
                 raise PermissionError("view this sticker image in the current turn before annotating it")
-            runtime.store.sticker(scope.session_key, identity)
+            runtime.store.stickers.get(scope.session_key, identity)
             if identity in updates:
                 raise ValueError("duplicate sticker note")
             updates[identity] = note
-        runtime.store.annotate_stickers(scope.session_key, updates)
+        runtime.store.stickers.annotate(scope.session_key, updates)
         return {"annotated": len(updates), "unlearned": sum(
-            not row["note"] for row in runtime.store.sticker_catalog(scope.session_key))}
+            not row["note"] for row in runtime.store.stickers.catalog(scope.session_key))}

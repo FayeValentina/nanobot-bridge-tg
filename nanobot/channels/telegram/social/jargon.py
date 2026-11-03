@@ -185,8 +185,7 @@ class JargonLibrary:
             if self.db.execute("SELECT 1 FROM jargon_suppressions WHERE scope=? AND kind='message' AND value=?",
                                (scope, str(message_id))).fetchone() is not None:
                 raise ValueError("evidence was retired by a correction/deletion; use new evidence")
-            current = self.db.execute("SELECT revision,learning_source,learning_text FROM messages WHERE scope=? AND message_id=?",
-                                      (scope, message_id)).fetchone()
+            current = self.store.messages.learning_text(scope, message_id)
             if (current is None or current["revision"] != item.revision or current["learning_source"] != "human_text"
                     or not current["learning_text"].startswith(item.excerpt)):
                 raise ValueError("slang evidence requires retained human top-level text")
@@ -208,7 +207,7 @@ class JargonLibrary:
             self.add_evidence(entry_id, sources)
         self.db.execute("UPDATE jargon SET local_meaning=?,content=?,status=?,authority=?,authority_seq=?,basis='direct',meaning_status='confirmed',"
                         "inference_basis=?,revision=revision+1,review_requested=0,updated=? WHERE id=?",
-            (meaning, meaning, status, origin, max([s.seq for s in sources], default=int(self.store.state(scope)["next_seq"]) - 1),
+            (meaning, meaning, status, origin, max([s.seq for s in sources], default=int(self.store.scopes.state(scope)["next_seq"]) - 1),
              public_evidence.model_dump_json(exclude={"hypothesis"}) if public_evidence.public_citations else '[]', self.store.now(), entry_id))
         self.change_log(scope, entry_id, "correct", origin, json.dumps({"reason": reason, "previous_local_meaning": old["local_meaning"]}, ensure_ascii=False))
 
@@ -279,7 +278,7 @@ class JargonLibrary:
                             "status='disabled',meaning_status='deleted',revision=revision+1,authority='operator',review_requested=0,updated=? WHERE id=?", (self.store.now(), entry_id))
             self.db.execute("DELETE FROM jargon_evidence WHERE memory_id=?", (entry_id,))
             self.change_log(scope, entry_id, "delete", "operator", "index deletion")
-        self.db.execute("INSERT INTO jargon_resets VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET through_seq=excluded.through_seq", (scope, self.store.state(scope)["next_seq"] - 1))
+        self.db.execute("INSERT INTO jargon_resets VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET through_seq=excluded.through_seq", (scope, self.store.scopes.state(scope)["next_seq"] - 1))
         return len(entries)
 
     @staticmethod

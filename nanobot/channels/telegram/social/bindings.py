@@ -240,7 +240,7 @@ class ScopeBindings:
         ):
             previous = self._revisions.get(name)
             if previous is None or previous[0] != value:
-                self._revisions[name] = (value, self.store.setting_revision(name, value))
+                self._revisions[name] = (value, self.store.scopes.setting_revision(name, value))
         return ResolvedScope(
             binding=binding, persona=assembled,
             persona_revision=self._revisions[persona_key][1],

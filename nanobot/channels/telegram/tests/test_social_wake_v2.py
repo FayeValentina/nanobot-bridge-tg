@@ -10,8 +10,8 @@ from pydantic import ValidationError
 
 from nanobot.agent.tools.context import request_context
 from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_dialogue import admit, expose, take
 from nanobot.channels.telegram.tests.test_social_runtime import (
@@ -116,7 +116,7 @@ async def test_infinite_wait_has_no_timer_or_lock_and_direct_address_interrupts(
     ])])
     await v2b.observe(event(v2b, text="@bot hello"), directed=True)
     await loop._dispatch(v2b.bus.inbound.get_nowait())
-    state = v2b.store.state(A.session_key)
+    state = v2b.store.scopes.state(A.session_key)
     assert state["wait_infinite"] and state["wake_at"] is None and state["mode"] == "sleeping"
     lock = loop._session_locks.get(A.session_key)
     assert lock is None or not lock.locked()
@@ -124,7 +124,7 @@ async def test_infinite_wait_has_no_timer_or_lock_and_direct_address_interrupts(
     await v2b.observe(event(v2b, 2, text="@bot wake"), directed=True)
     msg, _ = take(v2b)
     admit(v2b, msg)
-    assert not v2b.store.state(A.session_key)["wait_infinite"]
+    assert not v2b.store.scopes.state(A.session_key)["wait_infinite"]
 
 
 async def test_infinite_temporary_wait_expires_back_to_administrator_triggers(v2b):
@@ -136,8 +136,8 @@ async def test_infinite_temporary_wait_expires_back_to_administrator_triggers(v2
     assert v2b.store.next_due() == v2b.now() + 5
     clock(v2b).advance(5)
     await v2b.run_due()
-    assert v2b.store.state(A.session_key)["wake_config"] == "{}"
-    assert v2b.store.state(A.session_key)["mode"] == "observing"
+    assert v2b.store.scopes.state(A.session_key)["wake_config"] == "{}"
+    assert v2b.store.scopes.state(A.session_key)["mode"] == "observing"
     await v2b.observe(event(v2b, text="base"), directed=False)
     _, view = take(v2b)
     assert view["wake_reason"] == "judge"
@@ -150,7 +150,7 @@ async def test_infinite_messages_ttl_clears_both_wait_intent_and_infinite_flag(v
     finish(v2b, ctx)
     clock(v2b).advance(5)
     await v2b.run_due()
-    state = v2b.store.state(A.session_key)
+    state = v2b.store.scopes.state(A.session_key)
     assert state["mode"] == "observing" and not state["wait_infinite"]
     assert v2b.store.dialogue_status(A.session_key)["wait"] is None
     assert v2b.bus.inbound.empty()
@@ -185,7 +185,7 @@ async def test_infinite_sleep_observation_completes_locally(v2b):
     finish(v2b, ctx)
     clock(v2b).advance(300)
     await v2b.run_due()
-    state = v2b.store.state(A.session_key)
+    state = v2b.store.scopes.state(A.session_key)
     assert state["mode"] == "sleeping" and state["wait_infinite"] and state["wake_at"] is None
     assert v2b.bus.inbound.empty()
 
@@ -202,7 +202,7 @@ async def test_absolute_wait_does_not_move_its_deadline_for_sleep_observation(v2
     await v2b.run_due()
     _, view = take(v2b)
     assert view["wake_reason"] == "timeout"
-    assert v2b.store.state(A.session_key)["wake_at"] is None
+    assert v2b.store.scopes.state(A.session_key)["wake_at"] is None
 
 
 @pytest.mark.parametrize("args", [
@@ -216,7 +216,7 @@ def test_invalid_or_ambiguous_wait_modes_are_rejected_before_yielding(v2b, args)
     ctx = context(v2b)
     with pytest.raises(ValueError):
         v2b.wait(ctx, **args)
-    assert v2b.store.state(A.session_key)["mode"] == "active"
+    assert v2b.store.scopes.state(A.session_key)["mode"] == "active"
     assert not ctx.attributes.get("social_deferred")
 
 
@@ -237,12 +237,12 @@ async def test_new_wait_modes_and_sampling_recover_without_redrawing(v2b):
     try:
         restored.store.recovery_jobs()
         await restored.run_due()
-        state = restored.store.state(A.session_key)
+        state = restored.store.scopes.state(A.session_key)
         assert state["mode"] == "sleeping" and state["wait_infinite"] and state["wake_at"] is None
         assert bus.inbound.empty()
         restored.config.scopes[0].paused = True
         restored.configure(restored.config)
-        assert restored.store.state(A.session_key)["mode"] == "paused"
+        assert restored.store.scopes.state(A.session_key)["mode"] == "paused"
     finally:
         restored.close()
 
@@ -277,7 +277,7 @@ def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
     try:
         assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-        state = upgraded.state(A.session_key)
+        state = upgraded.scopes.state(A.session_key)
         assert state["mode"] == "waiting" and not state["wait_infinite"]
         assert state["read_through"] == state["seen_through"] == 1
         wait = upgraded.dialogue_status(A.session_key)["wait"]

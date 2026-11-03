@@ -95,9 +95,7 @@ def displayed_evidence(store: SocialStore, scope: str, turn_id: str) -> dict[int
     # message from the observation table. Read-tool output is eligible only
     # after the exposure hook has seen it in a real provider request.
     shown: dict[int, MemoryEvidence] = {}
-    for row in store.db.execute("SELECT body FROM views WHERE scope=? AND turn_id=? "
-                               "AND seen=1 AND version=? ORDER BY created",
-                               (scope, turn_id, store.state(scope)["version"])):
+    for row in store.views.displayed_bodies(scope, turn_id):
         view = json.loads(row["body"])
         for message in view["messages"]:
             item = MemoryEvidence.model_validate({
@@ -212,7 +210,7 @@ class SocialMemory:
                         self._delete(entry)
                 self.db.execute("INSERT INTO memory_resets VALUES(?,?) ON CONFLICT(scope) "
                                 "DO UPDATE SET through_seq=excluded.through_seq",
-                                (scope, self.store.state(scope)["next_seq"] - 1))
+                                (scope, self.store.scopes.state(scope)["next_seq"] - 1))
                 jargon_count = 0
                 if request.kind is None:
                     from nanobot.channels.telegram.social.jargon import JargonLibrary
@@ -345,7 +343,7 @@ class SocialMemory:
         """Bounded, ranked DATA only; refreshed for every model iteration."""
         with self.db:
             items = self.list(scope, MemoryRequest(action="list", limit=50), all_rows=True)
-        messages = self.db.execute("SELECT sender_id,text FROM messages WHERE scope=? AND is_self=0 ORDER BY seq DESC LIMIT 4", (scope,)).fetchall()
+        messages = self.store.messages.recent_member_texts(scope)
         authors = {str(message["sender_id"]) for message in messages}
         text = (topic_text if topic_text is not None else " ".join(str(message["text"]) for message in messages)).casefold()[:6000]
         words = set(re.findall(r"[\w]+", text))
@@ -363,7 +361,7 @@ class SocialMemory:
         ranked = sorted((item for item in items if rank(item)[0] > 0), key=rank, reverse=True)
         records: list[dict[str, object]] = []
         pending: list[dict[str, object]] = []
-        opportunity = self.db.execute("SELECT body FROM views WHERE scope=? AND turn_id=? ORDER BY created DESC,rowid DESC LIMIT 1", (scope, turn_id)).fetchone() if turn_id else None
+        opportunity = self.store.views.latest_body(scope, turn_id) if turn_id else None
         selected_opportunity = json.loads(opportunity[0]).get("opportunity") if opportunity else None
         if selected_opportunity is None and turn_id:
             wake = self.db.execute("SELECT proactive_source FROM wakes WHERE scope=? AND turn_id=? AND status='running'", (scope, turn_id)).fetchone()

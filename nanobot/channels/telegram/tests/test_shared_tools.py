@@ -149,7 +149,7 @@ async def test_wait_stops_ordinary_tools_later_in_the_same_batch(tmp_path, socia
     ])])
     await loop._dispatch(await wake(social))
     assert not file.exists()
-    assert social.store.state(A.session_key)["mode"] == "sleeping"
+    assert social.store.scopes.state(A.session_key)["mode"] == "sleeping"
     assert loop.provider.chat_stream_with_retry.await_count == 1
     assert social.bus.outbound.empty()
 

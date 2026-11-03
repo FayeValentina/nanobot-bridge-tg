@@ -9,10 +9,10 @@ from loguru import logger
 from pydantic import ValidationError
 
 from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.jargon import JargonLibrary, JargonRequest
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import TelegramSocialConfig, TelegramSocialLearningConfig
 from nanobot.providers.base import LLMProvider, LLMResponse
@@ -47,7 +47,7 @@ def batches(store):
 
 
 def test_collection_without_main_exposure_and_independent_success_cursors(store):
-    before = store.state(A.session_key)
+    before = store.scopes.state(A.session_key)
     expression, jargon = batches(store)
     assert expression and jargon
     assert store.db.execute("SELECT COUNT(*) FROM views").fetchone()[0] == 0
@@ -57,8 +57,8 @@ def test_collection_without_main_exposure_and_independent_success_cursors(store)
     assert cursors["expression"]["message_id"] == 2 and cursors["expression"]["revision"] == 1
     assert cursors["jargon"]["event_id"] == 0
     assert store.judge_through(A.session_key) == 0
-    assert store.state(A.session_key)["seen_through"] == before["seen_through"] == 0
-    assert store.state(A.session_key)["read_through"] == before["read_through"] == 0
+    assert store.scopes.state(A.session_key)["seen_through"] == before["seen_through"] == 0
+    assert store.scopes.state(A.session_key)["read_through"] == before["read_through"] == 0
     assert store.learning.status(B.session_key)["buffered_materials"] == 0
 
 
@@ -84,7 +84,7 @@ def test_edit_cancels_frozen_batch_and_keeps_new_revision(store):
     replacement = store.learning.prepare(A.session_key, "expression")
     sources = json.loads(store.db.execute("SELECT sources FROM learning_batches WHERE id=?", (replacement,)).fetchone()[0])
     assert {(item["message_id"], item["revision"]) for item in sources} == {(1, 2), (2, 1), (3, 1)}
-    assert store.state(A.session_key)["seen_through"] == store.state(A.session_key)["read_through"] == 0
+    assert store.scopes.state(A.session_key)["seen_through"] == store.scopes.state(A.session_key)["read_through"] == 0
 
 
 def test_restart_resumes_success_cursor_and_retains_pending_batch(store, tmp_path):
@@ -144,7 +144,7 @@ def test_window_overflow_is_bounded_and_frozen_sources_survive_retention(store):
     assert {row["reason"] for row in status["counts"]} == {"unbatched_overflow:expression", "unbatched_overflow:jargon"}
     assert store.db.execute("SELECT 1 FROM messages WHERE message_id=1").fetchone() is None
     store.learning.finish(expression, success=True)
-    assert store.state(A.session_key)["seen_through"] == 0
+    assert store.scopes.state(A.session_key)["seen_through"] == 0
 
 
 def test_config_pause_and_scope_revocation_do_not_consume_cursor(store):
@@ -226,16 +226,16 @@ async def test_runtime_collects_when_main_silent_and_learning_config_preserves_v
                     "scopes": [{"chatId": A.chat_id, "threadId": A.thread_id, "roleId": "guest"}]})
     runtime = TelegramSocialRuntime(config, tmp_path, MessageBus(), now=lambda: 1000.)
     try:
-        version = runtime.store.state(A.session_key)["version"]
+        version = runtime.store.scopes.state(A.session_key)["version"]
         for message_id in (1, 2):
             await runtime.observe(ObservedMessage(A, message_id, message_id, "human", "Member", 1000.,
                                                   "闲聊", learning_text="闲聊"), directed=False)
         await runtime.run_due()
         assert runtime.store.learning.status(A.session_key)["batches"][0]["status"] == "ready"
-        assert runtime.store.state(A.session_key)["seen_through"] == runtime.store.state(A.session_key)["read_through"] == 0
+        assert runtime.store.scopes.state(A.session_key)["seen_through"] == runtime.store.scopes.state(A.session_key)["read_through"] == 0
         config.learning.expression.model = "future-learner"
         runtime.configure(config)
-        assert runtime.store.state(A.session_key)["version"] == version
+        assert runtime.store.scopes.state(A.session_key)["version"] == version
     finally:
         runtime.close()
 
@@ -288,7 +288,7 @@ def test_collector_failure_does_not_lose_main_observation(store):
     observe(store)
     assert store.db.execute("SELECT text FROM messages WHERE message_id=1").fetchone()[0] == "闲聊 1"
     assert store.db.execute("SELECT count FROM learning_counts WHERE reason='capture_error'").fetchone()[0] == 1
-    assert store.state(A.session_key)["seen_through"] == store.state(A.session_key)["read_through"] == 0
+    assert store.scopes.state(A.session_key)["seen_through"] == store.scopes.state(A.session_key)["read_through"] == 0
 
 
 def test_interrupted_attempt_is_charged_before_restart(store, tmp_path):

@@ -31,7 +31,7 @@ def seed(runtime):
                        ('j-' + suffix, scope.session_key, '蓝票', 'understand_only', 'direct', 1, now, now, '蓝票', '临时加场'))
         for i in range(125):
             ref = MediaReference(kind='sticker', file_id=f'file-{i}', unique_id=f's-{i}')
-            runtime.store.collect_sticker(A.session_key, ref, f'场景{i}：' + ('得意 自信 调侃 嘴硬 领先' if i == 124 else '困倦 睡觉 晚安'), 500)
+            runtime.store.stickers.collect(A.session_key, ref, f'场景{i}：' + ('得意 自信 调侃 嘴硬 领先' if i == 124 else '困倦 睡觉 晚安'), 500)
     provider = AsyncMock(spec=LLMProvider)
     async def choose(**kwargs):
         data = json.loads(kwargs['messages'][1]['content'])
@@ -61,7 +61,7 @@ async def test_scope_scene_keyword_pool_caps_and_same_turn_cache(social):
     row = social.store.db.execute('SELECT calls,candidate_count,status FROM expression_turns').fetchone()
     assert row['calls'] == 1 and row['candidate_count'] <= 70 and row['status']=='selected'
     assert social.store.learning.status(A.session_key)['recent_selections'][-1]['candidates']
-    assert social.store.state(A.session_key)['seen_through'] == social.store.state(A.session_key)['read_through'] == 0
+    assert social.store.scopes.state(A.session_key)['seen_through'] == social.store.scopes.state(A.session_key)['read_through'] == 0
 
 
 async def test_actual_unclaimed_snapshot_selected_before_it_is_marked_seen(social):
@@ -87,7 +87,7 @@ async def test_changed_values_never_reuse_stale_candidates_or_buy_second_call(so
     elif change=='disabled':
         social.store.db.execute("UPDATE expressions SET status='disabled'")
     elif change=='sticker_note':
-        social.store.annotate_stickers(A.session_key,{'s-124':'严肃的另一张图'})
+        social.store.stickers.annotate(A.session_key,{'s-124':'严肃的另一张图'})
     else:
         social.store.learning.configure(social.config.learning.model_copy(update={'selection_stickers':0}))
     assert await social.selector.select(A.session_key,'turn') == []
@@ -160,11 +160,11 @@ def test_recent_usage_is_sent_only_all_paths_grouped_by_turn(social):
     for index,(turn,status,text) in enumerate([('one','sent','本大爷吃白饭'),('one','sent','Token 没花多少'),('bad','unknown','没发出去算力'),('two','sent','换个句式')]):
         with db:
             db.execute('INSERT INTO actions(id,scope,version,content,status,created,turn_id) VALUES(?,?,?,?,?,?,?)',
-                       (f'a{index}',A.session_key,social.store.state(A.session_key)['version'],text,status,social.now()+index,turn))
-    ref=social.store.sticker(A.session_key,'s-124')
+                       (f'a{index}',A.session_key,social.store.scopes.state(A.session_key)['version'],text,status,social.now()+index,turn))
+    ref=social.store.stickers.get(A.session_key,'s-124')
     with db:
         db.execute("INSERT INTO actions(id,scope,version,content,status,created,turn_id,kind,media_ref) VALUES(?,?,?,?,?,?,?,?,?)",
-                   ('st',A.session_key,social.store.state(A.session_key)['version'],'file-124','sent',social.now()+5,'one','sticker',ref.model_dump_json()))
+                   ('st',A.session_key,social.store.scopes.state(A.session_key)['version'],'file-124','sent',social.now()+5,'one','sticker',ref.model_dump_json()))
     social.record_message_receipt(A,DeliveryReceipt(status='sent',message_ids=[100]),'three',[(100,'普通 message：Token 计费')])
     social.record_message_receipt(A,DeliveryReceipt(status='unknown',message_ids=[101]),'uncertain',[(101,'不能算已发送的口头禅')])
     usage=social.selector.recent_usage(A.session_key)
@@ -252,7 +252,7 @@ async def test_prompt_character_budget_and_final_caps(social):
 
 def test_exact_incoming_sticker_notes_are_scope_and_revision_bound(social):
     seed(social)
-    ref=social.store.sticker(A.session_key,'s-124')
+    ref=social.store.stickers.get(A.session_key,'s-124')
     social.store.observe(message(seq=1,text='[non-text message]',media=('sticker',),media_refs=(ref,)),500)
     social.store.view(A.session_key,count=30,chars=12000,turn_id='visual')
     source=social.selector.input(A.session_key,'visual')

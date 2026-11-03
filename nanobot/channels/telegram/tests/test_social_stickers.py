@@ -56,13 +56,13 @@ async def test_full_pack_import_is_idempotent_persistent_and_preserves_learning(
     result = await social.stickers.import_set(ctx, "https://t.me/addstickers/LLM_Moe")
     assert (result["imported"], result["unlearned"]) == (120, 120)
     tg._app.bot.get_file.assert_not_awaited()
-    assert social.store.sticker_catalog(B.session_key) == []
-    social.store.annotate_stickers(A.session_key, {"sticker-0": "开心问好"})
+    assert social.store.stickers.catalog(B.session_key) == []
+    social.store.stickers.annotate(A.session_key, {"sticker-0": "开心问好"})
     with social.store.db:
         social.store.db.execute("UPDATE stickers SET uses=3 WHERE id='sticker-0'")
     again = await social.stickers.import_set(ctx, "LLM_Moe")
     assert (again["imported"], again["unlearned"]) == (0, 119)
-    assert social.store.list_stickers(A.session_key, "问好")[0]["uses"] == 3
+    assert social.store.stickers.search(A.session_key, "问好")[0]["uses"] == 3
     with pytest.raises(PermissionError):
         await social.stickers.view(context(social, B, turn="other"), sticker_id="sticker-0")
     assert social.store.db.execute("SELECT count(*) FROM stickers").fetchone()[0] == 120
@@ -75,7 +75,7 @@ async def test_pack_limit_is_atomic_and_pause_during_lookup_discards_result(soci
     ctx = context(social)
     with pytest.raises(PermissionError, match="no stickers imported"):
         await social.stickers.import_set(ctx, "LLM_Moe")
-    assert social.store.sticker_catalog(A.session_key) == []
+    assert social.store.stickers.catalog(A.session_key) == []
 
     async def paused(_):
         social.store.pause(A.session_key)
@@ -84,7 +84,7 @@ async def test_pack_limit_is_atomic_and_pause_during_lookup_discards_result(soci
     loader.side_effect = paused
     with pytest.raises(PermissionError, match="paused"):
         await social.stickers.import_set(ctx, "LLM_Moe")
-    assert social.store.sticker_catalog(A.session_key) == []
+    assert social.store.stickers.catalog(A.session_key) == []
 
 
 async def test_view_annotate_search_and_send_through_tool(social):
@@ -123,7 +123,7 @@ async def test_annotations_require_view_and_validate_whole_batch_before_writing(
     with pytest.raises(PermissionError):
         social.stickers.annotate(ctx, [{"sticker_id": "sticker-0", "note": "ok"},
                                      {"sticker_id": "sticker-1", "note": "unseen"}])
-    assert all(not row["note"] for row in social.store.sticker_catalog(A.session_key))
+    assert all(not row["note"] for row in social.store.stickers.catalog(A.session_key))
 
 
 async def test_preview_budget_is_shared_and_failed_images_cannot_be_annotated(social):
@@ -149,7 +149,7 @@ async def test_channel_adapter_normalizes_real_sdk_sticker_set(social):
         name="LLM_Moe", title="LLM小妹", sticker_type="regular", stickers=[item]))
     result = await social.stickers.import_set(context(social), "tg://addstickers?set=LLM_Moe")
     assert result["imported"] == 1
-    assert social.store.sticker(A.session_key, "telegram-unique").file_id == "telegram-file"
+    assert social.store.stickers.get(A.session_key, "telegram-unique").file_id == "telegram-file"
     tg._app.bot.get_sticker_set.assert_awaited_once_with("LLM_Moe")
 
 
@@ -180,5 +180,5 @@ async def test_real_agent_learns_native_sheet_and_sends_in_same_turn(tmp_path, s
     messages = loop.provider.chat_stream_with_retry.call_args.kwargs["messages"]
     assert any(block.get("type") == "image_url" for m in messages if m["role"] == "tool"
                and isinstance(m["content"], list) for block in m["content"])
-    assert social.store.list_stickers(A.session_key, "接梗")[0]["uses"] == 1
+    assert social.store.stickers.search(A.session_key, "接梗")[0]["uses"] == 1
     tg._app.bot.send_sticker.assert_awaited_once()

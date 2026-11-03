@@ -271,7 +271,7 @@ class SocialHarness:
         cannot represent process death with a durable sending reservation. Set
         up that exact cut point here; recovery itself remains unmodified.
         """
-        version = self._runtime.store.state(self._scope.session_key)["version"]
+        version = self._runtime.store.scopes.state(self._scope.session_key)["version"]
         self._runtime.store.reserve_send(
             self._scope.session_key, version, text, self._config.max_sends_per_hour,
             turn="interrupted-scenario-turn",

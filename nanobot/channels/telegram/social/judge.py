@@ -82,7 +82,7 @@ class SocialJudge:
         self.provider = provider
         self.media_loader = media_loader
         self.prompt = render_template("telegram/social_judge.md")
-        self.revision = store.setting_revision("judge", json.dumps({
+        self.revision = store.scopes.setting_revision("judge", json.dumps({
             "settings": self.settings.model_dump(),
             "prompt_version": JUDGE_PROMPT_VERSION, "prompt": self.prompt,
         }, sort_keys=True), force=provider_changed)

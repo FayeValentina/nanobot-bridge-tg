@@ -10,8 +10,8 @@ from pydantic import ValidationError
 
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.events import DeliveryReceipt
+from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
-from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
@@ -182,7 +182,7 @@ async def test_selective_messages_wait_ignores_unmatched_chatter(dialogue):
     assert dialogue.bus.inbound.qsize() == 1
     msg, _ = take(dialogue)
     admit(dialogue, msg)
-    assert dialogue.store.state(A.session_key)["wake_config"] == "{}"
+    assert dialogue.store.scopes.state(A.session_key)["wake_config"] == "{}"
 
 
 async def test_reply_at_automatic_total_cap_cannot_start_another_full_wait(dialogue):
@@ -208,7 +208,7 @@ async def test_wait_consumption_and_continuation_insert_roll_back_together(dialo
     with pytest.raises(sqlite3.IntegrityError):
         dialogue.store.consume_timers()
     assert dialogue.store.dialogue_status(A.session_key)["wait"] is not None
-    assert dialogue.store.state(A.session_key)["mode"] == "waiting"
+    assert dialogue.store.scopes.state(A.session_key)["mode"] == "waiting"
     assert not dialogue.store.db.execute("SELECT 1 FROM wakes WHERE status='scheduled'").fetchone()
     dialogue.store.db.execute("DROP TRIGGER reject_continuation")
     await dialogue.run_due()
@@ -419,10 +419,10 @@ async def test_sleep_observation_transfers_to_sleep_locally_and_mark_read_stays_
     finish(dialogue, ctx)
     clock(dialogue).advance(299)
     await dialogue.run_due()
-    assert dialogue.store.state(A.session_key)["mode"] == "waiting"
+    assert dialogue.store.scopes.state(A.session_key)["mode"] == "waiting"
     clock(dialogue).advance(1)
     await dialogue.run_due()
-    state = dialogue.store.state(A.session_key)
+    state = dialogue.store.scopes.state(A.session_key)
     assert state["mode"] == "sleeping" and state["wake_at"] == dialogue.now() + 600
     assert dialogue.bus.inbound.empty() and dialogue.bus.outbound.empty()
 
@@ -437,7 +437,7 @@ async def test_sleep_observation_new_content_is_shown_before_sleep(dialogue):
     await dialogue.run_due()
     msg, view = take(dialogue)
     assert [m["seq"] for m in view["messages"]] == [1, 2]
-    assert dialogue.store.state(A.session_key)["read_through"] == 0
+    assert dialogue.store.scopes.state(A.session_key)["read_through"] == 0
     admit(dialogue, msg)
     assert dialogue.store.dialogue_status(A.session_key)["wait"] is None
 
@@ -452,7 +452,7 @@ async def test_unseen_arrival_before_sleep_tool_gets_a_fresh_snapshot(dialogue):
     await dialogue.run_due()
     _, view = take(dialogue)
     assert any(m["seq"] == 2 for m in view["messages"])
-    assert dialogue.store.state(A.session_key)["seen_through"] == 1
+    assert dialogue.store.scopes.state(A.session_key)["seen_through"] == 1
 
 
 def test_received_but_unexposed_content_never_counts_as_observed(dialogue):
@@ -479,7 +479,7 @@ async def test_model_error_does_not_leave_a_running_lock(tmp_path, dialogue):
     lock = loop._session_locks.get(A.session_key)
     assert lock is None or not lock.locked()
     assert dialogue.store.dialogue_status(A.session_key)["wait"] is None
-    assert dialogue.store.state(A.session_key)["mode"] == "observing"
+    assert dialogue.store.scopes.state(A.session_key)["mode"] == "observing"
 
 
 @pytest.mark.parametrize("text", ["晚安", "再见！", "good night"])
@@ -614,7 +614,7 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
     upgraded = SocialStore(root, now=dialogue.now)
     try:
         assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert upgraded.state(A.session_key)["read_through"] == 1
+        assert upgraded.scopes.state(A.session_key)["read_through"] == 1
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         upgraded.db.execute("PRAGMA user_version=99")
     finally:

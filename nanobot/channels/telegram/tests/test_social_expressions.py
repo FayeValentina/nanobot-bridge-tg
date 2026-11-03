@@ -70,7 +70,7 @@ def test_available_evidence_and_empty_batch_move_only_expression_cursor(setup):
     evidence = entry["evidence"][0]
     assert (evidence["message_id"], evidence["revision"], evidence["sender_id"], evidence["source"]) == (1, 1, "human", "human_text")
     assert json.loads(entry["scene_tags"]) == ["banter", "praise"]
-    assert store.state(A.session_key)["read_through"] == store.state(A.session_key)["seen_through"] == 0
+    assert store.scopes.state(A.session_key)["read_through"] == store.scopes.state(A.session_key)["seen_through"] == 0
     clock[0] += 301
     add(store, 2, "加油")
     batch, ids = commit(store, library)
@@ -237,7 +237,7 @@ async def test_worker_default_window_priority_interval_concurrency_and_silence(r
     worker.start_due([A.session_key])
     await worker.task
     assert provider.chat.await_count == 2
-    assert instance.store.state(A.session_key)["seen_through"] == instance.store.state(A.session_key)["read_through"] == 0
+    assert instance.store.scopes.state(A.session_key)["seen_through"] == instance.store.scopes.state(A.session_key)["read_through"] == 0
 
 
 async def test_failure_retry_budget_and_interval_survive_restart(runtime):
