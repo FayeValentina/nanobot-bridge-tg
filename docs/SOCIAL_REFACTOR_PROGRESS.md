@@ -5,29 +5,22 @@
 
 ## 交接：当前状态与下一步（新对话从这里开始读）
 
-**最后更新：2026-11-04，线上版本 `7ec03fa3`（P3-c），social schema 20。**
+**最后更新：2026-11-04，线上版本 `5e484184`（P3-d，Phase 3 完成），social schema 20。**
 
-- **已完成**：Phase 0、0.5、1、2，以及追加项 A1。场景测试 21 个，全部通过，零 xfail。
-- **进行中：Phase 3**（owner 2026-11-03 确认开始）。只读事实清单 P3-0 已完成：`.agent/tasks/P3-0.report.md`
-  （wakes 状态转换表、表归属矩阵、15 条疑点 Q1–Q15），后续简报的事实以它为准，但每条仍要用 grep 复核。
-  Phase 3 拆为三个施工任务：
-  - **P3-a**（已完成，纯搬迁）：建 `social/db/`（connection、schema 迁入、Scopes、Messages、Views、StickerLibrary），
-    把全仓库对 scopes 身份/计数列、messages、updates、views、stickers、runtime_settings 的 SQL 搬进仓储；不改事务边界。
-  - **P3-b**（已完成）：`db/wakes.py` 状态机。拥有 wakes、requests、dialogue_waits/jobs/state 和 scopes 的调度列；
-    `WakeStatus`/`WakeReason`/`ScopeMode` 枚举；所有 status 更新经过带前置状态 WHERE 的转换函数，终态不可再改；
-    引入 `transaction()`（已在事务内则不开新事务）。计划顺带修的疑点：Q2（发布失败回退覆盖终态且不退请求预算）、
-    Q3（终态 proactive 行被改成 cancelled）、Q9（终态清理只挂在 `_schedule` 上）、Q12（`recovery_jobs` 返回无用的旧值）。
-  - **P3-c**（已完成）：`db/judge.py`（judge_state/batches/attempts）和 `db/deliveries.py`（actions/send_attempts/message_deliveries，
-    只搬迁，表合并和策略统一留给 Phase 5）；把这些表在 store.py、judge_runtime、runtime、proactive、selection、followups、learning、
-    expressions 中的 SQL 全部搬进仓储。
-  - **P3-d**（已完成）：知识/学习/proactive_state 各表单一归属（SQL 只在拥有者模块中）；解决 memory↔jargon 延迟导入；
-    其余模块的旧式 `with self.db:` 统一改为 `transaction()`；SocialStore 只保留跨仓储的事务编排；在 pipeline 检查中加 grep 规则。
-  - **Claude 的设计决定（偏离审查文档的量化目标）**：知识、学习、活动、proactive_state 这些表在 Phase 3 仍由各自模块
-    （memory/jargon/followups/activity/learning/expressions/jargon_learning/proactive）直接执行 SQL，只要求“每张表只有一个模块写 SQL”；
-    “`db/` 之外 0 处 `db.execute`”推迟到 Phase 6/7 重组 knowledge/learning 包时完成。
-  - 不在 Phase 3 处理的疑点：Q4/Q5（曝光消费 wake 时不改 scope.mode，留给 Phase 4 曝光重做）、Q6（judge pending_first 残留，Phase 7）、
-    Q10/Q11/Q13–Q15（记录在案，按所属 Phase 处理）。Q1（遗留 `directed` reason）线上库中 0 行，枚举化后不再出现。
-  - 线上库观察（2026-11-03 副本）：wakes 中 proactive failed 171 行（402 欠费期间），终态行最早约 4 天前，印证 Q9。
+- **已完成**：Phase 0、0.5、1、2、3，以及追加项 A1。测试 982 个（社交目录 + 契约 + gateway），场景测试 21 个，全部通过，零 xfail。
+- **Phase 3 结果**（P3-0 只读清单 + P3-a～P3-d，明细见下表）：`social/db/` 有 connection、schema 和 8 个仓储
+  （scopes/messages/views/stickers/wakes/judge/deliveries/proactive_state）；wake 状态机在 `db/wakes.py`（`WakeStatus`/`TRANSITIONS`/`_move`，终态不可变）；
+  store.py 1213→约 300 行，只做跨仓储编排；`test_social_sql_ownership.py` 固定可以执行 SQL 的文件。
+  P3-a 部署后线上已有真实活动正常走过新代码（1 次 judge wake、3 次主动机会完成、1 次发送成功，无异常）。
+- **Claude 的设计决定（偏离审查文档的量化目标）**：知识/学习/活动表仍由各自拥有者模块（memory/jargon/followups/activity/learning/expressions）
+  执行 SQL，只要求每张表只有一个拥有者；“`db/` 之外 0 处 `db.execute`”推迟到 Phase 6/7 重组 knowledge/learning 包时完成。
+- **下一步：Phase 4**（显式曝光登记取代子串匹配 P0-4；SocialContextBuilder + hook 瘦身 P1-3），风险高。
+  按惯例先派**只读分析**：穷举 `note_seen`/`Views`/`selection.input`/`memory.context`/`Views.displayed_evidence` 中对“模型是否看到快照”的全部判断，
+  以及 `_publish_wake`、`social_read_messages` 产生快照的全部路径和 hook 的调用时序，再由 Claude 设计。
+  Phase 5（统一投递日志）也只依赖 Phase 3，可放在 Phase 4 之后。
+- **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
+  `Wakes._check_trigger_source` 读 judge_batches 的只读例外（Phase 7 judge 简化时重看）；P3-0 疑点 Q4/Q5（Phase 4）、Q6（Phase 7）、
+  Q10/Q11/Q13–Q15（按所属 Phase）。P3-0 清单 `.agent/tasks/P3-0.report.md` 的行号已过时，只作线索。
 - **owner 决策**（D1–D5 详见审查文档 §5）：judge 保留但要简化（§5.1，属于 Phase 7）；idle/activity 已修好（D2）；允许场景测试（D3）；
   改配置时保留历史（D4，已在 P2-a 实现）；工具从 12 个合并为 8 个（§5.3，属于 Phase 8）。
 
@@ -62,4 +55,4 @@
 | P3-a 建立 db/ 包，搬迁 scopes/messages/views/stickers 的 SQL | 3 | `cf1a492e` | 2026-11-03 healthy，schema 仍为 20，启动日志无异常栈 | 社交目录 + 契约 + gateway 981 passed（Claude 复跑；较 P2-a 的 971 多出的是 gateway 测试，社交目录本身 947）；ruff 全仓干净；basedpyright social/ 0 errors；schema 文件迁移前后内容逐字相同；diff 逐文件审阅均为原 SQL 原样替换为仓储方法 | store.py 1213→1036 行；新增 db/ 358 行（不含 schema），生产代码净增 150 行（类与方法签名开销，P3-b/c 会收回）。Codex 沙箱内 `git mv` 因 .git 只读失败，改为普通移动，由 Claude 提交时登记。时钟测试 `test_expiry_hides_fact...` 原先构造后改写 `store.now`，仓储已捕获时钟，改为在测试内构造 runtime 并传入时钟（断言不变） |
 | P3-b `db/wakes.py` 显式 wake 状态机【小幅行为修正】 | 3 | `c2668524` | 2026-11-03 healthy，schema 20，日志无异常栈 | 社交目录 + 契约 + gateway 981 passed（Claude 复跑），场景测试未改动；ruff 全仓干净；basedpyright social/ 0 errors；wakes.py 中设置 status 的只有 `_move` 一处；**线上库副本演练**：`recover()` + `ready()` 正常，Q9 清理删除一天前的终态 wake（330→125 行），dialogue_jobs 级联 33→2，messages 不变 | 修正 Q2/Q3/Q9/Q12，没有测试断言旧行为。Claude 补修 2 处：(1) 简报给的 `transaction` 返回注解 `Iterator[None]` 被 basedpyright 判为弃用，改为 `Generator[None, None, None]`；(2) `proactive._cancel` 仍是旧式 `with self.db:`，块内第一条就调用已改用 `transaction()` 的 `store.cancel_opportunity`，会把原来一个事务拆成两个，改为 `transaction()`。store.py 1036→627 行，wakes.py 526 行（略超 500 的目标，Phase 6 拆 runtime 时再看），生产代码净增 120 行。**遗留**：其他模块仍有旧式 `with self.db:`，P3-c 统一改为 `transaction()` |
 | P3-c `db/judge.py` 与 `db/deliveries.py`（纯搬迁） | 3 | `7ec03fa3` | 2026-11-04 healthy，schema 20，日志无异常栈 | 社交目录 + 契约 + gateway 981 passed（Claude 复跑）；ruff 全仓干净；basedpyright social/ 0 errors；`_judge_current` 私有访问全仓 0 处；线上库副本上 `recover()`/`judge.recover()`/`ready()` 正常 | store.py 627→325 行；judge.py 293 行、deliveries.py 164 行；生产代码净增 120 行。唯一保留的跨表读取例外：`Wakes._check_trigger_source` 读 judge_batches（Judge 依赖 Wakes，反向会循环），已加注释。Claude 小修：`Wakes.any_active` 原被实现成由调用方传入 mode/status 字面量，改为无参并使用枚举。`expressions.busy` 的三段 UNION 按简报拆成 `wakes.any_active() or judge.any_pending()` |
-| P3-d Phase 3 收尾：单一归属、schema 集中、事务统一、SQL 归属测试 | 3 | 待填 | 待填 | 社交目录 + 契约 + gateway 982 passed（新增 `test_social_sql_ownership.py`）；ruff 全仓干净；basedpyright social/ 0 errors；store/runtime/proactive/judge_runtime/jargon_learning 中 0 处 SQL；db/ 之外旧式 `with db:`/nullcontext 0 处；Codex 先逐条核对了全部块外写语句，均有调用方事务包住，没有依赖“顺带提交”的路径；**线上库副本演练**：打开（经迁入 db/schema.py 的升级函数）、recover、judge/learning recover、consume_timers、ready 后 `in_transaction` 均为 False | memory↔jargon 循环解开（`MemoryEvidence` 移到 models，`displayed_evidence` 移到 `Views`）；新增 `db/proactive_state.py`；4 个 schema 升级函数迁入 db/schema.py；`savepoint()` 取代手写 SAVEPOINT。**Claude 退回一处迎合测试的改动**：Codex 为了躲过子串扫描，把 jargon_learning 中两处 `self.tools.execute(...)` 改成局部变量绑定；已恢复原代码，并把测试的匹配串收窄为 `db.execute(` 等（social 代码中所有连接变量均名为 db，已 grep 核实）。生产代码净增 140 行（超出预期 80 行，均为方法签名）。**留给 Phase 7**：learning.py 对 expressions/jargon 表的读写、selection 的动态候选查询 |
+| P3-d Phase 3 收尾：单一归属、schema 集中、事务统一、SQL 归属测试 | 3 | `5e484184` | 2026-11-04 healthy，schema 20，日志无异常栈 | 社交目录 + 契约 + gateway 982 passed（新增 `test_social_sql_ownership.py`）；ruff 全仓干净；basedpyright social/ 0 errors；store/runtime/proactive/judge_runtime/jargon_learning 中 0 处 SQL；db/ 之外旧式 `with db:`/nullcontext 0 处；Codex 先逐条核对了全部块外写语句，均有调用方事务包住，没有依赖“顺带提交”的路径；**线上库副本演练**：打开（经迁入 db/schema.py 的升级函数）、recover、judge/learning recover、consume_timers、ready 后 `in_transaction` 均为 False | memory↔jargon 循环解开（`MemoryEvidence` 移到 models，`displayed_evidence` 移到 `Views`）；新增 `db/proactive_state.py`；4 个 schema 升级函数迁入 db/schema.py；`savepoint()` 取代手写 SAVEPOINT。**Claude 退回一处迎合测试的改动**：Codex 为了躲过子串扫描，把 jargon_learning 中两处 `self.tools.execute(...)` 改成局部变量绑定；已恢复原代码，并把测试的匹配串收窄为 `db.execute(` 等（social 代码中所有连接变量均名为 db，已 grep 核实）。生产代码净增 140 行（超出预期 80 行，均为方法签名）。**留给 Phase 7**：learning.py 对 expressions/jargon 表的读写、selection 的动态候选查询 |
