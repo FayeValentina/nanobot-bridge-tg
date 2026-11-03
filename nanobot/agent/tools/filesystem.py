@@ -7,9 +7,9 @@ import hashlib
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field
-from typing import Any
 
 from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
 from nanobot.agent.tools.context import ToolContext

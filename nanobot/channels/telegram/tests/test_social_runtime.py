@@ -35,7 +35,7 @@ from nanobot.config.schema import Config, TelegramSocialConfig
 from nanobot.events import ContextCompactionEvent
 from nanobot.providers.base import GenerationSettings, LLMResponse, ToolCallRequest
 from nanobot.runtime_context import RuntimeContextBlock
-from nanobot.session.manager import ISOLATED_CONTEXT_KEY, SessionManager
+from nanobot.session.manager import SessionManager
 from nanobot.webui.settings_system import WebUISettingsError, save_channel_config_values
 
 A = ConversationScope("telegram", -1001, 42)
@@ -364,8 +364,7 @@ def test_persona_survives_rebuild_with_the_common_profile_and_memory(tmp_path, s
     builder = ContextBuilder(loop.workspace)
     def build(transcript):
         return builder.build_transcript(
-            transcript, include_profile=policy.include_profile, include_memory=policy.include_memory,
-            include_skills=policy.include_skills, trusted_persona=policy.persona,
+            transcript, include_memory=policy.persist, trusted_persona=policy.persona,
         )
     _, state = ContextCompactionState.from_transcript(
         TranscriptInput(history=[], current_message="group snapshot"), build, AsyncMock(), None,
@@ -392,12 +391,10 @@ async def test_restart_restores_common_permissions_and_current_role(tmp_path, so
     session.add_message("user", "GROUP HISTORY")
     loop.sessions.save(session)
     restored = SessionManager(loop.workspace, sessions_root=tmp_path / "sessions")
-    closed = restored.get_or_create(A.session_key)
-    assert ISOLATED_CONTEXT_KEY not in closed.metadata
-    assert closed.policy.enabled and closed.policy.archive_memory
+    restored.get_or_create(A.session_key)
     restored.set_policy_resolver(social.policy_for_session)
     opened = restored.get_or_create(A.session_key)
-    assert opened.policy.enabled and opened.policy.persona == session.policy.persona
+    assert opened.policy.persona == session.policy.persona
     assert opened.get_history()[0]["content"] == "GROUP HISTORY"
 
 

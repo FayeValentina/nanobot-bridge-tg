@@ -369,7 +369,6 @@ async def test_disable_refreshes_live_index_on_next_iteration_and_next_wake(tmp_
 
 async def test_memory_tool_is_in_shared_catalog_and_errors_are_clear(social):
     tool = TelegramSocialTool(social, "social_memory")
-    assert not tool.requires_explicit_allowlist
     assert tool.parameters["additionalProperties"] is False
     ctx = expose(social)
     with bound(ctx):

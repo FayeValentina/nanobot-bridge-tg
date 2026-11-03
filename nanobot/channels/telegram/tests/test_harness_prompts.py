@@ -82,8 +82,8 @@ async def test_actual_summary_truncation_contains_identity_independence_and_sile
 
 def test_conversation_persona_does_not_leak_into_ordinary_mode(tmp_path):
     builder = ContextBuilder(tmp_path)
-    ordinary = builder.build_system_prompt(channel="telegram", include_skills=False)
-    social_prompt = builder.build_system_prompt(channel="telegram", include_skills=False,
+    ordinary = builder.build_system_prompt(channel="telegram")
+    social_prompt = builder.build_system_prompt(channel="telegram",
         trusted_persona=SOCIAL_PROTOCOL+"\n# Operator persona\n"+PERSONA.read_text())
     assert "肥鱼" not in ordinary and "鲸鱼娘" not in ordinary
     assert PERSONA.read_text() in social_prompt

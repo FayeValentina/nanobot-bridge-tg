@@ -54,11 +54,7 @@ from nanobot.config.schema import (
 )
 from nanobot.providers.base import LLMProvider, ToolCallRequest
 from nanobot.runtime_context import RuntimeContextBlock, append_runtime_context
-from nanobot.session.manager import (
-    ISOLATED_CONTEXT_KEY,
-    Session,
-    SessionPolicy,
-)
+from nanobot.session.manager import Session, SessionPolicy
 from nanobot.utils.helpers import build_image_content_blocks, strip_think
 from nanobot.utils.prompt_templates import render_template
 
@@ -438,11 +434,8 @@ class TelegramSocialRuntime:
         if scope is None or scope.channel != self.channel:
             return None
         binding = self.binding(scope)
-        if binding is None and not self.store.owns(session.key) and not session.metadata.get(ISOLATED_CONTEXT_KEY):
+        if binding is None and not self.store.owns(session.key):
             return None
-        # Social mode changes observation and delivery, not assistant capabilities.
-        # Retire the old persisted isolation marker as these sessions are loaded.
-        session.metadata.pop(ISOLATED_CONTEXT_KEY, None)
         policy = SessionPolicy(tool_only=binding is not None)
         if binding is not None:
             try:

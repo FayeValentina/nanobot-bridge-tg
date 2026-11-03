@@ -1,7 +1,6 @@
 """Owner-requested common permissions, with social observation/delivery unchanged."""
 
 import asyncio
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -19,7 +18,6 @@ from nanobot.channels.telegram.tests.test_social_runtime import (
 )
 from nanobot.config.schema import ToolsConfig
 from nanobot.providers.base import LLMResponse, ToolCallRequest
-from nanobot.session.manager import ISOLATED_CONTEXT_KEY
 
 __all__ = ["social"]
 
@@ -40,7 +38,7 @@ async def test_private_and_social_turns_have_identical_tools_and_global_switches
     assert ("exec" in names) is (not disable_files)
     normal_policy = loop.sessions.get_or_create("telegram:123").policy
     group_policy = loop.sessions.get_or_create(A.session_key).policy
-    for key in ("allowed_tools", "disabled_tools", "include_profile", "include_memory", "include_skills", "archive_memory", "allow_commands", "enabled"):
+    for key in ("disabled_tools",):
         assert getattr(normal_policy, key) == getattr(group_policy, key)
     assert group_policy.tool_only  # Delivery remains explicit; capability grants match.
 
@@ -141,19 +139,6 @@ async def test_newly_registered_mcp_tools_need_no_social_allowlist(tmp_path, soc
     await loop._dispatch(await wake(social))
     result = next(m for m in loop.provider.chat_stream_with_retry.call_args.kwargs["messages"] if m.get("tool_call_id") == "mcp")
     assert result["content"].split("\n\nLive group memory index", 1)[0] == "MCP result: shared"
-
-
-def test_legacy_isolation_marker_is_removed_when_existing_session_is_loaded(tmp_path, social):
-    loop = agent(tmp_path, social, [])
-    session = loop.sessions.get_or_create(A.session_key)
-    session.metadata[ISOLATED_CONTEXT_KEY] = True
-    session.add_message("user", "kept group history")
-    loop.sessions.save(session)
-    restored = loop.sessions.get_or_create(A.session_key)
-    assert ISOLATED_CONTEXT_KEY not in restored.metadata
-    assert restored.policy.allowed_tools is None
-    assert restored.policy.include_skills and restored.policy.archive_memory
-    assert "kept group history" in json.dumps(restored.messages)
 
 
 async def test_wait_stops_ordinary_tools_later_in_the_same_batch(tmp_path, social):

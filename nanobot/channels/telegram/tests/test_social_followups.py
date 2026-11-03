@@ -113,7 +113,7 @@ async def test_compaction_rebuild_keeps_trusted_protocol_and_injects_only_live_i
     builder = ContextBuilder(tmp_path)
     raw, compaction = ContextCompactionState.from_transcript(
         TranscriptInput(history=[], current_message="Synthetic idle observation"),
-        partial(builder.build_transcript, trusted_persona=persona, include_skills=False),
+        partial(builder.build_transcript, trusted_persona=persona),
         AsyncMock(return_value="Earlier chat summary"), None,
     )
     assert compaction is not None

@@ -41,13 +41,13 @@ from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, res
 from nanobot.agent.tools.message import capture_message_deliveries
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.runtime_control import AgentRuntimeControl
+from nanobot.agent.turn_context import TurnContext, TurnKind, TurnOptions
 from nanobot.agent.turn_delivery import (
     TurnDelivery,
     TurnDeliveryFactory,
 )
 from nanobot.agent.turn_delivery import TurnRoute as TurnRoute
 from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
-from nanobot.agent.turn_context import TurnContext, TurnKind, TurnOptions
 from nanobot.bus.events import INBOUND_META_USER_SHELL, InboundMessage, OutboundMessage
 from nanobot.bus.outbound_events import (
     StreamDeltaEvent,
@@ -310,7 +310,6 @@ class AgentLoop:
             self.sessions.set_policy_resolver(session_policy_resolver)
         self.turn_delivery_factory.suppress_output = lambda key: (
             self.sessions.policy_for_key(key).tool_only
-            or not self.sessions.policy_for_key(key).enabled
         )
         # One file-read/write tracker per logical session. The tool registry is
         # shared by this loop, so tools resolve the active state via contextvars.
@@ -374,7 +373,6 @@ class AgentLoop:
             sessions=self.sessions,
             build_messages=self.context.build_messages,
             get_tool_definitions=self.tools.get_definitions,
-            resolve_policy=self.sessions.policy_for_key,
             resolve_prompt_context=PersistedPromptContextResolver(
                 workspace_scopes=self.workspace_scopes,
                 unified_session=unified_session,
@@ -684,7 +682,6 @@ class AgentLoop:
             runtime=ctx.runtime,
             metadata=dict(ctx.msg.metadata or {}),
             attributes=dict(ctx.attributes),
-            allow_private_context=ctx.session.policy.include_profile and ctx.session.policy.include_skills,
             sender_id=ctx.msg.sender_id,
             turn_id=ctx.turn_id,
             workspace=scope.project_path,
@@ -707,13 +704,13 @@ class AgentLoop:
     ) -> list[RuntimeContextBlock]:
         providers = [
             *tools.get_runtime_context_providers(),
-            *(self._runtime_context_providers if request.allow_private_context else []),
+            *self._runtime_context_providers,
         ]
         blocks = runtime_context_blocks_from_metadata(request.metadata)
         blocks.extend(await resolve_runtime_context(providers, request))
         skill_context = self.context.skills.build_explicit_skill_runtime_context(
             request.original_user_text or ""
-        ) if request.allow_private_context else None
+        )
         if skill_context is not None and skill_context not in blocks:
             blocks.append(skill_context)
         return blocks
@@ -726,9 +723,6 @@ class AgentLoop:
         dispatch_fn: Callable[[CommandContext], Awaitable[OutboundMessage | None]],
     ) -> None:
         """Dispatch a command directly from the run() loop and publish the result."""
-        if not self.sessions.policy_for_key(key).allow_commands:
-            await self._dispatch(msg)
-            return
         if normalize_command_text(raw).lower() == "/compact":
             # Compaction must wait for the active turn to commit its session.
             task = asyncio.create_task(self._dispatch(msg), context=Context())
@@ -963,7 +957,6 @@ class AgentLoop:
                     sender_id=pending_msg.sender_id,
                     turn_id=request_ctx.turn_id,
                     workspace=scope.project_path,
-                    allow_private_context=request_ctx.allow_private_context,
                 )
                 blocks = await self._resolve_runtime_context_for_request(
                     pending_request,
@@ -1011,9 +1004,7 @@ class AgentLoop:
             self.context.build_transcript,
             channel=request_ctx.channel,
             workspace=effective_scope.project_path,
-            include_memory=(session.policy.persist and session.policy.include_memory) if session else True,
-            include_profile=session.policy.include_profile if session else True,
-            include_skills=session.policy.include_skills if session else True,
+            include_memory=session.policy.persist if session is not None else True,
             trusted_persona=session.policy.persona if session else "",
         )
         if request_context is None:
@@ -1661,26 +1652,15 @@ class AgentLoop:
                 ctx.session = self.sessions.get_or_create(ctx.session_key)
         session = ctx.session
         policy = self.sessions.resolve_policy(session)
-        if not policy.enabled:
-            raise PermissionError("session execution is not authorized")
         if policy.context_version is not None:
             ctx.attributes["context_version"] = policy.context_version
         ctx.ephemeral = ctx.ephemeral or not session.policy.persist
         tools = ctx.tools if ctx.tools is not None else self.tools
-        has_scoped_tools = any(
-            tool.requires_explicit_allowlist
-            for name in tools.tool_names if (tool := tools.get(name)) is not None
-        )
-        if policy.disabled_tools or policy.allowed_tools is not None or has_scoped_tools:
+        if session.policy.disabled_tools:
             restricted = ToolRegistry()
             for name in tools.tool_names:
                 tool = tools.get(name)
-                if (
-                    tool is not None
-                    and name not in policy.disabled_tools
-                    and (policy.allowed_tools is None or name in policy.allowed_tools)
-                    and (policy.allowed_tools is not None or not tool.requires_explicit_allowlist)
-                ):
+                if name not in session.policy.disabled_tools and tool:
                     restricted.register(tool)
             tools = restricted
         ctx.tools = tools
@@ -1721,8 +1701,6 @@ class AgentLoop:
         if ctx.kind is TurnKind.SYSTEM or ctx.msg.channel == "system":
             return False
         session = ctx.require_session()
-        if not session.policy.allow_commands:
-            return False
         raw = ctx.msg.content.strip()
         _, automation_metadata = automation_history_overrides(ctx.msg.metadata)
         is_user_turn = (
@@ -1828,7 +1806,6 @@ class AgentLoop:
                 ctx.msg.content,
                 media=ctx.msg.media if ctx.kind is TurnKind.USER and ctx.msg.media else None,
                 runtime_context_blocks=ctx.runtime_context_blocks,
-                include_skills=session.policy.include_skills,
             )
             task_id = ctx.msg.metadata.get("subagent_task_id") if is_subagent else None
             already_staged = False

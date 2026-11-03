@@ -282,14 +282,14 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                 before = len(provider.calls)
                 builder = ContextBuilder(root)
                 transcript = TranscriptInput(history=[], current_message=inbound.content)
-                messages = builder.build_transcript(transcript, trusted_persona=persona, include_skills=False)
+                messages = builder.build_transcript(transcript, trusted_persona=persona)
                 if name == "compacted_pending":
                     async def summarized(*_args: Any, **_kwargs: Any) -> str:
                         return "此前聊过日常；未完成事项以本轮实时记忆为准。"
 
                     _, compaction = ContextCompactionState.from_transcript(
                         transcript,
-                        partial(builder.build_transcript, trusted_persona=persona, include_skills=False), summarized, None)
+                        partial(builder.build_transcript, trusted_persona=persona), summarized, None)
                     assert compaction is not None
                     messages = ContextGovernor._summary_transcript(compaction, await summarized()) + [messages[-1]]
                 with request_context(ctx):

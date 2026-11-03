@@ -7,7 +7,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import stat
 import time
 from collections import OrderedDict
@@ -277,24 +276,9 @@ class SessionPolicy:
     persist: bool = True
     log_content: bool = True
     disabled_tools: frozenset[str] = frozenset()
-    allowed_tools: frozenset[str] | None = None
-    include_profile: bool = True
-    include_memory: bool = True
-    include_skills: bool = True
-    archive_memory: bool = True
-    allow_commands: bool = True
     tool_only: bool = False
-    enabled: bool = True
     persona: str = ""
     context_version: str | None = None
-
-
-ISOLATED_CONTEXT_KEY = "_isolated_context"
-ISOLATED_SESSION_POLICY = SessionPolicy(
-    allowed_tools=frozenset(), include_profile=False, include_memory=False,
-    include_skills=False, archive_memory=False, allow_commands=False,
-    tool_only=True, enabled=False, log_content=False,
-)
 
 
 @dataclass
@@ -314,8 +298,6 @@ class Session:
     def __post_init__(self) -> None:
         if not isinstance(cast(object, self.metadata), dict):
             self.metadata = {}
-        if self.metadata.get(ISOLATED_CONTEXT_KEY) is True:
-            self.policy = ISOLATED_SESSION_POLICY
         if not isinstance(cast(object, self.provider_state), ProviderConversationState):
             self.provider_state = None
         # An out-of-range offset (corrupt metadata) would hide all history; reset it.
@@ -1722,8 +1704,6 @@ class SessionManager:
             if policy is not None:
                 session.policy = policy
                 return policy
-        if session.metadata.get(ISOLATED_CONTEXT_KEY) is True:
-            session.policy = ISOLATED_SESSION_POLICY
         return session.policy
 
     def policy_for_key(self, key: str) -> SessionPolicy:
