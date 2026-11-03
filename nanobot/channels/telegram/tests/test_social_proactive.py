@@ -17,6 +17,7 @@ from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import ConversationScope, ProactiveCandidate
 from nanobot.channels.telegram.social.proactive import is_quiet
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
+from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
@@ -65,7 +66,7 @@ def test_schema_eleven_upgrade_preserves_source_values_and_rolls_back(social, mo
             assert [tuple(row) for row in original.execute("SELECT * FROM scopes")] == scopes
     restored = SocialStore(social.root, now=social.now)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert [tuple(row) for row in restored.db.execute("SELECT * FROM messages")] == messages
         assert [tuple(row)[:-1] for row in restored.db.execute("SELECT * FROM scopes")] == scopes
         assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -684,7 +685,7 @@ def test_schema_four_upgrade_preserves_memory_watermarks_and_history(tmp_path):
     store.close()
     upgraded = SocialStore(root)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert upgraded.db.execute("SELECT content FROM memories WHERE id='id'").fetchone()[0] == "remember me"
         assert upgraded.state(A.session_key)["read_through"] == 4
         assert upgraded.state(A.session_key)["seen_through"] == 5

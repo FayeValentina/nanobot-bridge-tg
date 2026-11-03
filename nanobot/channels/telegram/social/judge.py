@@ -12,10 +12,12 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
 from oauth_cli_kit.providers import OPENAI_CODEX_PROVIDER
 from oauth_cli_kit.storage import FileTokenStorage
 from pydantic import ValidationError
 
+from nanobot.channels.telegram.social.expressions import redacted_error_detail
 from nanobot.channels.telegram.social.judge_models import (
     JUDGE_PROMPT_VERSION,
     JudgeDecision,
@@ -162,11 +164,13 @@ class SocialJudge:
             raise
         except TimeoutError:
             error = "timeout"
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as exc:
             error = "invalid_decision"
-        except Exception:
+            logger.warning("Social judge batch={} error={}: {}", record.id, error, redacted_error_detail(exc))
+        except Exception as exc:
             # Persist fixed codes only; provider exception text may contain credentials/payloads.
             error = "provider_exception"
+            logger.warning("Social judge batch={} error={}: {}", record.id, error, redacted_error_detail(exc))
         usage = response.usage if response is not None else None
         record = self.store.finish_judge_attempt(
             record.id, snapshot, attempt=record.attempts, decision=decision, error_code=error,

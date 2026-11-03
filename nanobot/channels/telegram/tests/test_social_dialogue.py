@@ -12,6 +12,7 @@ from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.social.models import SocialDeliveryUnknownError
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
+from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
@@ -647,7 +648,7 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
     dialogue.close()
     upgraded = SocialStore(root, now=dialogue.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert upgraded.state(A.session_key)["read_through"] == 1
         assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         upgraded.db.execute("PRAGMA user_version=99")

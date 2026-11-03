@@ -9,9 +9,13 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
-from nanobot.channels.telegram.social.expressions import make_expression_provider
+from nanobot.channels.telegram.social.expressions import (
+    make_expression_provider,
+    redacted_error_detail,
+)
 from nanobot.channels.telegram.social.models import MediaReference
 from nanobot.config.schema import Config
 from nanobot.providers.base import LLMProvider
@@ -109,7 +113,8 @@ class ContextSelector:
     def configure_provider(self, config: Config) -> None:
         try:
             self.provider, self.model = make_expression_provider(config, self.runtime.config.learning.selection)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Social selector provider configuration failed: {}", redacted_error_detail(exc))
             self.provider, self.model = None, ""
         self.cache.clear()
 
@@ -290,8 +295,10 @@ class ContextSelector:
                     task.cancel()
                 raise
             except TimeoutError:
+                logger.info("Social selector scope={} turn={} error=timeout", scope, turn)
                 cached.status = "timeout"
-            except Exception:
+            except Exception as exc:
+                logger.opt(exception=True).warning("Social selector scope={} turn={} error=selection_exception: {}", scope, turn, redacted_error_detail(exc))
                 cached.status = "error"
             try:
                 store.learning.record_selection(scope, turn, target_message_id=next((m.message_id for m in reversed(source) if not m.is_self), None),
@@ -301,7 +308,8 @@ class ContextSelector:
                     explanation={"reason": reason, "model": self.model, "input_tokens": input_tokens,
                                  "output_tokens": output_tokens, "input_messages": [[m.message_id, m.revision] for m in source],
                                  "candidates": [{"kind": c.kind, "id": c.entry_id, "selected": c in cached.selected} for c in pool]})
-            except Exception:
+            except Exception as exc:
+                logger.opt(exception=True).warning("Social selector scope={} turn={} error=record_selection_exception: {}", scope, turn, redacted_error_detail(exc))
                 cached.selected = []
                 cached.status = "error"
             return cached.selected

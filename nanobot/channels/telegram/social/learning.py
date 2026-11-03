@@ -415,7 +415,7 @@ class SocialLearning:
                                                          "(SELECT event_id FROM learning_cursors WHERE scope=? AND kind=?),0)", (scope, scope, kind)).fetchone()[0]
                                     for kind in ("expression", "jargon")},
                 "cursors": [dict(row) for row in self.db.execute("SELECT * FROM learning_cursors WHERE scope=?", (scope,))],
-                "batches": [dict(row) for row in self.db.execute("SELECT id,kind,purpose,status,attempts,source_count,result_count,reason,model,model_calls,input_tokens,output_tokens,search_calls,fetch_calls,research_chars,latency_ms,created,updated FROM learning_batches WHERE scope=? ORDER BY created DESC LIMIT 20", (scope,))],
+                "batches": [dict(row) for row in self.db.execute("SELECT id,kind,purpose,status,attempts,source_count,result_count,reason,substr(error_detail,1,120) AS error_detail,model,model_calls,input_tokens,output_tokens,search_calls,fetch_calls,research_chars,latency_ms,created,updated FROM learning_batches WHERE scope=? ORDER BY created DESC LIMIT 20", (scope,))],
                 "counts": [dict(row) for row in self.db.execute("SELECT * FROM learning_counts WHERE scope=?", (scope,))],
                 "usable_expressions": self.db.execute("SELECT COUNT(*) FROM expressions WHERE scope=? AND status IN ('usable','available')", (scope,)).fetchone()[0],
                 "jargon_entries": self.db.execute("SELECT COUNT(*) FROM jargon WHERE scope=? AND status IN ('candidate','understand_only','usable')", (scope,)).fetchone()[0],

@@ -10,6 +10,7 @@ from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
 from nanobot.channels.telegram.social.activity import ActivityRequest
 from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
+from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_proactive import claim, enable, tick, view
 from nanobot.channels.telegram.tests.test_social_runtime import A, agent
@@ -191,7 +192,7 @@ def test_schema_sixteen_migration_preserves_data_and_rolls_back(social, monkeypa
             assert not original.execute("SELECT 1 FROM sqlite_master WHERE name='activities'").fetchone()
     restored = SocialStore(social.root, now=social.now)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert [tuple(row) for row in restored.db.execute("SELECT * FROM scopes")] == scopes
         assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:

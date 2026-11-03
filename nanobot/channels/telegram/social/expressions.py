@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.channels.telegram.social.learning import LearningKind
@@ -26,6 +27,13 @@ if TYPE_CHECKING:
 
 Intent = Literal["irony", "playful_exaggeration", "self_mockery", "ellipsis", "closing", "teasing", "playful_challenge", "reaction"]
 Scene = Literal["banter", "sharing", "complaint", "correction", "praise", "disagreement", "embarrassment", "ending", "guessing", "surprise"]
+
+
+def redacted_error_detail(exc: Exception) -> str:
+    """Bound diagnostic text after removing common credential values."""
+    detail = re.sub(r"(?i)\b(sk-|Bearer\s+|api_key=|token=)[^\s,;\"'<>]+",
+                    lambda match: match[1] + "[REDACTED]", str(exc))
+    return f"{type(exc).__name__}: {detail}"[:300]
 
 
 class ExpressionSource(BaseModel):
@@ -295,6 +303,7 @@ class ExpressionLearner:
         response: LLMResponse | None = None
         started = time.monotonic()
         error = ""
+        error_detail: str | None = None
         try:
             row = self.store.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
             if row is None or self.provider is None:
@@ -331,20 +340,28 @@ class ExpressionLearner:
         except asyncio.CancelledError:
             error = "interrupted"
             raise
-        except TimeoutError:
+        except TimeoutError as exc:
             error = "timeout"
-        except ValueError:
+            error_detail = redacted_error_detail(exc)
+            logger.warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
+        except ValueError as exc:
             error = "invalid_or_changed_input"
-        except Exception:
+            error_detail = redacted_error_detail(exc)
+            logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
+        except Exception as exc:
             error = "provider_exception"
+            error_detail = redacted_error_detail(exc)
+            logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
         finally:
             if not self.store.closed:
                 with self.store.db:
                     current = self.store.db.execute("SELECT status,scope,sources FROM learning_batches WHERE id=?", (batch,)).fetchone()
                     if current and current[0] == "running" and error:
-                        self.store.db.execute("UPDATE learning_batches SET status='failed',reason=?,updated=? WHERE id=?", (error, self.store.now(), batch))
+                        self.store.db.execute("UPDATE learning_batches SET status='failed',reason=?,error_detail=COALESCE(?,error_detail),updated=? WHERE id=?", (error, error_detail, self.store.now(), batch))
                         sources = json.loads(current["sources"])
                         self.store.learning.count(str(current["scope"]), "expression:failed", 1, sources[0]["message_id"], sources[-1]["message_id"])
+                    if current and current[0] == "succeeded":
+                        self.store.db.execute("UPDATE learning_batches SET error_detail=NULL WHERE id=?", (batch,))
                     if current and current[0] in {"running", "succeeded", "failed", "cancelled"}:
                         usage = response.usage if response else None
                         self.store.db.execute("UPDATE learning_batches SET input_tokens=input_tokens+?,output_tokens=output_tokens+?,latency_ms=latency_ms+? WHERE id=?",

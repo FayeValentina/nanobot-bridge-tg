@@ -13,6 +13,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.telegram_social import TelegramSocialTool
 from nanobot.bus.events import OutboundMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
+from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, channel, message
 from nanobot.channels.telegram.tests.test_social_scheduler import (
@@ -292,7 +293,7 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
         db.execute("PRAGMA user_version=5")
     upgraded = SocialStore(root, now=social.now)
     try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert upgraded.state(A.session_key)["next_seq"] == 2
         assert upgraded.db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()[0] == 0
     finally:

@@ -19,6 +19,7 @@ from nanobot.channels.telegram.social.runtime import (
     _SocialExposureHook,
     encode_view,
 )
+from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, message, social, wake
 from nanobot.channels.telegram.tests.test_social_scheduler import remove_v4_columns
@@ -254,7 +255,7 @@ def test_schema_three_upgrade_preserves_observations_views_and_watermarks(social
     social.close()
     store = SocialStore(social.root)
     try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert store.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert store.state(A.session_key)["read_through"] == 1
         assert store.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1

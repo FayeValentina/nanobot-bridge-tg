@@ -18,6 +18,7 @@ from nanobot.channels.telegram.social.models import (
     SocialRateLimitError,
 )
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
+from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, channel, message
 from nanobot.config.schema import TelegramSocialConfig
@@ -649,7 +650,7 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
     db.close()
     store = SocialStore(root)
     try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         state = store.state(A.session_key)
         assert (state["next_seq"], state["read_through"], state["seen_through"]) == (7, 4, 5)
         assert state["mode"] == "observing"

@@ -2,16 +2,20 @@
 import json
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+from loguru import logger
 from pydantic import ValidationError
 
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
+from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import TelegramSocialConfig, TelegramSocialLearningConfig
+from nanobot.providers.base import LLMProvider, LLMResponse
 
 A = ConversationScope("telegram", -1001, 42)
 B = ConversationScope("telegram", -1002, 42)
@@ -263,7 +267,7 @@ def test_upgrade_schema_thirteen_preserves_all_existing_source_values(store, tmp
     store.close()
     restored = SocialStore(tmp_path, now=lambda: 1000.)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         for table, values in before.items():
             actual = [tuple(row) for row in restored.db.execute(f"SELECT * FROM {table}")]
             if table == "messages":
@@ -355,3 +359,74 @@ def test_late_edit_after_observation_and_material_eviction_keeps_monotonic_revis
     assert store.db.execute("SELECT status FROM learning_batches WHERE id=?", (batch,)).fetchone()[0] == "cancelled"
     assert store.db.execute("SELECT status FROM jargon WHERE id=?", (entry["id"],)).fetchone()[0] == "disabled"
     assert store.db.execute("SELECT revision FROM learning_events WHERE message_id=1").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("kind", ["expression", "jargon"])
+@pytest.mark.parametrize("exception,code", [
+    (RuntimeError, "provider_exception"), (ValueError, "invalid_or_changed_input"),
+    (TimeoutError, "timeout"),
+])
+async def test_worker_error_detail_is_redacted_and_cleared_on_success(tmp_path, kind, exception, code):
+    (tmp_path / "roles").mkdir()
+    (tmp_path / "roles" / "guest.md").write_text("Guest")
+    config = TelegramSocialConfig.model_validate({"enabled": True, "learning": {"minMessages": 2},
+        "scopes": [{"chatId": A.chat_id, "threadId": A.thread_id, "roleId": "guest"}]})
+    runtime = TelegramSocialRuntime(config, tmp_path, MessageBus(), now=lambda: 1000.)
+    try:
+        worker = runtime.expressions if kind == "expression" else runtime.jargon
+        provider = AsyncMock(spec=LLMProvider)
+        provider.chat.side_effect = exception(
+            "boom sk-abc123 Bearer secret-auth api_key=secret-key token=secret-token " + "x" * 400)
+        worker.set_provider(provider, "test-learner")
+        observe(runtime.store, 1)
+        observe(runtime.store, 2)
+        batch = runtime.store.learning.prepare(A.session_key, kind)
+        assert batch
+        records = []
+        sink = logger.add(lambda message: records.append(message.record))
+        try:
+            await worker.run(batch)
+        finally:
+            logger.remove(sink)
+        record = next(r for r in records if f"batch={batch} kind={kind} error={code}" in r["message"])
+        assert record["level"].name == "WARNING"
+        assert (record["exception"] is not None) == (exception is not TimeoutError)
+        row = runtime.store.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
+        assert row["status"] == "failed" and row["reason"] == code and row["attempts"] == 1
+        detail = row["error_detail"]
+        assert detail.startswith(f"{exception.__name__}: boom") and len(detail) == 300
+        assert all(secret not in detail for secret in ("sk-abc123", "secret-auth", "secret-key", "secret-token"))
+        state_detail = runtime.store.learning.status(A.session_key)["batches"][0]["error_detail"]
+        assert state_detail == detail[:120]
+        cursor = runtime.store.db.execute("SELECT event_id FROM learning_cursors WHERE scope=? AND kind=?",
+                                          (A.session_key, kind)).fetchone()[0]
+        assert cursor == 0
+        provider.chat.side_effect = None
+        provider.chat.return_value = LLMResponse(content=json.dumps({"expressions" if kind == "expression" else "jargon": []}))
+        await worker.run(batch)
+        row = runtime.store.db.execute("SELECT status,error_detail,attempts FROM learning_batches WHERE id=?", (batch,)).fetchone()
+        assert tuple(row) == ("succeeded", None, 2)
+        assert runtime.store.learning.status(A.session_key)["batches"][0]["error_detail"] is None
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("column_exists", [False, True])
+def test_upgrade_seventeen_retains_learning_batches_and_adds_nullable_detail(store, tmp_path, column_exists):
+    batches(store)
+    columns = [row[1] for row in store.db.execute("PRAGMA table_info(learning_batches)") if row[1] != "error_detail"]
+    before = [tuple(row) for row in store.db.execute(f"SELECT {','.join(columns)} FROM learning_batches ORDER BY id")]
+    with store.db:
+        if not column_exists:
+            store.db.execute("ALTER TABLE learning_batches DROP COLUMN error_detail")
+        store.db.execute("PRAGMA user_version=17")
+    store.close()
+    restored = SocialStore(tmp_path, now=lambda: 1000.)
+    try:
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 18
+        assert [tuple(row) for row in restored.db.execute(f"SELECT {','.join(columns)} FROM learning_batches ORDER BY id")] == before
+        assert [row[0] for row in restored.db.execute("SELECT error_detail FROM learning_batches")] == [None, None]
+        assert restored.db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        restored.close()

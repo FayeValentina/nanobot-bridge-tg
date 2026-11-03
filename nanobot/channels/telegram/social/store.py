@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import time
 from collections.abc import Callable
@@ -35,7 +34,6 @@ from nanobot.channels.telegram.social.models import (
     UncertainSend,
     WakeJob,
 )
-
 from nanobot.channels.telegram.social.schema import initialize_social_schema
 
 

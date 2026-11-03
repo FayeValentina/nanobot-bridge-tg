@@ -5,6 +5,7 @@ from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
+from loguru import logger
 
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
@@ -67,6 +68,28 @@ async def run(runtime):
     assert batch
     await runtime.jargon.run(batch)
     return dict(runtime.store.db.execute('SELECT * FROM learning_batches WHERE id=?', (batch,)).fetchone())
+
+
+@pytest.mark.parametrize('operation', ['search', 'fetch'])
+async def test_public_research_exception_logs_and_continues(env, monkeypatch, operation):
+    runtime, provider, _, _, _ = env
+    add(runtime)
+    provider.chat.return_value = response(discover())
+    results = [RuntimeError('boom')] if operation == 'search' else ['https://example.org/body', RuntimeError('boom')]
+    execute = AsyncMock(side_effect=results)
+    monkeypatch.setattr(runtime.jargon.tools, 'execute', execute)
+    records = []
+    sink = logger.add(lambda message: records.append(message.record))
+    try:
+        batch = await run(runtime)
+    finally:
+        logger.remove(sink)
+    record = next(r for r in records if f'{operation} failed:' in r['message'])
+    assert record['level'].name == 'DEBUG' and record['exception'] is None
+    assert batch['id'] in record['message'] and 'kind=jargon' in record['message']
+    assert batch['status'] == 'succeeded' and batch['error_detail'] is None
+    assert batch['search_calls'] == 1 and batch['fetch_calls'] == (operation == 'fetch')
+    assert provider.chat.await_count == 1
 
 
 def expose(runtime):

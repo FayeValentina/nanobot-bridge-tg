@@ -7,6 +7,7 @@ from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
+from loguru import logger
 
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.social.models import MediaReference
@@ -262,3 +263,25 @@ def test_exact_incoming_sticker_notes_are_scope_and_revision_bound(social):
     assert social.selector.input(B.session_key,'other')[0].known_sticker_notes==[]
     social.store.observe(replace(message(seq=1,text='changed'),update_id=201,is_edit=True),500)
     assert social.selector.input(A.session_key,'visual')[0].known_sticker_notes==[]
+
+
+@pytest.mark.parametrize('exception,level,status', [
+    (TimeoutError('slow'), 'INFO', 'timeout'), (RuntimeError('boom'), 'WARNING', 'error'),
+])
+async def test_selector_failure_logs_and_keeps_single_call_cache(social, exception, level, status):
+    provider = seed(social)
+    view(social)
+    provider.chat.side_effect = exception
+    records = []
+    sink = logger.add(lambda message: records.append(message.record))
+    try:
+        assert await social.selector.select(A.session_key, 'turn') == []
+        assert await social.selector.select(A.session_key, 'turn') == []
+    finally:
+        logger.remove(sink)
+    record = next(r for r in records if 'Social selector scope=' in r['message'])
+    assert record['level'].name == level
+    assert (record['exception'] is not None) == (level == 'WARNING')
+    assert A.session_key in record['message'] and 'turn=turn' in record['message']
+    assert social.store.db.execute('SELECT status FROM expression_turns').fetchone()[0] == status
+    assert provider.chat.await_count == 1

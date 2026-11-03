@@ -18,6 +18,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import SocialDeliveryUnknownError
 from nanobot.channels.telegram.social.runtime import SOCIAL_PROTOCOL, TelegramSocialRuntime
+from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 from nanobot.channels.telegram.tests.test_social_proactive import enable, tick
@@ -372,7 +373,7 @@ def test_schema_twelve_upgrade_preserves_sources(social):
     social.close()
     restored = SocialStore(social.root, now=social.now)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert [tuple(row) for row in restored.db.execute("SELECT * FROM messages")] == messages
         assert restored.state(A.session_key) == state
         assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []

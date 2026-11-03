@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.agent.tools.registry import ToolRegistry
@@ -15,6 +16,7 @@ from nanobot.channels.telegram.social.expressions import (
     ExpressionLearner,
     ExpressionSource,
     normalized,
+    redacted_error_detail,
 )
 from nanobot.channels.telegram.social.jargon import (
     JargonDiscovery,
@@ -108,7 +110,8 @@ class JargonLearner(ExpressionLearner):
             try:
                 async with asyncio.timeout(settings.timeout_seconds):
                     result = await self.tools.execute("web_search", {"query": f'{term} 网络用语 含义 来源', "count": 3})
-            except Exception:
+            except Exception as exc:
+                logger.debug("Social research batch={} kind={} search failed: {}", batch, self.kind, redacted_error_detail(exc))
                 continue
             if not isinstance(result, str):
                 continue
@@ -137,13 +140,15 @@ class JargonLearner(ExpressionLearner):
                     # One actual body is enough to attempt verification for this term.
                     if term.casefold() in page.text.casefold():
                         break
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Social research batch={} kind={} fetch failed: {}", batch, self.kind, redacted_error_detail(exc))
                     continue
         return pages
 
     async def run(self, batch: str) -> None:
         started = time.monotonic()
         error = ""
+        error_detail: str | None = None
         try:
             row = self.store.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
             if row is None or self.provider is None:
@@ -206,19 +211,27 @@ class JargonLearner(ExpressionLearner):
         except asyncio.CancelledError:
             error = "interrupted"
             raise
-        except TimeoutError:
+        except TimeoutError as exc:
             error = "timeout"
-        except ValueError:
+            error_detail = redacted_error_detail(exc)
+            logger.warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
+        except ValueError as exc:
             error = "invalid_or_changed_input"
-        except Exception:
+            error_detail = redacted_error_detail(exc)
+            logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
+        except Exception as exc:
             error = "provider_exception"
+            error_detail = redacted_error_detail(exc)
+            logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
         finally:
             if not self.store.closed:
                 with self.store.db:
                     row = self.store.db.execute("SELECT status,scope,sources FROM learning_batches WHERE id=?", (batch,)).fetchone()
                     if row and row["status"] == "running" and error:
-                        self.store.db.execute("UPDATE learning_batches SET status='failed',reason=?,updated=? WHERE id=?", (error, self.store.now(), batch))
+                        self.store.db.execute("UPDATE learning_batches SET status='failed',reason=?,error_detail=COALESCE(?,error_detail),updated=? WHERE id=?", (error, error_detail, self.store.now(), batch))
                         sources = json.loads(row["sources"])
                         self.store.learning.count(str(row["scope"]), "jargon:failed", 1, sources[0]["message_id"], sources[-1]["message_id"])
+                    if row and row["status"] == "succeeded":
+                        self.store.db.execute("UPDATE learning_batches SET error_detail=NULL WHERE id=?", (batch,))
                     if row:
                         self.store.db.execute("UPDATE learning_batches SET latency_ms=latency_ms+? WHERE id=?", (int((time.monotonic() - started) * 1000), batch))
