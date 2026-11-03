@@ -6,6 +6,8 @@ The owner wants Claude to drive implementation by delegating code changes to the
 (`codex exec`, model configured in `~/.codex/config.toml`) and to review and accept the results
 itself. The owner does not review each change.
 
+- **Starting a new session:** first read the handoff section at the top of `docs/SOCIAL_REFACTOR_PROGRESS.md`
+  (current state, next step, open issues), then `.agent/orchestration.md`. Do not re-derive the plan.
 - Follow `.agent/orchestration.md` for the full loop: brief → dispatch → acceptance → rework → commit/deploy → record.
 - Current work: the phased plan in `docs/SOCIAL_ARCHITECTURE_REVIEW.md`; progress in `docs/SOCIAL_REFACTOR_PROGRESS.md`.
 - Acceptance is Claude's own verification (diff reading, ruff/basedpyright, rerunning tests, migration rehearsal on a copied DB,
