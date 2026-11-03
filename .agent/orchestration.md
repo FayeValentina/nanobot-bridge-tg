@@ -63,7 +63,17 @@ Codex 的短处：
 4. **返工**：不合格时，在同一个 Codex 会话里续写具体意见：
    `codex exec resume <session_id> - < 意见文件`。session_id 从 `<id>.events.jsonl` 的首个事件中取得。
    最多返工 2 轮；仍不合格的，Claude 自己修正小问题，或者把阻塞点带着证据报告给用户。
-5. **提交与部署**：验收通过后由 Claude 提交（提交信息说明阶段、任务和验收证据），然后执行 `./scripts/pipeline.sh release`。
+5. **提交与部署**：验收通过后由 Claude 提交（提交信息说明阶段、任务和验收证据）。
+   - Codex 不在施工时：在主仓库直接执行 `./scripts/pipeline.sh release`。
+   - Codex 正在主工作区施工时：先在干净的 worktree 里**只构建**，再回到**主仓库**部署：
+     ```bash
+     W=<scratchpad>/build-wt; git worktree remove --force $W 2>/dev/null; git worktree add -q --detach $W <commit>
+     (cd $W && ./scripts/deploy-local.sh build) && git worktree remove --force $W
+     cd /home/ubuntu/nanobot-bridge-tg && ./scripts/deploy-local.sh deploy <完整 commit hash>
+     ```
+   - **绝不能从 worktree 执行 deploy 或 release**（A1 事故，2026-11-03）：部署脚本把执行时所在的仓库路径写成 `BRIDGE_CHECKOUT_DIR`，
+     以只读方式挂进容器，实例 exec 沙箱又要绑定 `/home/ubuntu/nanobot-bridge-tg`。从 worktree 部署后，新容器和回滚后的容器都会启动失败，
+     线上中断约 5 分钟，最后在主仓库执行 `deploy` 才恢复。worktree 里也不要放 `.venv` 链接（`.gitignore` 不匹配，会被当成改动）。
    部署后确认：`./scripts/deploy-local.sh status` 健康；实例 `state.json` 的 current 等于新提交；
    容器日志中没有新的异常栈。部署失败时管线会自动回滚，Claude 记录原因后返工。
 6. **记录**：在 `docs/SOCIAL_REFACTOR_PROGRESS.md` 追加一行，写明任务 id、提交、验收证据（实际运行的命令和结果）、

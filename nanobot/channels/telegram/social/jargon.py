@@ -5,16 +5,14 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.channels.telegram.social.expressions import ExpressionSource, Scene, normalized
+from nanobot.channels.telegram.social.memory import displayed_evidence
 from nanobot.channels.telegram.social.store import SocialStore
-
-if TYPE_CHECKING:
-    from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
 
 JargonStatus = Literal["candidate", "understand_only", "usable", "disabled"]
 
@@ -172,12 +170,27 @@ class JargonLibrary:
         self.change_log(scope, entry_id, "create", "discovery", "uncertain term")
         return entry_id
 
-    def sources(self, scope: str, memory: SocialMemory, turn_id: str, ids: list[int]) -> list[ExpressionSource]:
+    def sources(self, scope: str, turn_id: str, ids: list[int]) -> list[ExpressionSource]:
         if not ids:
             raise ValueError("human source message_ids are required")
-        evidence = memory._evidence(scope, turn_id, ids)
+        shown = displayed_evidence(self.store, scope, turn_id)
+        cutoff = self.db.execute("SELECT through_seq FROM jargon_resets WHERE scope=?", (scope,)).fetchone()
         result: list[ExpressionSource] = []
-        for item in evidence:
+        for message_id in dict.fromkeys(ids):
+            if message_id not in shown:
+                raise ValueError("memory evidence must have been displayed in this turn")
+            item = shown[message_id]
+            if cutoff is not None and item.seq <= int(cutoff[0]):
+                raise ValueError("evidence predates the last memory clear; use new evidence")
+            if self.db.execute("SELECT 1 FROM jargon_suppressions WHERE scope=? AND kind='message' AND value=?",
+                               (scope, str(message_id))).fetchone() is not None:
+                raise ValueError("evidence was retired by a correction/deletion; use new evidence")
+            current = self.db.execute("SELECT revision,learning_source,learning_text FROM messages WHERE scope=? AND message_id=?",
+                                      (scope, message_id)).fetchone()
+            if (current is None or current["revision"] != item.revision or current["learning_source"] != "human_text"
+                    or not current["learning_text"].startswith(item.excerpt)):
+                raise ValueError("slang evidence requires retained human top-level text")
+            item = item.model_copy(update={"revision": int(current["revision"])})
             result.append(ExpressionSource(message_id=item.message_id, revision=item.revision, seq=item.seq,
                 sender_id=item.sender_id, at=item.timestamp, source="human_text", text=item.excerpt, context="{}"))
         return result
@@ -199,7 +212,7 @@ class JargonLibrary:
              public_evidence.model_dump_json(exclude={"hypothesis"}) if public_evidence.public_citations else '[]', self.store.now(), entry_id))
         self.change_log(scope, entry_id, "correct", origin, json.dumps({"reason": reason, "previous_local_meaning": old["local_meaning"]}, ensure_ascii=False))
 
-    def apply(self, scope: str, turn_id: str, request: JargonRequest, memory: SocialMemory) -> dict[str, object]:
+    def apply(self, scope: str, turn_id: str, request: JargonRequest) -> dict[str, object]:
         with self.db:
             self.expire(scope)
             if request.action == "list":
@@ -221,7 +234,7 @@ class JargonLibrary:
             if current and request.expected_revision != current["revision"]:
                 raise ValueError("expected_revision must match the current jargon revision")
             if request.action in {"submit", "explain", "correct"}:
-                sources = [] if request.origin == "operator" and request.action == "correct" else self.sources(scope, memory, turn_id, request.message_ids)
+                sources = [] if request.origin == "operator" and request.action == "correct" else self.sources(scope, turn_id, request.message_ids)
                 if not current:
                     if not request.term or not any(request.term in s.text for s in sources):
                         raise ValueError("term must occur in human top-level evidence")
@@ -256,75 +269,18 @@ class JargonLibrary:
                 self.change_log(scope, entry_id, "status", "operator", request.reason or "explicit status revision")
             return {"jargon": self.get(scope, entry_id)}
 
-    def legacy(self, scope: str, turn_id: str, request: MemoryRequest, memory: SocialMemory) -> dict[str, object]:
-        if request.action == "list":
-            with self.db:
-                self.expire(scope)
-                items = [e for e in self.entries(scope) if (request.include_inactive or e["status"] != "disabled")
-                         and (request.memory_id is None or e["id"] == request.memory_id)
-                         and (not request.query or normalized(request.query) in normalized(str(e["term"]) + str(e["content"])))]
-                records: list[dict[str, object]] = []
-                for item in items[request.offset:request.offset + request.limit]:
-                    if records and len(json.dumps([*records, item], ensure_ascii=False)) > 16000:
-                        break
-                    records.append(item)
-                return {"memories": records, "next_offset": request.offset + len(records) if request.offset + len(records) < len(items) else None}
-        with self.db:
-            if request.action in {"delete", "clear"}:
-                entries = [self.get(scope, request.memory_id)] if request.memory_id else self.entries(scope)
-                for entry in entries:
-                    entry_id = str(entry["id"])
-                    self.retire_sources(scope, entry_id)
-                    self.db.execute("INSERT OR IGNORE INTO jargon_suppressions VALUES(?,'term',?)", (scope, normalized(str(entry["term"]))))
-                    self.db.execute("UPDATE jargon SET content='',local_meaning='',public_meaning='',usage='',source_links='[]',inference_basis='[]',"
-                                    "status='disabled',meaning_status='deleted',revision=revision+1,authority='operator',review_requested=0,updated=? WHERE id=?", (self.store.now(), entry_id))
-                    self.db.execute("DELETE FROM jargon_evidence WHERE memory_id=?", (entry_id,))
-                    self.change_log(scope, entry_id, "delete", "operator", "index deletion")
-                if request.action == "clear":
-                    self.db.execute("INSERT INTO jargon_resets VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET through_seq=excluded.through_seq", (scope, self.store.state(scope)["next_seq"] - 1))
-                return {"deleted": request.memory_id, "cleared": len(entries), "deletion_scope": "index only; original messages/shared memory/Dream unchanged"}
-            current = self.get(scope, request.memory_id) if request.memory_id else None
-            term = request.term or (str(current["term"]) if current else re.split(r"在这里指|在本群指|是指|就是|意思是|指|[:：=]", request.content or "", maxsplit=1)[0].strip())
-            if len(term) > 32:
-                raise ValueError("slang record requires an explicit short term")
-            entry_id = str(current["id"]) if current else self.find(scope, term)
-            current = self.get(scope, entry_id) if entry_id else None
-            if current and current["status"] == "disabled":
-                raise ValueError("this jargon entry is inactive; explicitly correct or set_status")
-            if request.action == "followup":
-                raise ValueError("jargon entries do not support follow-ups")
-            sources = self.sources(scope, memory, turn_id, request.message_ids)
-            if not entry_id:
-                entry_id = self.create(scope, term, sources, [])
-            if not set(request.member_ids).issubset({s.sender_id for s in sources}):
-                raise ValueError("member_ids must occur in human evidence")
-            if request.member_ids:
-                self.db.execute("UPDATE jargon SET members=? WHERE id=?", (json.dumps(request.member_ids), entry_id))
-            if not current:
-                ttl = request.ttl_seconds if request.ttl_seconds is not None else 604800
-                self.db.execute("UPDATE jargon SET expires=? WHERE id=?", (self.store.now() + ttl, entry_id))
-            if request.action in {"correct", "confirm"} or request.basis != "inference":
-                saved = current["inference_basis"] if current else None
-                hypothesis = SavedResearch.model_validate(saved if isinstance(saved, dict) else {}).hypothesis
-                meaning = request.content or str(current["local_meaning"] if current else "") or hypothesis
-                # Legacy free text can paraphrase the linking verb, but the actual
-                # meaning must still occur in a displayed human explanation.
-                pieces = re.split(r"在这里指|在本群指|是指|就是|意思是|指|[:：=]", meaning, maxsplit=1)
-                literal = pieces[-1].strip()
-                if not any(term in s.text and literal and literal in s.text for s in sources):
-                    raise ValueError("slang confirmation requires an explicit human meaning; use submit for guesses")
-                old_ids: set[int] = {int(r[0]) for r in self.db.execute("SELECT message_id FROM jargon_evidence WHERE memory_id=?", (entry_id,))} if current else set()
-                if request.action == "correct" and current and any(s.message_id in old_ids for s in sources):
-                    raise ValueError("correction requires new evidence")
-                if request.basis == "corroborated" and len({s.sender_id for s in sources}) < 2:
-                    raise ValueError("corroboration requires distinct human senders")
-                self.authoritative(scope, entry_id, meaning, sources, "human", request.jargon_status or "understand_only", "legacy explicit confirmation/correction")
-                self.db.execute("UPDATE jargon SET expires=? WHERE id=?", (self.store.now() + request.ttl_seconds if request.ttl_seconds else None, entry_id))
-            elif current and current["authority"] == "inference":
-                self.add_evidence(entry_id, sources)
-            if request.basis == "inference" and request.action == "record" and (not current or current["status"] == "candidate" and current["research_revision"] == 0):
-                self.db.execute("UPDATE jargon SET inference_basis=? WHERE id=?", (json.dumps({"hypothesis": request.content, "uncertain": True}, ensure_ascii=False), entry_id))
-            return {"memory": self.get(scope, entry_id)}
+    def clear(self, scope: str) -> int:
+        entries = self.entries(scope)
+        for entry in entries:
+            entry_id = str(entry["id"])
+            self.retire_sources(scope, entry_id)
+            self.db.execute("INSERT OR IGNORE INTO jargon_suppressions VALUES(?,'term',?)", (scope, normalized(str(entry["term"]))))
+            self.db.execute("UPDATE jargon SET content='',local_meaning='',public_meaning='',usage='',source_links='[]',inference_basis='[]',"
+                            "status='disabled',meaning_status='deleted',revision=revision+1,authority='operator',review_requested=0,updated=? WHERE id=?", (self.store.now(), entry_id))
+            self.db.execute("DELETE FROM jargon_evidence WHERE memory_id=?", (entry_id,))
+            self.change_log(scope, entry_id, "delete", "operator", "index deletion")
+        self.db.execute("INSERT INTO jargon_resets VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET through_seq=excluded.through_seq", (scope, self.store.state(scope)["next_seq"] - 1))
+        return len(entries)
 
     @staticmethod
     def validate_sources(result: JargonDiscovery, sources: list[ExpressionSource]) -> None:

@@ -1,4 +1,4 @@
-"""V5-A data isolation, durable restart, source lifecycle and slang proxy regressions."""
+"""V5-A data isolation, durable restart, source lifecycle and jargon regressions."""
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -9,7 +9,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
+from nanobot.channels.telegram.social.jargon import JargonLibrary, JargonRequest
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.schema import SCHEMA_VERSION
@@ -163,20 +163,20 @@ def jargon_record(store):
     observe(store, 1)
     view = store.view(A.session_key, count=30, chars=12000, turn_id="turn")
     store.note_seen(A.session_key, "turn", encode_view(view))
-    return SocialMemory(store).apply(A.session_key, "turn", MemoryRequest(
-        action="record", kind="slang", content="闲聊在这里指随便聊", message_ids=[1]))["memory"]
+    return JargonLibrary(store).apply(A.session_key, "turn", JargonRequest(
+        action="submit", term="闲聊", message_ids=[1]))["jargon"]
 
 
-def test_slang_proxy_edit_delete_and_no_legacy_rows(store):
+def test_jargon_edit_disable_and_no_legacy_rows(store):
     entry = jargon_record(store)
     assert store.db.execute("SELECT COUNT(*) FROM memories WHERE kind='slang'").fetchone()[0] == 0
     assert store.db.execute("SELECT COUNT(*) FROM jargon").fetchone()[0] == 1
     assert store.db.execute("SELECT revision,source FROM jargon_evidence").fetchone()[:] == (1, "human_text")
-    assert SocialMemory(store).apply(A.session_key, "turn", MemoryRequest(action="list", kind="slang"))["memories"][0]["id"] == entry["id"]
+    assert JargonLibrary(store).apply(A.session_key, "turn", JargonRequest(action="list"))["jargon"][0]["id"] == entry["id"]
     observe(store, 1, update_id=101, is_edit=True, text="新闲聊", learning_text="新闲聊")
-    assert SocialMemory(store).list(A.session_key, MemoryRequest(action="list", kind="slang")) == []
+    assert JargonLibrary(store).apply(A.session_key, "turn", JargonRequest(action="list"))["jargon"] == []
     assert store.db.execute("SELECT status,revision FROM jargon").fetchone()[:] == ("disabled", 2)
-    SocialMemory(store).apply(A.session_key, "turn", MemoryRequest(action="delete", memory_id=entry["id"]))
+    JargonLibrary(store).apply(A.session_key, "turn", JargonRequest(action="disable", entry_id=entry["id"], expected_revision=2))
     assert store.db.execute("SELECT status FROM jargon").fetchone()[0] == "disabled"
 
 
@@ -184,12 +184,12 @@ def test_slang_rejects_bot_and_stale_view_sources(store):
     observe(store, 1, is_bot=True)
     view = store.view(A.session_key, count=30, chars=12000, turn_id="turn")
     store.note_seen(A.session_key, "turn", encode_view(view))
-    request = MemoryRequest(action="record", kind="slang", content="不学 bot", message_ids=[1])
+    request = JargonRequest(action="submit", term="闲聊", message_ids=[1])
     with pytest.raises(ValueError, match="human top-level"):
-        SocialMemory(store).apply(A.session_key, "turn", request)
+        JargonLibrary(store).apply(A.session_key, "turn", request)
     observe(store, 1, update_id=101, is_edit=True)
     with pytest.raises(ValueError, match="human top-level"):
-        SocialMemory(store).apply(A.session_key, "turn", request)
+        JargonLibrary(store).apply(A.session_key, "turn", request)
 
 
 def test_selection_details_ring_and_sqlite_only_selected_ids(store):

@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from nanobot.agent.hook import AgentHookContext, AgentRunHookContext
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
 from nanobot.channels.telegram.social.runtime import (
     TelegramSocialRuntime,
@@ -55,7 +56,7 @@ def record(social, ctx, **kwargs):
     return apply(social, ctx, kind="preference", content="喜欢乌龙茶", message_ids=[1], member_ids=["123"], **kwargs)["memory"]
 
 
-@pytest.mark.parametrize("kind", ["topic", "pending", "preference", "experience", "slang"])
+@pytest.mark.parametrize("kind", ["topic", "pending", "preference", "experience"])
 def test_all_knowledge_kinds_have_provenance_and_candidate_status(social, kind):
     ctx = expose(social)
     entry = apply(social, ctx, kind=kind, content="喜欢乌龙茶", message_ids=[1], member_ids=["123"])["memory"]
@@ -151,11 +152,28 @@ def test_delete_is_minimal_tombstone_and_does_not_resurrect_from_old_evidence(so
     assert "喜欢乌龙茶" not in social.memory.context(A.session_key)
 
 
-def test_clear_covers_all_observed_old_sources_and_allows_new_evidence(social):
-    ctx = expose(social, ids=(1, 2))
+@pytest.mark.parametrize("kind", [None, "preference"])
+def test_clear_covers_all_observed_old_sources_and_allows_new_evidence(social, kind):
+    ctx = expose(social, ids=(1, 2), text="我喜欢乌龙茶，蓝票就是临时加场")
     record(social, ctx)
-    cleared = apply(social, ctx, "clear")
-    assert cleared["cleared"] == 1
+    jargon = social.jargon_action(ctx, JargonRequest(action="explain", term="蓝票", local_meaning="临时加场",
+        explanation_quote="蓝票就是临时加场", message_ids=[1]))["jargon"]
+    cleared = apply(social, ctx, "clear", kind=kind)
+    assert cleared["cleared"] == (2 if kind is None else 1)
+    current = social.jargon_action(ctx, JargonRequest(action="get", entry_id=jargon["id"]))["jargon"]
+    if kind is None:
+        assert current["status"] == "disabled" and current["meaning_status"] == "deleted"
+        assert current["content"] == current["local_meaning"] == current["public_meaning"] == current["usage"] == ""
+        assert current["evidence"] == current["source_links"] == current["inference_basis"] == []
+        assert current["revision"] == jargon["revision"] + 1 and current["authority"] == "operator"
+        assert social.store.db.execute("SELECT value FROM jargon_suppressions WHERE kind='term'").fetchone()[0] == "蓝票"
+        assert social.store.db.execute("SELECT value FROM jargon_suppressions WHERE kind='message'").fetchone()[0] == "1"
+        assert social.store.db.execute("SELECT action FROM learning_changes WHERE entry_id=? ORDER BY id DESC LIMIT 1", (jargon["id"],)).fetchone()[0] == "delete"
+        with pytest.raises(ValueError, match="predates"):
+            social.jargon_action(ctx, JargonRequest(action="submit", term="乌龙茶", message_ids=[2]))
+    else:
+        assert current == jargon
+        assert social.store.db.execute("SELECT 1 FROM jargon_resets").fetchone() is None
     with pytest.raises(ValueError, match="predates"):
         apply(social, ctx, kind="topic", content="旧话题", message_ids=[2])
     expose(social, ids=(3,), text="这是新话题")
@@ -197,11 +215,12 @@ def test_storage_failure_rolls_back_fact_and_evidence_together(social):
 
 def test_active_limit_does_not_silently_evict_and_queries_page(social):
     ctx = expose(social)
-    social.memory.MAX_ACTIVE = 2
+    social.memory.MAX_ACTIVE = 3
     record(social, ctx)
-    apply(social, ctx, kind="slang", content="群内黑话", message_ids=[1])
+    apply(social, ctx, kind="topic", content="群内话题", message_ids=[1])
+    social.jargon_action(ctx, JargonRequest(action="submit", term="乌龙茶", message_ids=[1]))
     with pytest.raises(ValueError, match="full"):
-        apply(social, ctx, kind="topic", content="第三条", message_ids=[1])
+        apply(social, ctx, kind="topic", content="第四条", message_ids=[1])
     first = apply(social, ctx, "list", limit=1)
     second = apply(social, ctx, "list", limit=1, offset=first["next_offset"])
     assert first["memories"][0]["id"] != second["memories"][0]["id"]
@@ -266,11 +285,11 @@ def test_schema_three_upgrade_preserves_observations_views_and_watermarks(social
 
 
 @pytest.mark.parametrize("params", [
-    {"action": "record", "kind": "slang", "content": "x"},
+    {"action": "record", "kind": "topic", "content": "x"},
     {"action": "confirm", "memory_id": "id", "message_ids": [1]},
-    {"action": "record", "kind": "slang", "content": " ", "message_ids": [1]},
-    {"action": "record", "kind": "slang", "content": "x", "message_ids": [-1]},
-    {"action": "record", "kind": "slang", "content": "x", "message_ids": [1], "ttl_seconds": 0},
+    {"action": "record", "kind": "topic", "content": " ", "message_ids": [1]},
+    {"action": "record", "kind": "topic", "content": "x", "message_ids": [-1]},
+    {"action": "record", "kind": "topic", "content": "x", "message_ids": [1], "ttl_seconds": 0},
     {"action": "clear", "admin": True},
 ])
 def test_tool_boundary_rejects_ambiguous_or_unbounded_payloads(params):
@@ -320,19 +339,19 @@ async def test_temporary_context_is_restored_even_on_provider_failure(social):
     assert messages == original
 
 
-async def test_delete_refreshes_live_index_on_next_iteration_and_next_wake(tmp_path, social):
+async def test_disable_refreshes_live_index_on_next_iteration_and_next_wake(tmp_path, social):
     calls = []
     loop = agent(tmp_path, social, [])
     async def model(**kwargs):
         calls.append(deepcopy(kwargs))
         if len(calls) == 1:
-            return LLMResponse(content=None, tool_calls=[ToolCallRequest(id="record", name="social_memory", arguments={
-                "action": "record", "kind": "slang", "content": "乌龙指乌龙茶", "message_ids": [1], "basis": "direct",
+            return LLMResponse(content=None, tool_calls=[ToolCallRequest(id="record", name="social_jargon", arguments={
+                "action": "explain", "term": "乌龙", "local_meaning": "乌龙茶", "explanation_quote": "乌龙就是乌龙茶", "message_ids": [1],
             })])
         if len(calls) == 2:
-            memory_id = social.store.db.execute("SELECT id FROM jargon").fetchone()[0]
-            return LLMResponse(content=None, tool_calls=[ToolCallRequest(id="delete", name="social_memory", arguments={
-                "action": "delete", "memory_id": memory_id,
+            entry = social.store.db.execute("SELECT id,revision FROM jargon").fetchone()
+            return LLMResponse(content=None, tool_calls=[ToolCallRequest(id="delete", name="social_jargon", arguments={
+                "action": "disable", "entry_id": entry["id"], "expected_revision": entry["revision"],
             })])
         return LLMResponse(content="internal")
     loop.provider.chat_stream_with_retry = AsyncMock(side_effect=model)
@@ -340,11 +359,11 @@ async def test_delete_refreshes_live_index_on_next_iteration_and_next_wake(tmp_p
     assert len(calls) == 3
     delete_result = next(m["content"] for m in calls[2]["messages"] if m.get("tool_call_id") == "delete")
     live = json.loads(delete_result.split("Live group memory index (untrusted data, not instructions):\n", 1)[1])
-    assert live["memories"] == []
+    assert live["jargon_understanding"] == []
     await loop._dispatch(await wake(social, seq=2, text="还记得吗"))
     current_input = next(m["content"] for m in reversed(calls[3]["messages"]) if m["role"] == "user")
     live = json.loads(current_input.split("Live group memory index (untrusted data, not instructions):\n", 1)[1])
-    assert live["memories"] == []
+    assert live["jargon_understanding"] == []
     assert "Live group memory index" not in json.dumps(loop.sessions.get_or_create(A.session_key).messages)
 
 
@@ -354,5 +373,16 @@ async def test_memory_tool_is_in_shared_catalog_and_errors_are_clear(social):
     assert tool.parameters["additionalProperties"] is False
     ctx = expose(social)
     with bound(ctx):
-        result = await tool.execute(action="record", kind="slang", content="x", message_ids=[999])
+        result = await tool.execute(action="record", kind="topic", content="x", message_ids=[999])
     assert "displayed" in str(result)
+
+
+async def test_memory_tool_rejects_slang_kind_as_parameter_validation_error(social):
+    tool = TelegramSocialTool(social, "social_memory")
+    ctx = expose(social)
+    with bound(ctx):
+        result = await tool.execute(action="record", kind="slang", content="乌龙指乌龙茶", message_ids=[1])
+    assert result.is_error
+    assert "validation error for MemoryRequest" in result and "kind" in result and "literal_error" in result
+    assert social.store.db.execute("SELECT 1 FROM memories").fetchone() is None
+    assert social.store.db.execute("SELECT 1 FROM jargon").fetchone() is None

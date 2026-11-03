@@ -15,7 +15,6 @@ from nanobot.channels.telegram.social.jargon import (
     JargonDiscovery,
     JargonRequest,
 )
-from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.config.schema import TelegramSocialConfig
@@ -95,7 +94,6 @@ async def test_public_research_exception_logs_and_continues(env, monkeypatch, op
 def expose(runtime):
     view = runtime.store.view(A.session_key, count=30, chars=12000, turn_id='turn')
     runtime.store.note_seen(A.session_key, 'turn', encode_view(view))
-    return runtime.memory.jargon
 
 
 async def test_public_meme_verified_only_from_read_body_and_not_searched_again(env):
@@ -162,9 +160,9 @@ async def test_explicit_correction_overwrites_inference_and_old_windows_cannot_r
     entry=runtime.jargon.jargon.entries(A.session_key)[0]
     text='纠正一下，蓝票在我们群专指临时加场，不是取消。'
     add(runtime,2,text)
-    memory=expose(runtime)
+    expose(runtime)
     updated=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='explain',entry_id=entry['id'],expected_revision=entry['revision'],
-        term='蓝票',message_ids=[2],local_meaning='临时加场',explanation_quote=text),memory)['jargon']
+        term='蓝票',message_ids=[2],local_meaning='临时加场',explanation_quote=text))['jargon']
     assert updated['revision']>entry['revision'] and updated['local_meaning']=='临时加场'
     clock[0]+=301
     add(runtime,1,'今晚又蓝票了',update_id=101,is_edit=True)
@@ -224,10 +222,10 @@ async def test_search_snippets_without_body_are_not_verified(env):
 async def test_manual_query_submission_and_review_never_wake_or_search_foreground(env):
     runtime,provider,search,_,clock=env
     add(runtime)
-    memory=expose(runtime)
-    entry=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='submit',term='栓Q',message_ids=[1],research=True),memory)['jargon']
+    expose(runtime)
+    entry=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='submit',term='栓Q',message_ids=[1],research=True))['jargon']
     assert entry['status']=='candidate' and search.await_count==provider.chat.await_count==0
-    assert runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='get',term='栓Q'),memory)['jargon']['id']==entry['id']
+    assert runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='get',term='栓Q'))['jargon']['id']==entry['id']
     before=runtime.store.learning.status(A.session_key)['cursors']
     runtime.jargon.prepare_reviews([A.session_key])
     batch=runtime.store.db.execute("SELECT id,purpose FROM learning_batches WHERE kind='jargon'").fetchone()
@@ -243,8 +241,8 @@ async def test_manual_query_submission_and_review_never_wake_or_search_foregroun
 async def test_correction_during_web_research_rejects_stale_result(env):
     runtime,provider,search,fetch,_=env
     add(runtime)
-    memory=expose(runtime)
-    entry=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='submit',term='栓Q',message_ids=[1],research=True),memory)['jargon']
+    expose(runtime)
+    entry=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='submit',term='栓Q',message_ids=[1],research=True))['jargon']
     runtime.jargon.prepare_reviews([A.session_key])
     url='https://example.org/body'
     search.return_value=url
@@ -258,7 +256,7 @@ async def test_correction_during_web_research_rejects_stale_result(env):
     batch=runtime.store.db.execute("SELECT id FROM learning_batches WHERE kind='jargon'").fetchone()[0]
     task=asyncio.create_task(runtime.jargon.run(batch))
     await entered.wait()
-    updated=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='correct',entry_id=entry['id'],expected_revision=entry['revision'],origin='operator',local_meaning='群内仅表示收工',reason='操作者明确纠正'),memory)['jargon']
+    updated=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='correct',entry_id=entry['id'],expected_revision=entry['revision'],origin='operator',local_meaning='群内仅表示收工',reason='操作者明确纠正'))['jargon']
     release.set()
     await task
     assert runtime.store.db.execute('SELECT status FROM learning_batches WHERE id=?',(batch,)).fetchone()[0]=='failed'
@@ -266,21 +264,24 @@ async def test_correction_during_web_research_rejects_stale_result(env):
     assert updated['authority']=='operator'
 
 
-def test_legacy_slang_uses_same_ids_and_corrections_are_versioned(env):
+def test_jargon_uses_same_ids_and_corrections_are_versioned(env):
     runtime,_,search,_,_=env
     text='蓝票就是临时取消的聚会'
     add(runtime,text=text)
     expose(runtime)
-    entry=runtime.memory.apply(A.session_key,'turn',MemoryRequest(action='record',kind='slang',term='蓝票',content=text,basis='direct',message_ids=[1]))['memory']
+    entry=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='explain',term='蓝票',
+        local_meaning='临时取消的聚会',explanation_quote=text,message_ids=[1]))['jargon']
     assert entry['status']=='understand_only' and entry['authority']=='human'
     assert runtime.jargon.jargon.find(A.session_key,'蓝票')==entry['id']
     add(runtime,2,'蓝票就是临时加场')
     expose(runtime)
-    corrected=runtime.memory.apply(A.session_key,'turn',MemoryRequest(action='correct',kind='slang',memory_id=entry['id'],content='蓝票就是临时加场',basis='direct',message_ids=[2]))['memory']
-    assert corrected['revision']>entry['revision'] and corrected['local_meaning']=='蓝票就是临时加场'
+    corrected=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='correct',entry_id=entry['id'],
+        expected_revision=entry['revision'],local_meaning='临时加场',explanation_quote='蓝票就是临时加场',message_ids=[2]))['jargon']
+    assert corrected['id']==entry['id'] and corrected['revision']>entry['revision'] and corrected['local_meaning']=='临时加场'
     assert search.await_count==0
     with pytest.raises(ValueError,match='retired'):
-        runtime.memory.apply(A.session_key,'turn',MemoryRequest(action='record',kind='slang',term='蓝票',content=text,message_ids=[1]))
+        runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='submit',term='蓝票',
+            expected_revision=corrected['revision'],message_ids=[1]))
 
 
 async def test_expression_and_jargon_share_one_task_and_durable_interval(env):
@@ -311,9 +312,9 @@ def test_local_and_public_meanings_remain_separate_on_conflict(env):
     runtime, _, _, _, _ = env
     text = '我们群把临时加场叫蓝票'
     add(runtime, text=text)
-    memory = expose(runtime)
+    expose(runtime)
     entry = runtime.jargon.jargon.apply(A.session_key, 'turn', JargonRequest(action='explain', term='蓝票', message_ids=[1],
-        local_meaning='临时加场', explanation_quote=text), memory)['jargon']
+        local_meaning='临时加场', explanation_quote=text))['jargon']
     quote = '蓝票在这个公开材料中表示一种蓝色的纸质票据。'
     runtime.jargon.jargon.research(A.session_key, entry['id'], PublicFinding(term='蓝票', public_meaning='蓝色的纸质票据',
         citations=[{'url':'https://example.org/ticket','quote':quote}], uncertain=False, safe_to_use=True, conflict=True),
@@ -362,36 +363,38 @@ async def test_disabled_and_disputed_terms_never_auto_reactivate(env):
 def test_operator_correction_is_locked_and_scope_and_revision_are_checked(env):
     runtime, _, _, _, _ = env
     add(runtime)
-    memory = expose(runtime)
-    entry = runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='submit',term='栓Q',message_ids=[1]),memory)['jargon']
+    expose(runtime)
+    entry = runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='submit',term='栓Q',message_ids=[1]))['jargon']
     with pytest.raises(ValueError, match='expected_revision'):
-        runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='disable',entry_id=entry['id'],expected_revision=99),memory)
+        runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='disable',entry_id=entry['id'],expected_revision=99))
     changed = runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='correct',entry_id=entry['id'],expected_revision=entry['revision'],
-        local_meaning='本群只表示收工',origin='operator',reason='操作者明确说明'),memory)['jargon']
+        local_meaning='本群只表示收工',origin='operator',reason='操作者明确说明'))['jargon']
     assert changed['authority'] == 'operator' and changed['status'] == 'understand_only'
     with pytest.raises(ValueError, match='scope'):
         runtime.jargon.jargon.get('telegram:another',entry['id'])
     with pytest.raises(ValueError, match='retired'):
-        runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='submit',term='栓Q',entry_id=entry['id'],expected_revision=changed['revision'],message_ids=[1]),memory)
+        runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='submit',term='栓Q',entry_id=entry['id'],expected_revision=changed['revision'],message_ids=[1]))
 
 
-def test_legacy_candidate_can_be_confirmed_with_explicit_human_evidence(env):
+def test_candidate_can_be_explained_with_explicit_human_evidence(env):
     runtime, _, _, _, _ = env
     add(runtime, text='蓝票就是临时加场')
     expose(runtime)
-    first = runtime.memory.apply(A.session_key, 'turn', MemoryRequest(action='record',kind='slang',term='蓝票',content='蓝票指临时加场',message_ids=[1]))['memory']
+    first = runtime.jargon.jargon.apply(A.session_key, 'turn', JargonRequest(action='submit',term='蓝票',message_ids=[1]))['jargon']
     assert first['status']=='candidate' and not first['local_meaning']
-    confirmed = runtime.memory.apply(A.session_key,'turn',MemoryRequest(action='confirm',memory_id=first['id'],basis='direct',message_ids=[1]))['memory']
-    assert confirmed['status']=='understand_only' and confirmed['local_meaning']=='蓝票指临时加场'
-    listed = runtime.memory.apply(A.session_key,'turn',MemoryRequest(action='list',kind='slang',memory_id=first['id']))['memories']
-    assert len(listed)==1 and listed[0]['evidence'][0]['message_id']==1
+    confirmed = runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='explain',entry_id=first['id'],
+        expected_revision=first['revision'],local_meaning='临时加场',explanation_quote='蓝票就是临时加场',message_ids=[1]))['jargon']
+    assert confirmed['id']==first['id'] and confirmed['status']=='understand_only' and confirmed['local_meaning']=='临时加场'
+    listed = runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='list',query='蓝票'))['jargon']
+    assert len(listed)==1 and listed[0]['id']==first['id']
+    assert runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='get',entry_id=first['id']))['jargon']['evidence'][0]['message_id']==1
 
 
 def test_understanding_only_cannot_be_attributed_as_natural_use(env):
     runtime, _, _, _, _ = env
     add(runtime,text='蓝票就是临时加场')
-    memory = expose(runtime)
-    entry = runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='explain',term='蓝票',message_ids=[1],local_meaning='临时加场',explanation_quote='蓝票就是临时加场'),memory)['jargon']
+    expose(runtime)
+    entry = runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='explain',term='蓝票',message_ids=[1],local_meaning='临时加场',explanation_quote='蓝票就是临时加场'))['jargon']
     # D may select an explanation, but never attribute understand_only as active vocabulary.
     runtime.store.learning.record_selection(A.session_key,'selection',target_message_id=1,candidates=1,selected=[('jargon',entry['id'],entry['revision'])],explanation={})
     with pytest.raises(ValueError,match='only current usable'):
