@@ -26,6 +26,9 @@
     发布“尝试”而非回执决定 unsent 修复；Q5（wake 过期后 mode 仍为 active）经核实只在 turn 运行期间存在，finish 时会复位，不是 bug；
     但 wake 在调度 120 秒后过期、长 turn 中 social 工具会因此被拒，留给 Phase 6/8 评估；
     `scripts/evaluate_social_selection.py`、`evaluate_social_v5.py` 仍调用已不存在的 `store.wake(...)`，评估脚本迁移时修。
+- **下一步：Phase 5**（统一投递日志 P0-5：actions 与 message_deliveries 合并为一个 journal，冷却/预算/去重/unknown 保护集中到一个
+  `check_send_allowed`；telegram channel 只保留单一接入点 P2-2），风险高、涉及 schema 迁移和线上数据。开始前先问 owner，
+  然后照例先派只读分析（穷举两张表的全部写入点、状态值、回执流程、六处重复的发送策略检查及其差异）。
 - **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
   `Wakes._check_trigger_source` 读 judge_batches 的只读例外（Phase 7 judge 简化时重看）；P3-0 疑点 Q4/Q5（Phase 4）、Q6（Phase 7）、
   Q10/Q11/Q13–Q15（按所属 Phase）。P3-0 清单 `.agent/tasks/P3-0.report.md` 的行号已过时，只作线索。
