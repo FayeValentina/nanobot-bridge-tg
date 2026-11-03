@@ -20,6 +20,10 @@ and Claude is the orchestrator and reviewer. See `.agent/orchestration.md`. In t
 - Change only the paths the brief allows. Do not bundle unrelated cleanup. Do not touch data outside the repository
   (deployed instances under `~/.local/share/nanobot-bridge-tg-*`, `~/.nanobot`, `~/.codex`).
 - Run the checks the brief lists and paste their real output. Never claim a check passed without running it.
+- Implement the design the brief specifies; do not invent structure. Do not add files, classes, helpers or abstraction layers the brief does not name.
+- Do not add defensive code the brief does not ask for: no extra validation, try/except, fallbacks, version or revision checks,
+  migration steps, config options or audit tables for hypothetical situations. If you believe one is truly needed,
+  propose it under "suggestions" in your report instead of implementing it.
 - If the brief is ambiguous or conflicts with `docs/SOCIAL_ARCHITECTURE_REVIEW.md` or the owner preferences above,
   stop at a safe point and list the question in your report instead of guessing.
 - End with the report format given in the brief.
