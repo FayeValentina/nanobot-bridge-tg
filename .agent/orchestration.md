@@ -65,6 +65,9 @@
 
 ## 完成标准
 - 必须通过的命令，例如 `.venv/bin/python -m pytest <files> -q`、`.venv/bin/ruff check <paths>`
+- **始终包括**整个社交测试目录：`.venv/bin/python -m pytest nanobot/channels/telegram/tests -q -p no:cacheprovider --ignore-glob="*evaluate_*"`
+  （P0-a 教训：只跑相关文件会漏掉其他文件里的连带失败，例如写死的 schema 版本断言）。
+  需要修改已有测试才能通过时，允许做**机械性**修改（例如把写死的版本号改为引用 `SCHEMA_VERSION`），但必须在报告里逐条列出。
 - 行为不变的证据，或者【行为变更】的具体说明。
 
 ## 报告格式（最终回复只包含以下内容）
