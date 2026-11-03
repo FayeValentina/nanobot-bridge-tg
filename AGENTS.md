@@ -10,10 +10,25 @@ This file provides guidance to AI coding agents working with this repository.
 - Bring the necessary V2-C statistics/scheduling and V2-E follow-up memory fields into V4; defer unrelated V2 scope and M5. V3 remains the semantic entry for incoming messages; the planned V4 idle timer event goes directly to the existing main-agent execution path as documented.
 - The 2026-10-30 V4 planning task is documentation only. Record implementation and deployment status separately when later implementation is requested; do not treat planned behavior as already implemented.
 
+## Orchestrated implementation mode (confirmed 2026-11-03)
+
+When a task arrives as a brief from `.agent/tasks/<id>.md` (dispatched by Claude via `codex exec`), you are the implementer
+and Claude is the orchestrator and reviewer. See `.agent/orchestration.md`. In this mode the following override the
+"commit and deploy before finishing" rules elsewhere in this file:
+
+- Do NOT commit, push, or run `scripts/pipeline.sh release|deploy|rollback`. Claude reviews, commits and deploys.
+- Change only the paths the brief allows. Do not bundle unrelated cleanup. Do not touch data outside the repository
+  (deployed instances under `~/.local/share/nanobot-bridge-tg-*`, `~/.nanobot`, `~/.codex`).
+- Run the checks the brief lists and paste their real output. Never claim a check passed without running it.
+- If the brief is ambiguous or conflicts with `docs/SOCIAL_ARCHITECTURE_REVIEW.md` or the owner preferences above,
+  stop at a safe point and list the question in your report instead of guessing.
+- End with the report format given in the brief.
+
 ## Owner's build-and-start acceptance (confirmed 2026-11-01)
 
 - The owner explicitly requests build and startup as acceptance for subsequent changes. Do not run full test suites or add separate validation campaigns by default. Report only the build and startup evidence actually obtained.
 - Preserve local automatic backups and failure rollback. `pipeline.sh release` now builds and deploys directly; `pipeline.sh test` remains an explicit opt-in command.
+- Exception confirmed 2026-11-03: the social architecture refactor in [`docs/SOCIAL_ARCHITECTURE_REVIEW.md`](docs/SOCIAL_ARCHITECTURE_REVIEW.md) adds a small black-box scenario suite (`test_social_scenarios.py`); run it for every refactor phase in addition to build and startup. Full suites remain opt-in. That document records the owner's D1–D5 decisions (simplified judge, idle/activity bug fix, scenario tests, preserving history across config changes, tool consolidation) and the phased plan.
 
 ## Owner's local workflow (confirmed 2026-10-28)
 

@@ -106,3 +106,6 @@ exp/
 bridge/node_modules/
 webui/.verify-*
 .playwright-cli/
+
+# Codex orchestration event logs (briefs and reports are tracked)
+.agent/tasks/*.events.jsonl
