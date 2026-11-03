@@ -332,7 +332,7 @@ async def test_sticker_failure_does_not_count_use_or_block_later_text(social, fa
     assert social.list_stickers(ctx, "")[0]["uses"] == 0
     assert (await social.send(ctx, "still here", None))["status"] == "sent"
     if status == "unknown":
-        social.store.finish(ctx.turn_id, "completed")
+        social.store.wakes.finish(ctx.turn_id, "completed")
         with pytest.raises(PermissionError, match="unknown"):
             await social.send_sticker(context(social, turn="next"), "unique", None)
     tg._app.bot.send_sticker.assert_awaited_once()
@@ -381,7 +381,7 @@ async def test_restart_cancels_sticker_retry_without_resending(social):
     ctx = context(social)
     social.collect_sticker(ctx, 1, None)
     action = await social.send_sticker(ctx, "unique", None)
-    social.store.recovery_jobs()
+    social.store.recover()
     row = social.store.db.execute("SELECT status FROM actions WHERE id=?", (action["action_id"],)).fetchone()
     assert row[0] == "unknown"
     await social.run_due()

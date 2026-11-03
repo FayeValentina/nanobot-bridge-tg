@@ -133,7 +133,7 @@ async def test_infinite_temporary_wait_expires_back_to_administrator_triggers(v2
     v2b.set_wake(ctx, keywords=["temporary"], senders=[], on_messages=False, ttl_seconds=5)
     v2b.wait(ctx, infinite=True, sleeping=True)
     finish(v2b, ctx)
-    assert v2b.store.next_due() == v2b.now() + 5
+    assert v2b.store.wakes.next_due() == v2b.now() + 5
     clock(v2b).advance(5)
     await v2b.run_due()
     assert v2b.store.scopes.state(A.session_key)["wake_config"] == "{}"
@@ -152,7 +152,7 @@ async def test_infinite_messages_ttl_clears_both_wait_intent_and_infinite_flag(v
     await v2b.run_due()
     state = v2b.store.scopes.state(A.session_key)
     assert state["mode"] == "observing" and not state["wait_infinite"]
-    assert v2b.store.dialogue_status(A.session_key)["wait"] is None
+    assert v2b.store.wakes.dialogue_status(A.session_key)["wait"] is None
     assert v2b.bus.inbound.empty()
 
 
@@ -163,7 +163,7 @@ async def test_infinite_message_wait_starts_a_bounded_burst_on_first_new_message
     clock(v2b).advance(1000)
     await v2b.run_due()
     assert v2b.bus.inbound.empty()
-    assert v2b.store.dialogue_status(A.session_key)["wait"]["total_due"] is None
+    assert v2b.store.wakes.dialogue_status(A.session_key)["wait"]["total_due"] is None
     await v2b.observe(event(v2b, 2), directed=False)
     first = v2b.now()
     for seq in range(3, 15):
@@ -235,7 +235,7 @@ async def test_new_wait_modes_and_sampling_recover_without_redrawing(v2b):
     v2b.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
-        restored.store.recovery_jobs()
+        restored.store.recover()
         await restored.run_due()
         state = restored.store.scopes.state(A.session_key)
         assert state["mode"] == "sleeping" and state["wait_infinite"] and state["wake_at"] is None
@@ -280,7 +280,7 @@ def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
         state = upgraded.scopes.state(A.session_key)
         assert state["mode"] == "waiting" and not state["wait_infinite"]
         assert state["read_through"] == state["seen_through"] == 1
-        wait = upgraded.dialogue_status(A.session_key)["wait"]
+        wait = upgraded.wakes.dialogue_status(A.session_key)["wait"]
         assert wait["purpose"] == "messages" and wait["total_due"] == v2b.now() + 60
         assert wait["quiet_seconds"] == 3 and wait["sleep_until"] is None
         assert upgraded.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1

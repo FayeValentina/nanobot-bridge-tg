@@ -39,7 +39,7 @@ class SocialScheduler:
             self.changed.clear()
             try:
                 await self.run_due()
-                due = self.store.next_due()
+                due = self.store.wakes.next_due()
                 delay = max(0.01, min(60, due - self.store.now())) if due is not None else 60
             except Exception:
                 logger.exception("Telegram social scheduler cycle failed")

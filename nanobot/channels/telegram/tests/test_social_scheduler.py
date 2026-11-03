@@ -102,8 +102,8 @@ def context(social, *, scope=A, turn="test-turn"):
 
 
 def finish(social, ctx):
-    social.store.finish(ctx.turn_id, "completed")
-    social.store.release_pending(ctx.session_key)
+    social.store.wakes.finish(ctx.turn_id, "completed")
+    social.store.wakes.release_pending(ctx.session_key)
 
 
 async def test_short_window_coalesces_direct_addresses_and_includes_plain_messages(social):

@@ -6,9 +6,9 @@ import json
 import random
 from collections.abc import Callable
 from datetime import datetime
-from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.memory import SocialMemory
 from nanobot.channels.telegram.social.models import ConversationScope, ProactiveCandidate
 from nanobot.channels.telegram.social.store import SocialStore
@@ -72,8 +72,7 @@ class SocialProactive:
         if row is not None:
             result["metrics"] = json.loads(row["metrics"])
             result["requireContext_applies_to"] = "legacy source candidates only"
-            wake = self.db.execute("SELECT id,status,turn_id,proactive_source FROM wakes WHERE scope=? AND reason='proactive' "
-                                   "ORDER BY created DESC LIMIT 1", (key,)).fetchone()
+            wake = self.store.wakes.latest_opportunity(key)
             if wake is not None:
                 result["last_opportunity"] = {
                     "wake_id": wake["id"], "main_status": wake["status"], "turn_id": wake["turn_id"],
@@ -88,7 +87,7 @@ class SocialProactive:
     def _deferred(self, key: str) -> bool:
         state = self.store.scopes.state(key)
         return (state["mode"] in {"waiting", "paused"}
-                or self.db.execute("SELECT 1 FROM dialogue_waits WHERE scope=? AND purpose<>'sleep'", (key,)).fetchone() is not None
+                or self.store.wakes.has_non_sleep_wait(key)
                 or (state["wake_config"] != "{}" and state["mode"] == "sleeping"))
 
     def _participation(self, key: str) -> dict[str, object]:
@@ -169,7 +168,7 @@ class SocialProactive:
             common = "quiet_hours"
         elif self._deferred(key):
             common = "deferred"
-        elif self.db.execute("SELECT 1 FROM wakes WHERE scope=? AND status IN ('scheduled','queued','running') AND expires>?", (key, now)).fetchone():
+        elif self.store.wakes.active_wake(key, now):
             common = "busy"
         elif self.db.execute("SELECT 1 FROM judge_state WHERE scope=? AND (pending_due IS NOT NULL OR inflight=1)", (key,)).fetchone():
             common = "busy"
@@ -187,7 +186,7 @@ class SocialProactive:
             elif (self.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_sends_per_hour
                   or (isinstance(hourly, int) and hourly >= config.max_sends_per_hour)):
                 idle_decision = "send_budget"
-            elif self.db.execute("SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_requests_per_hour:
+            elif self.store.wakes.request_count(key, now - 3600) >= config.max_requests_per_hour:
                 idle_decision = "request_budget"
             else:
                 metrics["pending_thought_available"] = self.store.followups.has_pending_thought(key)
@@ -222,7 +221,7 @@ class SocialProactive:
                 target = self.store.scopes.latest_member_scope(scope.channel, scope.chat_id)
                 if binding.all_topics and target is not None and target[0] != key:
                     activity_decision = "other_topic_active"
-                elif self.db.execute("SELECT COUNT(*) FROM requests WHERE scope=? AND at>?", (key, now - 3600)).fetchone()[0] >= config.max_requests_per_hour:
+                elif self.store.wakes.request_count(key, now - 3600) >= config.max_requests_per_hour:
                     activity_decision = "request_budget"
                 else:
                     activity_decision = "scheduled"
@@ -238,26 +237,22 @@ class SocialProactive:
                              int(candidate is not None) if sample is not None or activity_decision is not None else None, json.dumps(metrics), key))
             if candidate is not None:
                 # A configured timer event has no source member message or read credit.
-                self.db.execute("INSERT INTO wakes(id,scope,version,trigger_seq,source_seq,status,created,expires,due,reason,proactive_source) "
-                                "VALUES(?,?,?,0,0,'scheduled',?,?,?,'proactive',?)",
-                                (uuid4().hex, key, self.store.scopes.state(key)["version"], now, candidate.expires_at,
-                                 now, candidate.model_dump_json()))
+                self.store.wakes.schedule_opportunity(key, self.store.scopes.state(key)["version"], candidate, now)
 
     def cancel_invalid(self, bindings: dict[str, TelegramSocialScopeConfig]) -> None:
-        for row in self.db.execute("SELECT id,scope,proactive_source,status FROM wakes WHERE reason='proactive' "
-                                   "AND status IN ('scheduled','queued','running')").fetchall():
+        for row in self.store.wakes.active_opportunities():
             candidate = ProactiveCandidate.model_validate_json(row["proactive_source"])
             reason = self.valid(str(row["scope"]), bindings.get(str(row["scope"])), candidate, for_send=row["status"] == "running")
             if reason is not None:
                 self._cancel(str(row["id"]), str(row["scope"]), reason)
 
     def _cancel(self, job: str, key: str, reason: str) -> None:
-        with self.db:
+        with transaction(self.db):
             self.store.cancel_opportunity(job, reason)
             self.db.execute("UPDATE proactive_state SET decision=? WHERE scope=?", (reason, key))
 
     def check_job(self, key: str, job: str, binding: TelegramSocialScopeConfig | None, *, for_send: bool = False) -> None:
-        row = self.db.execute("SELECT reason,proactive_source,status FROM wakes WHERE id=? AND scope=?", (job, key)).fetchone()
+        row = self.store.wakes.opportunity(key, job)
         if row is None or row["reason"] != "proactive":
             return
         reason = "stale" if row["status"] in {"cancelled", "expired", "failed"} else self.valid(key, binding, ProactiveCandidate.model_validate_json(row["proactive_source"]), for_send=for_send)
@@ -268,5 +263,5 @@ class SocialProactive:
     def check_send(self, scope: ConversationScope, turn: str | None, binding: TelegramSocialScopeConfig | None) -> None:
         if turn is None:
             return
-        for row in self.db.execute("SELECT id FROM wakes WHERE scope=? AND turn_id=? AND reason='proactive'", (scope.session_key, turn)).fetchall():
+        for row in self.store.wakes.turn_opportunities(scope.session_key, turn):
             self.check_job(scope.session_key, str(row[0]), binding, for_send=True)

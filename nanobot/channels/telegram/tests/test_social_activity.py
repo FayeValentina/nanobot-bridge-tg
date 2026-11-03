@@ -159,7 +159,7 @@ async def test_claimed_activity_is_not_replayed_after_restart(social):
     social.close()
     restored = TelegramSocialRuntime(social.config, social.root, social.bus, now=social.now)
     try:
-        restored.store.recovery_jobs()
+        restored.store.recover()
         assert restored.store.activities.context(A.session_key)[0]["id"] == entry["id"]
         assert restored.store.db.execute("SELECT status FROM wakes WHERE id=?", (inbound.metadata["_social_job"],)).fetchone()[0] == "cancelled"
         assert restored.bus.inbound.empty()

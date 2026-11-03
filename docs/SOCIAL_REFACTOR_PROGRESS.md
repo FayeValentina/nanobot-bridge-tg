@@ -5,7 +5,7 @@
 
 ## 交接：当前状态与下一步（新对话从这里开始读）
 
-**最后更新：2026-11-03，线上版本 `e68b19bc`，social schema 20。**
+**最后更新：2026-11-03，线上版本 `cf1a492e`（P3-a），social schema 20。**
 
 - **已完成**：Phase 0、0.5、1、2，以及追加项 A1。场景测试 21 个，全部通过，零 xfail。
 - **进行中：Phase 3**（owner 2026-11-03 确认开始）。只读事实清单 P3-0 已完成：`.agent/tasks/P3-0.report.md`
@@ -13,11 +13,11 @@
   Phase 3 拆为三个施工任务：
   - **P3-a**（已完成，纯搬迁）：建 `social/db/`（connection、schema 迁入、Scopes、Messages、Views、StickerLibrary），
     把全仓库对 scopes 身份/计数列、messages、updates、views、stickers、runtime_settings 的 SQL 搬进仓储；不改事务边界。
-  - **P3-b**：`db/wakes.py` 状态机。拥有 wakes、requests、dialogue_waits/jobs/state 和 scopes 的调度列；
+  - **P3-b**（已完成）：`db/wakes.py` 状态机。拥有 wakes、requests、dialogue_waits/jobs/state 和 scopes 的调度列；
     `WakeStatus`/`WakeReason`/`ScopeMode` 枚举；所有 status 更新经过带前置状态 WHERE 的转换函数，终态不可再改；
     引入 `transaction()`（已在事务内则不开新事务）。计划顺带修的疑点：Q2（发布失败回退覆盖终态且不退请求预算）、
     Q3（终态 proactive 行被改成 cancelled）、Q9（终态清理只挂在 `_schedule` 上）、Q12（`recovery_jobs` 返回无用的旧值）。
-  - **P3-c**：`db/judge.py`、`db/deliveries.py`（只搬迁，表合并留给 Phase 5）；知识/学习/proactive_state 各表单一归属
+  - **P3-c**（下一步）：`db/judge.py`、`db/deliveries.py`（只搬迁，表合并留给 Phase 5）；知识/学习/proactive_state 各表单一归属
     （SQL 只在拥有者模块中）；解决 memory↔jargon 延迟导入；SocialStore 只保留跨仓储的事务编排；在 pipeline 检查中加 grep 规则。
   - **Claude 的设计决定（偏离审查文档的量化目标）**：知识、学习、活动、proactive_state 这些表在 Phase 3 仍由各自模块
     （memory/jargon/followups/activity/learning/expressions/jargon_learning/proactive）直接执行 SQL，只要求“每张表只有一个模块写 SQL”；
@@ -56,4 +56,5 @@
 | P1-b 黑话只保留 social_jargon 一套接口 | 1 | `29b6491d` | 2026-11-03 | 社交目录 + 契约 952 passed 1 xfailed；ruff 干净；basedpyright 0 errors；全仓库 `is_jargon|jargon=True|.legacy(|_list_local|jargon_status` 0 命中 | 生产代码净减 84 行。`social_memory(kind="slang")` 由参数校验拒绝；memory 的 clear 仍会联动清除黑话（`JargonLibrary.clear`）。memory↔jargon 之间仍有一个延迟导入，留给 Phase 3 按表重新划分时解决 |
 | P1-c 移除核心中的隔离模式残留 | 1 | `d123bc15` | 2026-11-03 | 社交目录 + 契约 951 passed 1 xfailed；核心 tests/agent+session+tools+gateway 2654 passed，20 failed，与改动前基线逐项相同（0 新增，均为既有问题）；ruff 全仓干净；残留名称全仓 grep 0 命中；5 个核心文件与上游的差异从 727 行降到约 600 行 | **Claude 修正简报的设计错误**：`prompt_policy()` 除了传递隔离字段，还负责在压缩社交会话时把群聊人设传给摘要模型。Codex 发现冲突并上报（3 个测试失败），Claude 在 archiver 和 token 探测两处直接传入 `trusted_persona=session.policy.persona`。另修 3 个既有 lint 问题。**既有问题待安排**：核心测试有 20 个失败（task_cancel、unified_session、session_fsync、message_tool_suppress 等），不在发布管线测试集中 |
 | P2-a ScopeBindings、校验纯读、配置或角色变化时保留历史【行为变更】 | 2 | `e68b19bc` | 2026-11-03；同时生效 owner 要求的活动降本配置（activityIntervalSeconds 600→3600，activityMaxIterations 8→4，旧配置备份为 `config.json.before-activity-cost-20261103`） | 社交目录 + 契约 971 passed，**零 xfail**（场景套件 21 个全部通过）；ruff 全仓干净；basedpyright social/ 0 errors；`_persona(` 全仓 0 命中；`validate_context` 有测试证明不写库；**线上会话副本演练**：3 个真实群聊会话（2713/632/161 条消息）连续加载两次，归档位置不变，模式都识别为 social | Codex 第一版找出简报的两个设计缺陷并上报，Claude 修正后在同一会话返工 1 轮：(1) version 改为由 role_id+paused 决定，否则取消暂停后无法恢复；(2) 采用旧会话时必须持久化 `_social_mode`，否则第二次加载仍会截断。runtime.py 1230→1023 行，新增 bindings.py 248 行（其中 SOCIAL_PROTOCOL 约 160 行）。部署时 scope version 格式变化，会一次性取消在途 wake |
-| P3-a 建立 db/ 包，搬迁 scopes/messages/views/stickers 的 SQL | 3 | 待填 | 待填 | 社交目录 + 契约 + gateway 981 passed（Claude 复跑；较 P2-a 的 971 多出的是 gateway 测试，社交目录本身 947）；ruff 全仓干净；basedpyright social/ 0 errors；schema 文件迁移前后内容逐字相同；diff 逐文件审阅均为原 SQL 原样替换为仓储方法 | store.py 1213→1036 行；新增 db/ 358 行（不含 schema），生产代码净增 150 行（类与方法签名开销，P3-b/c 会收回）。Codex 沙箱内 `git mv` 因 .git 只读失败，改为普通移动，由 Claude 提交时登记。时钟测试 `test_expiry_hides_fact...` 原先构造后改写 `store.now`，仓储已捕获时钟，改为在测试内构造 runtime 并传入时钟（断言不变） |
+| P3-a 建立 db/ 包，搬迁 scopes/messages/views/stickers 的 SQL | 3 | `cf1a492e` | 2026-11-03 healthy，schema 仍为 20，启动日志无异常栈 | 社交目录 + 契约 + gateway 981 passed（Claude 复跑；较 P2-a 的 971 多出的是 gateway 测试，社交目录本身 947）；ruff 全仓干净；basedpyright social/ 0 errors；schema 文件迁移前后内容逐字相同；diff 逐文件审阅均为原 SQL 原样替换为仓储方法 | store.py 1213→1036 行；新增 db/ 358 行（不含 schema），生产代码净增 150 行（类与方法签名开销，P3-b/c 会收回）。Codex 沙箱内 `git mv` 因 .git 只读失败，改为普通移动，由 Claude 提交时登记。时钟测试 `test_expiry_hides_fact...` 原先构造后改写 `store.now`，仓储已捕获时钟，改为在测试内构造 runtime 并传入时钟（断言不变） |
+| P3-b `db/wakes.py` 显式 wake 状态机【小幅行为修正】 | 3 | 待填 | 待填 | 社交目录 + 契约 + gateway 981 passed（Claude 复跑），场景测试未改动；ruff 全仓干净；basedpyright social/ 0 errors；wakes.py 中设置 status 的只有 `_move` 一处；**线上库副本演练**：`recover()` + `ready()` 正常，Q9 清理删除一天前的终态 wake（330→125 行），dialogue_jobs 级联 33→2，messages 不变 | 修正 Q2/Q3/Q9/Q12，没有测试断言旧行为。Claude 补修 2 处：(1) 简报给的 `transaction` 返回注解 `Iterator[None]` 被 basedpyright 判为弃用，改为 `Generator[None, None, None]`；(2) `proactive._cancel` 仍是旧式 `with self.db:`，块内第一条就调用已改用 `transaction()` 的 `store.cancel_opportunity`，会把原来一个事务拆成两个，改为 `transaction()`。store.py 1036→627 行，wakes.py 526 行（略超 500 的目标，Phase 6 拆 runtime 时再看），生产代码净增 120 行。**遗留**：其他模块仍有旧式 `with self.db:`，P3-c 统一改为 `transaction()` |

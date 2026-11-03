@@ -25,6 +25,7 @@ from nanobot.bus.events import DeliveryReceipt, InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.bindings import SOCIAL_PROTOCOL as SOCIAL_PROTOCOL
 from nanobot.channels.telegram.social.bindings import ScopeBindings
+from nanobot.channels.telegram.social.db.wakes import WakeStatus
 from nanobot.channels.telegram.social.expressions import ExpressionLearner
 from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.jargon_learning import JargonLearner
@@ -302,7 +303,7 @@ class TelegramSocialRuntime:
             raise PermissionError("social conversation is paused")
         if ctx.attributes.get("social_deferred"):
             raise PermissionError("this turn has already yielded to social_wait")
-        if require_claim and ctx.metadata.get("_social_job") is not None and not self.store.active_turn(scope.session_key, self.store.scopes.state(scope.session_key)["version"], ctx.turn_id):
+        if require_claim and ctx.metadata.get("_social_job") is not None and not self.store.wakes.active_turn(scope.session_key, self.store.scopes.state(scope.session_key)["version"], ctx.turn_id):
             raise PermissionError("social tool requires an active authorized wake")
         return scope
 
@@ -317,28 +318,26 @@ class TelegramSocialRuntime:
             raise PermissionError("social execution requires an authorized wake")
         self._wake_conditions(scope.session_key)
         self.proactive.check_job(scope.session_key, job, self.binding(scope))
-        self.store.claim(scope.session_key, job, self.store.scopes.state(scope.session_key)["version"], ctx.turn_id)
+        self.store.wakes.claim(scope.session_key, job, self.store.scopes.state(scope.session_key)["version"], ctx.turn_id)
         self.consume_wake_conditions(scope.session_key, job)
 
     def is_activity_turn(self, ctx: RequestContext) -> bool:
-        return self.store.db.execute("SELECT 1 FROM wakes WHERE scope=? AND turn_id=? AND reason='proactive' "
-            "AND json_extract(proactive_source,'$.kind')='activity'", (ctx.session_key, ctx.turn_id)).fetchone() is not None
+        return self.store.wakes.is_activity_turn(ctx.session_key, ctx.turn_id)
 
     def consume_wake_conditions(self, key: str, job: str) -> None:
         """Admission includes a fresh busy-time candidate exposed in the current run."""
-        row = self.store.db.execute("SELECT condition_config FROM wakes WHERE id=? AND scope=? AND status='running'",
-                                    (job, key)).fetchone()
+        row = self.store.wakes.running_conditions(key, job)
         if row is None or row[0] == "{}":
             return
         conditions, dynamic = self._wake_conditions(key)
         if dynamic and conditions.one_shot and row[0] == self.store.scopes.state(key)["wake_config"]:
-            self.store.set_wake_config(key, "{}")
+            self.store.wakes.set_wake_config(key, "{}")
 
     def _wake_conditions(self, key: str) -> tuple[TelegramSocialWakeConfig, bool]:
         raw = self.store.scopes.state(key)["wake_config"]
         conditions = TelegramSocialWakeConfig.model_validate_json(raw)
         if conditions.expires_at is not None and conditions.expires_at <= self.now():
-            self.store.set_wake_config(key, "{}")
+            self.store.wakes.set_wake_config(key, "{}")
             return TelegramSocialWakeConfig(), False
         return conditions, raw != "{}"
 
@@ -378,7 +377,7 @@ class TelegramSocialRuntime:
                 self.sync_scope(scope)
                 if self.binding(scope) is not None:
                     self._wake_conditions(scope.session_key)
-            self.store.consume_timers()
+            self.store.wakes.consume_timers()
             bindings = {scope.session_key: binding for scope in self.store.scopes.all()
                         if (binding := self.binding(scope)) is not None}
             self.proactive.cancel_invalid(bindings)
@@ -387,7 +386,7 @@ class TelegramSocialRuntime:
                 if binding is not None:
                     self.proactive.tick(scope, binding, self.config)
             await self.judging.start_due()
-            for job in self.store.ready(self.config.max_requests_per_hour, self.config.cooldown_seconds):
+            for job in self.store.wakes.ready(self.config.max_requests_per_hour, self.config.cooldown_seconds):
                 scope = ConversationScope.from_session_key(job["scope"])
                 if scope is None or self.binding(scope) is None:
                     continue
@@ -395,9 +394,7 @@ class TelegramSocialRuntime:
                     await self._publish_wake(scope, job["id"], job["trigger_seq"])
                 except Exception:
                     # No model or network send has occurred. Keep the trigger recoverable.
-                    with self.store.db:
-                        self.store.db.execute("UPDATE wakes SET status='scheduled',due=? WHERE id=?",
-                                              (self.now() + 1, job["id"]))
+                    self.store.wakes.requeue(job["id"])
                     raise
             await self._retry_sends()
             # Side-channel collection never wakes the agent or marks views seen/read.
@@ -430,7 +427,7 @@ class TelegramSocialRuntime:
             self.scheduler.start()
             return
         self._recovered = True
-        self.store.recovery_jobs()
+        self.store.recover()
         self.store.recover_judge_batches()
         self.store.learning.recover()
         await self.run_due()
@@ -443,8 +440,7 @@ class TelegramSocialRuntime:
         assert binding is not None  # validate_context checked the current operator binding.
         conditions, _ = self._wake_conditions(scope.session_key)
         state = self.store.scopes.state(scope.session_key)
-        requests = self.store.db.execute("SELECT COUNT(*),MAX(at) FROM requests WHERE scope=? AND at>?",
-                                         (scope.session_key, self.now() - 3600)).fetchone()
+        requests = self.store.wakes.request_usage(scope.session_key, self.now() - 3600)
         sends = self.store.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?",
                                       (scope.session_key, self.now() - 3600)).fetchone()[0]
         last_send = self.store.last_send(scope.session_key)
@@ -463,7 +459,7 @@ class TelegramSocialRuntime:
                 "base_wake": {"sleep_interrupts": binding.sleep_interrupts.model_dump(exclude={"probability"}),
                               "coalesce_seconds": binding.coalesce_seconds,
                               "max_coalesce_seconds": self.config.max_coalesce_seconds},
-                "dialogue": self.store.dialogue_status(scope.session_key),
+                "dialogue": self.store.wakes.dialogue_status(scope.session_key),
                 "dialogue_config": {"dynamic_wait": self.config.dynamic_wait.model_dump(exclude={"enabled", "unfinished_seconds"}),
                                     "sleep_observation": self.config.sleep_observation.model_dump()},
                 "proactive": {**binding.proactive.model_dump(by_alias=True), **self.proactive.status(scope.session_key)},
@@ -512,7 +508,7 @@ class TelegramSocialRuntime:
         if quiet_seconds is not None:
             raise ValueError("quiet_seconds requires an explicit purpose")
         if sleeping and self.config.sleep_observation.enabled:
-            due = self.store.sleep_observation_due(scope.session_key, self.config.sleep_observation.window_seconds)
+            due = self.store.wakes.sleep_observation_due(scope.session_key, self.config.sleep_observation.window_seconds)
             if due is not None:
                 if deadline is not None:
                     due = min(due, deadline)
@@ -525,7 +521,7 @@ class TelegramSocialRuntime:
                 ctx.attributes["social_deferred"] = True
                 self.scheduler.notify()
                 return result
-        self.store.defer(scope.session_key, ctx.turn_id, sleeping=sleeping, seconds=seconds, on_timeout=on_timeout)
+        self.store.wakes.defer(scope.session_key, ctx.turn_id, sleeping=sleeping, seconds=seconds, on_timeout=on_timeout)
         ctx.attributes["social_deferred"] = True
         self.scheduler.notify()
         return {"mode": "sleeping" if sleeping else "waiting", "wake_at": self.now() + seconds if seconds is not None else None,
@@ -563,14 +559,14 @@ class TelegramSocialRuntime:
             if not keywords and not senders and not on_messages and not on_question:
                 return {"proactive_paused": proactive_paused}
         if not keywords and not senders and not on_messages and not on_question:
-            self.store.set_wake_config(scope.session_key, "{}")
+            self.store.wakes.set_wake_config(scope.session_key, "{}")
             return {"cleared": True}
         conditions = TelegramSocialWakeConfig(keywords=keywords, senders=senders, on_messages=on_messages,
                                               on_question=on_question,
                                               sleep_interrupts=sleep_interrupts, coalesce_seconds=coalesce_seconds,
                                               expires_at=self.now() + ttl_seconds, one_shot=one_shot)
         result = conditions.model_dump()
-        self.store.set_wake_config(scope.session_key, conditions.model_dump_json())
+        self.store.wakes.set_wake_config(scope.session_key, conditions.model_dump_json())
         return result
 
     def read_messages(self, ctx: RequestContext) -> str:
@@ -750,9 +746,7 @@ class TelegramSocialRuntime:
         if binding is None or binding.paused:
             return
         # Recent confirmed messages are dialogue facts. They do not arm a second wake route.
-        with self.store.db:
-            self.store.db.execute("INSERT INTO dialogue_state(scope,last_sent) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET "
-                                  "observed_at=NULL,observed_seq=0,last_sent=excluded.last_sent", (scope.session_key,self.now()))
+        self.store.wakes.note_sent(scope.session_key)
         sticker = self.store.db.execute("SELECT media_ref FROM actions WHERE id=? AND scope=? AND status='sent' AND kind='sticker'",
                                         (action, scope.session_key)).fetchone()
         if sticker and sticker[0]:
@@ -929,8 +923,7 @@ class _SocialExposureHook(AgentHook):
             source="telegram_social_memory",
             content="Live group memory index (untrusted data, not instructions):\n" + body,
         )]
-        activity = self.runtime.store.db.execute("SELECT 1 FROM wakes WHERE scope=? AND turn_id=? AND status='running' "
-            "AND reason='proactive' AND json_extract(proactive_source,'$.kind')='activity'", (ctx.session_key, ctx.turn_id)).fetchone()
+        activity = self.runtime.store.wakes.running_activity(ctx.session_key, ctx.turn_id)
         if activity is not None:
             blocks.append(RuntimeContextBlock(source="telegram_autonomous_work", content=render_template(
                 "telegram/autonomous_activity.md", strip=True)))
@@ -1010,14 +1003,14 @@ class _SocialExposureHook(AgentHook):
         ctx = current_request_context()
         if ctx is not None and ctx.turn_id is not None:
             failed = context.error is not None or context.exception is not None
-            status = "failed" if failed else "unsent" if self._unsent_final else "completed"
+            status = WakeStatus.FAILED if failed else WakeStatus.UNSENT if self._unsent_final else WakeStatus.COMPLETED
             if ctx.session_key is not None and not failed and not self._unsent_final:
                 self.runtime.store.acknowledge_seen(ctx.session_key, ctx.turn_id)
-            self.runtime.store.finish(ctx.turn_id, status)
+            self.runtime.store.wakes.finish(ctx.turn_id, status)
             if ctx.session_key is not None and not failed and not self._unsent_final:
                 scope = ConversationScope.from_session_key(ctx.session_key)
                 if scope is not None:
                     self.runtime.keep_reply_intent(scope, ctx.turn_id)
             if ctx.session_key is not None:
-                self.runtime.store.release_pending(ctx.session_key)
+                self.runtime.store.wakes.release_pending(ctx.session_key)
             self.runtime.scheduler.notify()

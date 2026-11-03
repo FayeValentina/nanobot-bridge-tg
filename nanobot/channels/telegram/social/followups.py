@@ -110,8 +110,7 @@ class SocialFollowups:
         if attempt is None:
             if info.remaining_attempts == 0:
                 raise PermissionError("follow-up proactive limit reached; remaining_attempts=0")
-            wake = self.db.execute("SELECT id FROM wakes WHERE scope=? AND turn_id=? ORDER BY created DESC LIMIT 1",
-                                   (scope, turn)).fetchone()
+            wake = self.store.wakes.latest_turn_job(scope, turn)
             attempt_id = uuid4().hex
             self.db.execute("INSERT INTO followup_attempts(id,memory_id,scope,turn_id,wake_id,revision,status,created,updated) "
                             "VALUES(?,?,?,?,?,?,'queued',?,?)", (attempt_id,memory_id,scope,turn,wake[0] if wake else None,

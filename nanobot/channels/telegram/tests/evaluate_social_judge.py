@@ -112,7 +112,7 @@ async def evaluate(args):
                         runtime.wait(ctx, infinite=True, purpose="messages", quiet_seconds=0.1)
                     else:
                         runtime.wait(ctx, 30, sleeping=True)
-                    runtime.store.finish("setup", "completed")
+                    runtime.store.wakes.finish("setup", "completed")
                 elif case.get("sleeping"):
                     with runtime.store.db:
                         runtime.store.db.execute("UPDATE scopes SET mode='sleeping',wait_infinite=1 WHERE key=?", (scope.session_key,))

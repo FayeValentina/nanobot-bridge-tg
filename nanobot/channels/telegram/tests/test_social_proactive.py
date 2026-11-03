@@ -142,7 +142,7 @@ async def test_stop_proactive_contact_survives_sleep_clear_and_restart(social):
     ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                          turn_id="ordinary", metadata={"message_thread_id": A.thread_id})
     social.set_wake(ctx, keywords=[], senders=[], on_messages=False, proactive_paused=True)
-    social.store.set_wake_config(A.session_key, "{}")
+    social.store.wakes.set_wake_config(A.session_key, "{}")
     social.store.db.execute("UPDATE scopes SET mode='sleeping' WHERE key=?", (A.session_key,))
     social.store.db.commit()
     await tick(social)
@@ -240,7 +240,7 @@ async def test_probability_miss_means_zero_requests_and_next_deadline_persisted(
     assert status["sample"] == 0
     assert status["selected"] == 0
     assert status["next_check"] == social.now() + 60
-    assert social.store.next_due() == status["next_check"]
+    assert social.store.wakes.next_due() == status["next_check"]
     assert social.store.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 0
 
 
@@ -252,7 +252,7 @@ async def test_consumed_messages_do_not_block_later_idle_opportunity(social):
     inbound = social.bus.inbound.get_nowait()
     assert view(inbound)["wake_reason"] == "judge"
     ctx = claim(social, inbound)
-    social.store.finish(ctx.turn_id, "completed")
+    social.store.wakes.finish(ctx.turn_id, "completed")
     await tick(social)
     assert view(social.bus.inbound.get_nowait())["opportunity"]["kind"] == "idle"
     assert social.store.scopes.state(A.session_key)["read_through"] == 0
@@ -288,7 +288,7 @@ async def test_idle_is_independent_of_memory_revision_and_middle_model(social, k
     assert view(inbound)["opportunity"]["kind"] == "idle"
     provider.chat.assert_not_awaited()
     ctx = claim(social, inbound)
-    social.store.finish(ctx.turn_id, "completed")
+    social.store.wakes.finish(ctx.turn_id, "completed")
     await tick(social)
     assert view(social.bus.inbound.get_nowait())["opportunity"]["opportunity_id"] == 2
 
@@ -307,7 +307,7 @@ async def test_stale_and_read_context_do_not_prevent_idle_opportunity(social):
     await social.observe(replace(observed(social), timestamp=social.now() - 301), directed=False)
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
-    social.store.finish(ctx.turn_id, "completed")
+    social.store.wakes.finish(ctx.turn_id, "completed")
     social.store.observe(observed(social, 2), 500)
     with social.store.db:
         social.store.db.execute("UPDATE scopes SET read_through=2 WHERE key=?", (A.session_key,))
@@ -539,7 +539,7 @@ async def test_wait_after_queuing_parts_keeps_existing_delivery_without_new_wake
     ctx = claim(social, social.bus.inbound.get_nowait())
     await social.send_parts(ctx, ["第一条", "第二条"], None)
     social.wait(ctx, 300)
-    social.store.finish(ctx.turn_id, "completed")
+    social.store.wakes.finish(ctx.turn_id, "completed")
     await social.run_due()
     await tick(social, 2)
     assert sender.await_count == 2
@@ -574,7 +574,7 @@ async def test_restart_skips_missed_slots_then_allows_new_idle_without_new_memor
     learn(social)
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
-    social.store.finish(ctx.turn_id, "completed")
+    social.store.wakes.finish(ctx.turn_id, "completed")
     current_clock = clock(social)
     social.close()
     current_clock.advance(3600)

@@ -300,7 +300,7 @@ async def test_pause_cancels_pending_judge_without_an_expired_deadline_spin(soci
     for _ in range(3):
         await due(social)
     provider.chat.assert_not_awaited()
-    assert social.store.next_due() is None
+    assert social.store.wakes.next_due() is None
 
 
 @pytest.mark.parametrize("mode", ["observing", "active"])

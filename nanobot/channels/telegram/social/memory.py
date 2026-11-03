@@ -364,7 +364,7 @@ class SocialMemory:
         opportunity = self.store.views.latest_body(scope, turn_id) if turn_id else None
         selected_opportunity = json.loads(opportunity[0]).get("opportunity") if opportunity else None
         if selected_opportunity is None and turn_id:
-            wake = self.db.execute("SELECT proactive_source FROM wakes WHERE scope=? AND turn_id=? AND status='running'", (scope, turn_id)).fetchone()
+            wake = self.store.wakes.turn_source(scope, turn_id)
             if wake and wake[0]:
                 selected_opportunity = json.loads(wake[0])
         opportunity_memory = cast(dict[object, object], selected_opportunity).get("memory_id") if isinstance(selected_opportunity, dict) else None

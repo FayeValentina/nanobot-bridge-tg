@@ -91,7 +91,7 @@ async def test_continuous_messages_hit_total_cap_and_report_not_quiet(dialogue):
 
 async def test_finishing_another_turn_does_not_shorten_quiet_deadline(dialogue):
     await dialogue.observe(observed(dialogue, text="@bot 但是"), directed=True)
-    dialogue.store.release_pending(A.session_key)
+    dialogue.store.wakes.release_pending(A.session_key)
     await dialogue.run_due()
     assert dialogue.bus.inbound.empty()
     clock(dialogue).advance(4)
@@ -206,8 +206,8 @@ async def test_wait_consumption_and_continuation_insert_roll_back_together(dialo
                               "BEGIN SELECT RAISE(ABORT, 'test transaction failure'); END")
     clock(dialogue).advance(3)
     with pytest.raises(sqlite3.IntegrityError):
-        dialogue.store.consume_timers()
-    assert dialogue.store.dialogue_status(A.session_key)["wait"] is not None
+        dialogue.store.wakes.consume_timers()
+    assert dialogue.store.wakes.dialogue_status(A.session_key)["wait"] is not None
     assert dialogue.store.scopes.state(A.session_key)["mode"] == "waiting"
     assert not dialogue.store.db.execute("SELECT 1 FROM wakes WHERE status='scheduled'").fetchone()
     dialogue.store.db.execute("DROP TRIGGER reject_continuation")
@@ -261,7 +261,7 @@ async def test_selective_wait_ttl_limits_continuation_even_after_queueing(dialog
             admit(dialogue, msg)
     else:
         assert dialogue.bus.inbound.empty()
-    assert dialogue.store.dialogue_status(A.session_key)["wait"] is None
+    assert dialogue.store.wakes.dialogue_status(A.session_key)["wait"] is None
 
 
 @pytest.mark.parametrize("queued", [False, True])
@@ -369,7 +369,7 @@ async def test_confirmed_context_survives_restart_without_idle_model_calls(dialo
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
         provider = decide(restored)
-        restored.store.recovery_jobs()
+        restored.store.recover()
         now.advance(31)
         await restored.run_due()
         assert bus.inbound.empty()
@@ -439,7 +439,7 @@ async def test_sleep_observation_new_content_is_shown_before_sleep(dialogue):
     assert [m["seq"] for m in view["messages"]] == [1, 2]
     assert dialogue.store.scopes.state(A.session_key)["read_through"] == 0
     admit(dialogue, msg)
-    assert dialogue.store.dialogue_status(A.session_key)["wait"] is None
+    assert dialogue.store.wakes.dialogue_status(A.session_key)["wait"] is None
 
 
 async def test_unseen_arrival_before_sleep_tool_gets_a_fresh_snapshot(dialogue):
@@ -459,7 +459,7 @@ def test_received_but_unexposed_content_never_counts_as_observed(dialogue):
     dialogue.store.observe(observed(dialogue), 500, fresh=True)
     row = dialogue.store.db.execute("SELECT observed_at,observed_seq FROM dialogue_state").fetchone()
     assert tuple(row) == (None, 0)
-    assert dialogue.store.sleep_observation_due(A.session_key, 300) == dialogue.now() + 300
+    assert dialogue.store.wakes.sleep_observation_due(A.session_key, 300) == dialogue.now() + 300
 
 
 def test_already_quiet_conversation_does_not_wait_another_five_minutes(dialogue):
@@ -478,7 +478,7 @@ async def test_model_error_does_not_leave_a_running_lock(tmp_path, dialogue):
     await loop._dispatch(dialogue.bus.inbound.get_nowait())
     lock = loop._session_locks.get(A.session_key)
     assert lock is None or not lock.locked()
-    assert dialogue.store.dialogue_status(A.session_key)["wait"] is None
+    assert dialogue.store.wakes.dialogue_status(A.session_key)["wait"] is None
     assert dialogue.store.scopes.state(A.session_key)["mode"] == "observing"
 
 
@@ -521,7 +521,7 @@ async def test_persisted_wait_survives_restart_without_duplicate_continuations(d
     dialogue.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
-        restored.store.recovery_jobs()
+        restored.store.recover()
         assert restored.bus.inbound.empty()
         clock(dialogue).advance(300 if purpose == "observe" else 30)
         await restored.run_due()
@@ -538,7 +538,7 @@ async def test_restart_preserves_automatic_quiet_deadline(dialogue):
     dialogue.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
-        restored.store.recovery_jobs()
+        restored.store.recover()
         await restored.run_due()
         assert bus.inbound.empty()
         now.advance(4)
@@ -562,11 +562,11 @@ async def test_operator_changes_only_invalidate_pending_observation_for_binding_
     else:
         dialogue.config.scopes[0].background = "different persona revision"
     dialogue.configure(dialogue.config)
-    wait = dialogue.store.dialogue_status(A.session_key)["wait"]
+    wait = dialogue.store.wakes.dialogue_status(A.session_key)["wait"]
     assert (wait is not None) == (change == "background")
     clock(dialogue).advance(301)
     await dialogue.run_due()
-    assert dialogue.store.dialogue_status(A.session_key)["wait"] is None
+    assert dialogue.store.wakes.dialogue_status(A.session_key)["wait"] is None
     assert dialogue.bus.inbound.empty()
     assert dialogue.store.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
@@ -593,7 +593,7 @@ async def test_clock_jump_does_not_replay_old_wait_or_spin(dialogue, delta):
     clock(dialogue).advance(delta)
     for _ in range(3):
         await dialogue.run_due()
-    assert dialogue.store.dialogue_status(A.session_key)["wait"] is None
+    assert dialogue.store.wakes.dialogue_status(A.session_key)["wait"] is None
     assert dialogue.bus.inbound.empty()
 
 

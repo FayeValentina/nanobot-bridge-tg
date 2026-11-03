@@ -233,7 +233,7 @@ async def test_two_paced_groups_count_once_each_and_second_group_finishes(social
         await social.run_due()
         clock(social).advance(3)
         await social.run_due()
-        social.store.finish(ctx.turn_id, "completed")
+        social.store.wakes.finish(ctx.turn_id, "completed")
         clock(social).advance(3)
     assert sender.await_count == 4
     assert social.store.followups.describe(item["id"]).confirmed_attempts == 2
@@ -320,7 +320,7 @@ async def test_partial_ordinary_unknown_counts_confirmed_prefix_and_blocks_retry
     assert result["status"] == "unknown" and result["message_ids"] == [501]
     info = social.store.followups.describe(item["id"])
     assert info.confirmed_attempts == 1 and info.unresolved_send
-    social.store.recovery_jobs()
+    social.store.recover()
     assert social.store.followups.describe(item["id"]).confirmed_attempts == 1
     assert social.store.followups.describe(item["id"]).unresolved_send
 
@@ -337,7 +337,7 @@ async def test_main_send_registers_local_wait_then_short_reply_reaches_v3(tmp_pa
     ])
     await social.observe(observed(social, text="@bot 明天出去玩"), directed=True)
     await loop._dispatch(social.bus.inbound.get_nowait())
-    wait = social.store.dialogue_status(A.session_key)["wait"]
+    wait = social.store.wakes.dialogue_status(A.session_key)["wait"]
     assert wait["purpose"] == "messages" and wait["total_due"] == social.now()+30
     assert not wait["on_timeout"]
     provider = decide(social)

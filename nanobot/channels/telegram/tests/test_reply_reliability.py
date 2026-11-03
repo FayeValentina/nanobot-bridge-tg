@@ -80,7 +80,7 @@ async def test_conditional_wait_filters_numbers_and_consumes_keyword_once(social
     ctx = context(social)
     social.set_wake(ctx, keywords=["5", "五"], senders=[], on_messages=False)
     social.wait(ctx, 3600)
-    social.store.finish(ctx.turn_id, "completed")
+    social.store.wakes.finish(ctx.turn_id, "completed")
     for i, text in enumerate(["1", "2", "unrelated"], 1):
         await social.observe(observed(social, i, text=text), directed=False)
         clock(social).advance(11)
@@ -104,7 +104,7 @@ async def test_conditional_wait_direct_mention_interrupts_without_consuming_cond
     ctx = context(social)
     social.set_wake(ctx, keywords=["5"], senders=[], on_messages=False)
     social.wait(ctx, 3600)
-    social.store.finish(ctx.turn_id, "completed")
+    social.store.wakes.finish(ctx.turn_id, "completed")
     await social.observe(observed(social, text="@bot help"), directed=True)
     clock(social).advance(11)
     await social.run_due()
@@ -116,7 +116,7 @@ async def test_condition_deadline_survives_restart_and_expiry_clears_it(social):
     ctx = context(social)
     social.set_wake(ctx, keywords=["5"], senders=[], on_messages=False, ttl_seconds=5, one_shot=False)
     social.wait(ctx, 100)
-    social.store.finish(ctx.turn_id, "completed")
+    social.store.wakes.finish(ctx.turn_id, "completed")
     root, config, bus, now = social.root, social.config, social.bus, social.now
     social.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
@@ -304,7 +304,7 @@ async def test_queued_keyword_cannot_outlive_condition_ttl(social):
     ctx = context(social)
     social.set_wake(ctx, keywords=["5"], senders=[], on_messages=False, ttl_seconds=3)
     social.wait(ctx, 100)
-    social.store.finish(ctx.turn_id, "completed")
+    social.store.wakes.finish(ctx.turn_id, "completed")
     await social.observe(observed(social, text="5"), directed=False)
     clock(social).advance(4)
     await social.run_due()
@@ -338,7 +338,7 @@ async def test_interrupted_ordinary_send_is_not_reawakened_after_restart(social)
     social.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
-        restored.store.recovery_jobs()
+        restored.store.recover()
         assert restored.store.db.execute("SELECT status FROM message_deliveries").fetchone()[0] == "unknown"
         assert restored.store.db.execute("SELECT status FROM wakes WHERE turn_id=?", (ctx.turn_id,)).fetchone()[0] == "cancelled"
         await restored.run_due()

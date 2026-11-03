@@ -77,7 +77,7 @@ class JudgeCoordinator:
         conditions, _ = self.runtime._wake_conditions(scope.session_key)
         delay = conditions.coalesce_seconds if conditions.coalesce_seconds is not None else binding.coalesce_seconds
         delay = self.runtime.config.coalesce_seconds if delay is None else delay
-        wait = self.store.db.execute("SELECT purpose,quiet_seconds FROM dialogue_waits WHERE scope=?", (scope.session_key,)).fetchone()
+        wait = self.store.wakes.wait(scope.session_key)
         if wait and wait["purpose"] in {"reply", "messages"}:
             delay = float(wait["quiet_seconds"])
         return delay
@@ -95,7 +95,7 @@ class JudgeCoordinator:
         assert binding is not None
         conditions, dynamic = self.runtime._wake_conditions(scope.session_key)
         state = self.store.scopes.state(scope.session_key)  # Expiring conditions can end an infinite wait.
-        wait = self.store.db.execute("SELECT * FROM dialogue_waits WHERE scope=?", (scope.session_key,)).fetchone()
+        wait = self.store.wakes.wait(scope.session_key)
         dynamic = dynamic and bool(conditions.keywords or conditions.senders or conditions.on_messages or conditions.on_question)
         if not (wait or dynamic or state["mode"] in {"waiting", "sleeping"}):
             return None
