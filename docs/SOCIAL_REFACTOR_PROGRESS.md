@@ -5,7 +5,7 @@
 
 ## 交接：当前状态与下一步（新对话从这里开始读）
 
-**最后更新：2026-11-04，线上版本 `64b201a1`（P8-a，Phase 8 进行中），social schema 22。** owner 已体验 Phase 5、B1、P7-a、B2-a，反馈正常；P8-a 待 owner 群内体验。
+**最后更新：2026-11-05，线上版本 `22b4d960`（P8-b，**Phase 8 完成**），social schema 22。** owner 已体验 Phase 5、B1、P7-a、B2-a，反馈正常；P8-a/P8-b 待 owner 群内体验（P8-a 后 owner 反馈回复偏慢，合并窗口已改回 10 秒）。
 
 - **已完成**：Phase 0、0.5、1、2、3，以及追加项 A1。测试 982 个（社交目录 + 契约 + gateway），场景测试 21 个，全部通过，零 xfail。
 - **Phase 3 结果**（P3-0 只读清单 + P3-a～P3-d，明细见下表）：`social/db/` 有 connection、schema 和 8 个仓储
@@ -65,7 +65,8 @@
   `tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。评估脚本（scripts/ 与 tests/evaluate_*）多处已失效（store.wake、message_deliveries、冻结 hook 编译），留给评估脚本迁移。
 - **Phase 8 进行中**（owner 2026-11-04 确认开始）。只读清单 P8-0 已完成（`.agent/tasks/P8-0.report.md`：主模型收到的全部提示来源与长度、protocol 逐条的强制/重复/冲突、版本路径（protocol 变化只清 provider_state，不违反 D4）、中文与角色字面量、12 个工具的 schema 与线上调用统计（906 次）、§5.3 合并事实、测试面、18 条疑点）。
   - **P8-a**（已完成，待 owner 群内体验）【行为变更】：protocol 由 Claude 重写并外置为 `templates/telegram/social_protocol.md`（15,237→8,869 字符，-41.8%），按 P7 后的准入机制更新；每次迭代注入的五段中文指导（facts_note、expression_guidance、pending_note、memory note、近期用语 note）并入 protocol 后删除；发送后不再要求每次显式调 social_wait（运行时本来会自动注册短等）。角色口头禅改为配置 `learning.catchphrases`（线上已填原四词，备份 `config.json.before-catchphrases-20261104`），代码与学习模板中不再有角色字面量。
-  - **P8-b**（下一步）：工具合并 §5.3【行为变更】，实际保留 9 个（§5.3 表格逐个数是 9，不是 8）：send 吸收贴纸发送（需 parts 持久化 kind/media_ref）、wait 吸收 set_wake 条件、state 合并 get_state/read_messages/proactive_paused、删 mark_read（线上用过 98 次；与回合末自动确认的差异见 P8-0 §5.4）、get_media→media；工具描述 ≤400 字符；protocol 同步改工具名。
+  - **P8-b**（已完成，待 owner 群内体验）【行为变更】：工具 12→9（§5.3 表格实际是 9 个）：`social_send` 三选一 text/sticker_id/parts，parts 可混合贴纸与文字（`SendPart`；入队行写 kind/media_ref，无 schema 变更）；`social_wait` 吸收 set_wake 为 `until_condition{members,topics,questions,one_shot,ttl_seconds}`；`social_state` get/read/set_proactive（暂停主动联系不再受 allow_ambient_wake 限制）；删 `social_mark_read`；`social_get_media`→`social_media`；`social_sticker` 去掉 send。9 个描述均 ≤400 字符（Claude 撰写）；protocol 同步新名字并去掉写死的 `seconds=12`（9,057 字符，-40.6%）。get_state 只剩 14 个字段。runtime.py 336 行。
+- **下一步：Phase 9**（schema 基线压缩 P2-4、配置面收缩 P2-5，风险低）：`TelegramSocialWakeConfig` 的 on_messages/sleep_interrupts/probability/coalesce_seconds 已不再由模型设置，可在此删除；评估脚本迁移（scripts/ 与 tests/evaluate_*、`tests/channels` 4 failed + 1 error）一并安排。开始前先问 owner。
   - 非角色的中文数据（SCENE_HINTS、jargon 九个普通词、泛化口号、辱骂正则、研究查询后缀）作为数据保留，不算提示词字面量（Claude 决定）。
   - 观察项：expression 学习批次 `9f396031` 在 P8-a 前（12:58 起）已两次 `invalid extraction response`，改配置后按 config_changed 取消，同窗口重建为 `521226af`；若新批次仍失败，需查 expression 学习模型输出。
   Codex CLI 登录凭证 2026-11-04 曾失效（refresh token 被其他 Codex 进程用掉），owner 重新登录后恢复；再出现时请 owner 运行 `codex logout && codex login`。
@@ -124,3 +125,4 @@
 | P7-c LearningWorker；供应商错误退还重试次数【小幅行为变更】 | 7 | `4d803e1f` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway + cli 1527 passed（Claude 复跑）；场景 22 passed；ruff 干净；basedpyright 0 errors | 两份生命周期合并为 `learning_worker.py`（106 行），生产代码净增 41 行（导入、签名、jargon 独立 provider 配置）。**Claude 补修**：退款后 attempts 回到 0 时 `last_batch_due` 忽略该批次，欠费期间会每个周期重试；改为 `attempts>0 OR model_calls>0`，新增断言在旧查询上失败。**线上遗留**：表达批次 `54c6bbb2…`（19:37–19:43 欠费期间耗尽重试，failed）会永久阻止 topic 53 的表达学习；重新排队 SQL 见 P7-c 报告第 4 节。另有同一时段的 topic 53 批次 `3f11241a…`。**owner 2026-11-04 同意重新排队**：Claude 先备份 `telegram-social/backups/social-before-learning-requeue-20261104.sqlite3`，再把这两行改为 ready、attempts=0（游标、来源、失败计数、错误详情不变） |
 | P7-d selection 容错、一 turn 一次、SQL 回归拥有者【小幅行为变更】 | 7 | `b620709c` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway + cli 1542 passed（Claude 复跑）；场景 22 passed；ruff 干净；basedpyright 0 errors；selection.py 中 `db.execute` 0 处；两次线上 ValidationError 的原始输出回放后都保留贴纸选择 | 生产代码净增 30 行（新增 Library 方法 15 个）。provider 重配不再清缓存（缓存按 turn 结束清除）。首次派发因 Codex CLI 凭证失效未执行，owner 重新登录后重派 |
 | P8-a protocol 外置与去重、角色口头禅改为配置【行为变更】 | 8 | `64b201a1` | 2026-11-04 healthy；配置加 `learning.catchphrases` 后重启仍 healthy | 社交目录 949 passed、契约 + gateway + config 144 passed（Claude 复跑）；场景测试未改；ruff 干净；basedpyright 0 errors；模板与简报正文 cmp 一致；生产代码中“本大爷/白饭/算力/肥鱼/嘴硬摸鱼” 0 处 | 生产 Python 净减 174 行。Codex 按简报停在一处未列出的旧文案断言（test_social_runtime.py:333），Claude 改为新句子。部署顺序：先发布、再改配置并重启（learning 配置 extra=forbid，旧代码不认新字段） |
+| P8-b 工具 12→9 合并、描述精简【行为变更】 | 8 | `22b4d960` | 2026-11-05 healthy，日志无异常 | 社交目录 958 passed、契约 + gateway + config 144 passed（Claude 复跑）；场景测试只改简报允许的 6 处调用，22 passed；ruff 干净；basedpyright 0 errors；protocol 与简报 cmp 一致；生产代码中旧工具名 0 处 | 生产 Python 净减 48 行。新增 6 类测试（混合 parts、贴纸 followup、until_condition 写入/清除、ambient 关闭下暂停、工具集合与描述长度、state 键集合）。旧工具名只剩 evaluate_* 与冻结 fixture |
