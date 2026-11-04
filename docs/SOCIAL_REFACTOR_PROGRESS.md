@@ -53,7 +53,14 @@
   Phase 6 结果：social/runtime.py 960→352 行（目标 <300 留给 Phase 7/8 继续收缩，get_state 43 行、policy_for_session 38 行仍在）；social/ 中没有任何组件持有 runtime。
   P6-0 疑点中暂不处理、已记录：recover 标记提前写入、close 只取消不等待、set_wake 普通分支不 notify、文件 watcher 不刷新 social、channel 构造时用自身 social config 覆盖 gateway 补的 OAuth 路径。
   `tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。
-- **下一步：Phase 7**（judge 简化 §5.1；LearningWorker P1-5；selection 简化，含 selection 动态 SQL 与 learning.py 对 expressions/jargon 表的读写），风险中。开始前先问 owner，照例先派只读分析。
+- **Phase 7 进行中**（owner 2026-11-04 确认开始）。只读清单 P7-0 已完成（`.agent/tasks/P7-0.report.md`）。主要事实：线上 16 小时 judge 41 批，33 wake / 8 observe，observe 全部是另一 bot 的 /usage 回执；
+  selector ValidationError 原因是模型把 jargon 返回成对象且引用了不存在的候选；黑话旧 failed 批次现在是 cancelled/scope_changed（迁移按实际数据保留，不改回）。
+  **owner 决定**：其他 bot 的非 directed 消息仍经 judge（写入审查文档 §5.1）。拆为：
+  - **P7-a**（已完成，待体验）：准入分层。真人普通消息与 directed 本地 wake（不调 judge），bot 消息与选择性等待下的消息仍调 judge；保留合并窗口、批次表与 `_handoff`。【行为变更】
+  - **P7-b**：judge 内部重写（内存 PendingBatch、单次 8 秒不重试、删 judge_batches/judge_attempts（导出历史到 backups）、新提示词、`record_llm_call` 用量、已曝光复用移到 `db/wakes.py`、快照 `admission` 字段）。
+    P7-0 疑点 3–10、18、19 在此设计时逐条决定。
+  - **P7-c**：LearningWorker（保留 jargon 多阶段调用与逐次记账的差异，疑点 16–17）。
+  - **P7-d**：selection 简化（一 turn 一次、turn 结束清缓存、调用后不复核）、修 ValidationError、动态 SQL 迁到各 Library、learning.py 跨拥有者 SQL 迁出。
   `tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。评估脚本（scripts/ 与 tests/evaluate_*）多处已失效（store.wake、message_deliveries、冻结 hook 编译），留给评估脚本迁移。
 - **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
   `Wakes._check_trigger_source` 读 judge_batches 的只读例外（Phase 7 judge 简化时重看）；P3-0 疑点 Q4/Q5（Phase 4）、Q6（Phase 7）、
@@ -103,3 +110,4 @@
 | P6-b delivery/hook 拆出（纯重构） | 6 | `8bd39b18` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway 1040 passed（Claude 复跑）；场景测试未改；ruff 干净；basedpyright social/ 0 errors；Codex 用 AST 比对 14 个发送方法与 8 个 hook 方法在替换后与原代码一致 | runtime.py 727→341；生产代码净增 67 行（导入与构造）。`scripts/evaluate_social_v5.py` 冻结 hook 编译依赖已移出的名字，评估脚本迁移时处理 |
 | P6-c learner/selector 去反向引用，工具一个类一个（纯重构） | 6 | `3fa0f3e7` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway 1041 passed（Claude 复跑，新增工具集合一致性测试）；场景测试未改；12 个工具 name/description/schema 改动前后导出逐字节相同；ruff 干净；basedpyright 0 errors；social/ 中 `self.runtime` 0 处 | 两个 learner 的单批次互斥改为 `peer` 互查，取代 `runtime.learning_task`；runtime 新增 `activity_action`/`expression_action`，delivery 新增 `followup_status`，工具层不再访问 store。工具文件 201→301 行（12 个类声明），其余生产代码净增 14 行 |
 | P6-d `wiring.py` 成为 gateway 唯一 social 入口【小幅装配变更】 | 6 | `7b6dff01` | 2026-11-04 healthy，Telegram channel 正常启动（social 启用时 channel 缺 runtime 会直接报错，未报），日志无异常 | tests/cli + 契约 + gateway 594 passed（Claude 在沙箱外复跑；此前 test_commands 9 failed）；社交目录 958 passed；ruff 干净；basedpyright 0 errors；gateway 中 social 内部名字 0 处 | wiring.py 69 行，gateway 净减 30 行。Codex 沙箱内另有 5 个 cli 失败（临时 git 初始化、Unix socket 权限），沙箱外全部通过。保持原状的装配疑点：文件 watcher 不刷新 social、channel 构造时用自身 social config 覆盖、热刷新 judge 配置两次 |
+| P7-a judge 准入分层【行为变更】 | 7 | `f6d0dd50` | 2026-11-04 healthy，日志无异常；待 owner 群内体验 | 社交目录 + 契约 + gateway + cli 1561 passed（Claude 复跑）；场景 22 passed；ruff 干净；basedpyright 0 errors | 生产代码 +45 行（`local_admission`、`decide_locally`、judge_facts.is_bot）。23 处语义性断言按 §5.1 新预期修改（报告逐条列出）；judge 故障场景改为先建立选择性等待。旧消息无 is_bot 键按真人处理 |
