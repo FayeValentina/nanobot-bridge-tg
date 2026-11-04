@@ -126,7 +126,7 @@ def admit_batch(self, key: str, new_seqs: Sequence[int], through_seq: int, *, ad
   2. `DROP TABLE judge_attempts`、`DROP TABLE judge_batches`。
   3. 重建 `judge_state` 为 `(scope TEXT PRIMARY KEY, assessed_through INTEGER NOT NULL DEFAULT 0)`，保留每个 scope 原有的 assessed_through。
   4. `ALTER TABLE wakes ADD COLUMN admission TEXT`。
-- 新库直接按 schema 22 建表。升级函数需要知道 social 根目录：按 schema.py 现有升级函数获取路径的方式；若现有接口拿不到路径，停下并在报告中说明，不要自行引入全局变量。
+- 新库直接按 schema 22 建表。升级函数需要 social 根目录：在 `SocialStore.__init__` 中、`initialize_social_schema(self)` 之前增加 `self.root = root`，升级函数用 `store.root / "backups"`。不要引入全局变量。
 
 ### 行为变化（本任务唯一允许的）
 - judge 调用失败（超时/异常/格式错误）不再重试、不再走 fallback 预算，直接按 wake 交接。
