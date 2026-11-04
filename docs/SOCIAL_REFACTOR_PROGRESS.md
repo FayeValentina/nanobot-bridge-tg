@@ -48,7 +48,7 @@
   Claude 的设计约定：组件接收 `config: Callable[[], TelegramSocialConfig]`、`now`、`notify` 回调和具体仓储/服务；runtime 不保留被移走方法的转发，调用方直接改用新位置（测试机械改名）。拆为：
   - **P6-a**（已完成）：`waiting.py`（SocialWaiting）、`media.py` 的 SocialMedia、`validate_context` 移入 ScopeBindings；judge/stickers 不再持 runtime，`reportPrivateUsage` 抑制全部删除。
   - **P6-b**（已完成）：`delivery.py`（全部发送路径 + send_sticker + 普通 message 记账）、`hook.py`。
-  - **P6-c**：Expression/Jargon learner、ContextSelector 去反向引用；工具一个类一个（名字/参数/语义不变，基类保留捕获 RuntimeError）。
+  - **P6-c**（已完成）：Expression/Jargon learner、ContextSelector 去反向引用；工具一个类一个（名字/参数/语义不变，基类保留捕获 RuntimeError）。
   - **P6-d**：`wiring.py`（gateway 唯一入口、热重载复用、main_busy 回调、disabled 时的处理待定）；修 `tests/cli/test_commands.py`（替身需过 Codex OAuth 类型检查，不放宽生产检查）。
   P6-0 疑点中暂不处理、已记录：recover 标记提前写入、close 只取消不等待、set_wake 普通分支不 notify、文件 watcher 不刷新 social、channel 构造时用自身 social config 覆盖 gateway 补的 OAuth 路径。
   `tests/cli/test_commands.py` 9 个既有失败计划在 Phase 6 修；`tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。
@@ -99,3 +99,4 @@
 | 窗口上限放宽（Claude 小修） | 追加 | `90abae4a` | 2026-11-04 healthy，日志无异常；配置 coalesce 20 / maxCoalesce 20 / quiet 20 / unfinished 20 / max 45 | 社交目录 + config + 契约 1087 passed；ruff 干净；新配置经 `TelegramSocialConfig` 校验通过 | 只改两个 `le=` 上限 |
 | P6-a waiting/media 拆出，judge/stickers 去反向引用（纯重构） | 6 | `8d50aa77` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway 1040 passed（Claude 复跑）；场景测试未改；ruff 全仓干净；basedpyright social/ 0 errors；judge_runtime/stickers/jargon 中 `self.runtime`、`reportPrivateUsage` 0 处 | runtime.py 960→727；生产代码净增约 59 行（构造与签名）。**Claude 修正简报设计缺陷**：`save_preview` 放在 SocialMedia 会跨类访问 cache 私有方法（Codex 如实上报未绕过），改为 `SocialMediaCache.save_preview(scope, raw, limit)`。删除死方法 `JudgeCoordinator.enqueue` |
 | P6-b delivery/hook 拆出（纯重构） | 6 | `8bd39b18` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway 1040 passed（Claude 复跑）；场景测试未改；ruff 干净；basedpyright social/ 0 errors；Codex 用 AST 比对 14 个发送方法与 8 个 hook 方法在替换后与原代码一致 | runtime.py 727→341；生产代码净增 67 行（导入与构造）。`scripts/evaluate_social_v5.py` 冻结 hook 编译依赖已移出的名字，评估脚本迁移时处理 |
+| P6-c learner/selector 去反向引用，工具一个类一个（纯重构） | 6 | `3fa0f3e7` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway 1041 passed（Claude 复跑，新增工具集合一致性测试）；场景测试未改；12 个工具 name/description/schema 改动前后导出逐字节相同；ruff 干净；basedpyright 0 errors；social/ 中 `self.runtime` 0 处 | 两个 learner 的单批次互斥改为 `peer` 互查，取代 `runtime.learning_task`；runtime 新增 `activity_action`/`expression_action`，delivery 新增 `followup_status`，工具层不再访问 store。工具文件 201→301 行（12 个类声明），其余生产代码净增 14 行 |
