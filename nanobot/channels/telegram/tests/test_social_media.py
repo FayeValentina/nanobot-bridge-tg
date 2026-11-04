@@ -89,7 +89,7 @@ async def test_observation_saves_references_without_download_or_model(social, ki
     update = update_with_media(kind)
     await tg._observe_social(update)
     tg._app.bot.get_file.assert_not_awaited()
-    assert social.bus.inbound.empty()
+    assert social.bus.inbound.qsize() == 1
     ref = social.store.messages.media_for_message(A.session_key, 1)[0]
     assert (ref.kind, ref.file_id, ref.unique_id) == (kind, "download-file", "unique")
     view = json.loads(social.read_messages(context(social)))
@@ -202,7 +202,7 @@ async def test_reply_identifies_member_and_can_view_old_quoted_photo(social):
     reply = update_with_media(seq=99).to_dict()["message"]
     reply["from"] = {"id": 456, "is_bot": False, "first_name": "Other"}
     await tg._observe_social(update_with_media(reply=reply))
-    assert social.bus.inbound.empty()  # Member-to-member replies are not direct addresses.
+    assert social.bus.inbound.qsize() == 1  # Ordinary human replies use local admission.
     ctx = context(social)
     view = json.loads(social.read_messages(ctx))
     quoted = view["messages"][0]["reply"]

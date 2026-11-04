@@ -161,7 +161,7 @@ async def test_plain_messages_are_observed_without_llm_or_media_download(tmp_pat
     with pytest.raises(ApplicationHandlerStop):
         await tg._on_social_update(telegram_update(text="ordinary group conversation"), None)
     assert social.store.scopes.state(A.session_key)["next_seq"] == 2
-    assert social.bus.inbound.empty()
+    assert social.bus.inbound.qsize() == 1
     loop.provider.chat_stream_with_retry.assert_not_awaited()
     tg._download_message_media.assert_not_awaited()
     assert tg.config.allow_from == ["99999"]
@@ -803,15 +803,13 @@ async def test_group_wide_binding_observes_and_replies_in_each_actual_topic(tmp_
     tg._handle_message = AsyncMock(side_effect=AssertionError("must use social routing"))
     with pytest.raises(ApplicationHandlerStop):
         await tg._on_social_update(telegram_update(thread=thread, text="ordinary conversation"), None)
-    assert social.bus.inbound.empty()
+    assert social.bus.inbound.qsize() == 1
     loop = agent(tmp_path, social, [
         LLMResponse(content=None, tool_calls=[ToolCallRequest(
             id="send", name="social_send", arguments={"text": "received"},
         )]),
         LLMResponse(content="internal"),
     ])
-    with pytest.raises(ApplicationHandlerStop):
-        await tg._on_social_update(telegram_update(thread=thread, seq=2, text="@bot hello", reply=True), None)
     inbound = social.bus.inbound.get_nowait()
     assert inbound.session_key == target.session_key
     await loop._dispatch(inbound)

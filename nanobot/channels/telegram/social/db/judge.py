@@ -133,6 +133,27 @@ class Judge:
                                 (self.now() + delay, error_code, batch))
         return self.record(batch)
 
+    def decide_locally(self, batch: str, snapshot: JudgeSnapshot, reason: str) -> JudgeRecord:
+        """Record a host wake decision for a batch the intermediary need not assess."""
+        decision = JudgeDecision(decision="wake", through_seq=snapshot.through_seq,
+                                 source_seqs=(snapshot.new_seqs[-1],), fulfills_intent=False, reason=reason)
+        decision.validate_for(snapshot)
+        with transaction(self.db):
+            record = self.record(batch)
+            if not self._input_matches(batch, snapshot):
+                raise PermissionError("judge batch input changed")
+            if record.status != "pending":
+                return record
+            if not self.current(snapshot) or self.through(snapshot.scope) != snapshot.after_seq:
+                status = "expired" if self.now() >= snapshot.expires else "cancelled"
+                self.db.execute("UPDATE judge_batches SET status=?,error_code='stale_input' WHERE id=?", (status, batch))
+            else:
+                self.db.execute("UPDATE judge_batches SET status='decided',decision=?,error_code=NULL WHERE id=?",
+                                (decision.model_dump_json(), batch))
+                self.db.execute("INSERT INTO judge_state(scope,assessed_through) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET assessed_through=excluded.assessed_through", (snapshot.scope, snapshot.through_seq))
+                self._handoff(batch, snapshot, decision)
+        return self.record(batch)
+
     def fallback(self, batch: str, snapshot: JudgeSnapshot, *, limit: int) -> JudgeRecord:
         """Persist a single handoff intent; V3-A never creates or executes a main wake."""
         with transaction(self.db):

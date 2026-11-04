@@ -182,6 +182,7 @@ class JudgeCoordinator:
         return JudgeMessage(seq=int(row["seq"]), message_id=int(row["message_id"]), sender_id=str(row["sender_id"]),
                             name=str(row["display_name"]), timestamp=float(row["at"]), text=text,
                             is_self=bool(row["is_self"]), mentions_bot=bool(facts.get("directed")), reply=reply,
+                            is_bot=facts.get("is_bot", False),
                             media=tuple(json.loads(row["media"])), revision=int(row["revision"]))
 
     def _restore(self, batch: str) -> JudgeSnapshot:
@@ -281,6 +282,21 @@ class JudgeCoordinator:
             else:
                 raise ValueError("judge context budget cannot hold required facts")
 
+    def local_admission(self, snapshot: JudgeSnapshot) -> str | None:
+        """B layer: platform facts that admit a batch without the intermediary.
+
+        Returns "directed" or "conversation" to wake directly; None asks the judge (C layer).
+        """
+        if snapshot.opportunity is not None or not snapshot.new_seqs:
+            return None
+        new = [message for message in snapshot.messages if message.seq in snapshot.new_seqs]
+        if any(message.mentions_bot for message in new):
+            return "directed"
+        conditions, dynamic = self.waiting.conditions(snapshot.scope)
+        if dynamic and bool(conditions.keywords or conditions.senders or conditions.on_question):
+            return None
+        return None if all(message.is_bot for message in new) else "conversation"
+
     async def start_due(self) -> None:
         now = self.now()
         rows = self.store.judge.due_scopes(now)
@@ -311,7 +327,14 @@ class JudgeCoordinator:
                 batch = result.id
                 with transaction(self.store.db):
                     self.store.judge.attach_batch(batch, key)
-            result = await self.judge.assess(snapshot)
+            reason = self.local_admission(snapshot)
+            if reason is not None:
+                result = self.store.judge.decide_locally(batch, snapshot, {
+                    "directed": "host: directed at the bot",
+                    "conversation": "host: fresh conversation without a selective wait",
+                }[reason])
+            else:
+                result = await self.judge.assess(snapshot)
         except asyncio.CancelledError:
             raise
         except sqlite3.Error:

@@ -260,7 +260,7 @@ async def test_selective_wait_ttl_limits_continuation_even_after_queueing(dialog
         with pytest.raises(PermissionError):
             admit(dialogue, msg)
     else:
-        assert dialogue.bus.inbound.empty()
+        assert dialogue.bus.inbound.qsize() == 1  # Expired conditions restore broad admission.
     assert dialogue.store.wakes.dialogue_status(A.session_key)["wait"] is None
 
 
@@ -283,7 +283,7 @@ async def test_removed_source_cannot_create_a_contextless_reply(dialogue, queued
         assert dialogue.bus.inbound.empty()
 
 
-async def test_judge_catches_plain_answer_without_idle_model_calls(dialogue):
+async def test_local_admission_catches_plain_answer_without_idle_model_calls(dialogue):
     provider = decide(dialogue)
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
@@ -298,14 +298,16 @@ async def test_judge_catches_plain_answer_without_idle_model_calls(dialogue):
     await dialogue.run_due()
     msg, view = take(dialogue)
     assert view["wake_reason"] == "judge"
-    snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+    provider.chat.assert_not_awaited()
+    batch = dialogue.store.db.execute("SELECT id FROM judge_batches ORDER BY through_seq DESC LIMIT 1").fetchone()[0]
+    snapshot = dialogue.judging._restore(batch).model_dump(mode="json")
     assert any(message["is_self"] and message["text"] == "你什么时候出发？" for message in snapshot["messages"])
     ctx2 = admit(dialogue, msg)
     finish(dialogue, ctx2)
     clock(dialogue).advance(600)
     await dialogue.run_due()
     assert dialogue.bus.inbound.empty()
-    provider.chat.assert_awaited_once()
+    provider.chat.assert_not_awaited()
 
 
 async def test_attention_preserves_selective_conditions_and_topic_scope(dialogue):
@@ -318,7 +320,8 @@ async def test_attention_preserves_selective_conditions_and_topic_scope(dialogue
     await dialogue.observe(observed(dialogue, 3, scope=B, text="下午三点"), directed=False)
     clock(dialogue).advance(10)
     await dialogue.run_due()
-    assert dialogue.bus.inbound.empty()
+    assert dialogue.bus.inbound.qsize() == 1
+    assert dialogue.bus.inbound.get_nowait().session_key == B.session_key
 
 
 async def test_reply_arriving_during_platform_send_is_not_lost(dialogue):
@@ -335,7 +338,9 @@ async def test_reply_arriving_during_platform_send_is_not_lost(dialogue):
     _, view = take(dialogue)
     assert view["wake_reason"] == "judge"
     assert any(m["text"] == "下午三点" for m in view["messages"])
-    snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+    provider.chat.assert_not_awaited()
+    batch = dialogue.store.db.execute("SELECT id FROM judge_batches ORDER BY through_seq DESC LIMIT 1").fetchone()[0]
+    snapshot = dialogue.judging._restore(batch).model_dump(mode="json")
     assert any(message["is_self"] and message["text"] == "你什么时候出发？" for message in snapshot["messages"])
 
 
@@ -345,13 +350,13 @@ async def test_judge_observes_unrelated_participant_then_accepts_reply(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
     await dialogue.delivery.send(ctx, "你什么时候出发？", None)
     finish(dialogue, ctx)
-    await dialogue.observe(replace(observed(dialogue, 2, text="跟别人讨论"), sender_id="456"), directed=False)
+    await dialogue.observe(replace(observed(dialogue, 2, text="跟别人讨论", is_bot=True), sender_id="456"), directed=False)
     clock(dialogue).advance(35)
     await dialogue.run_due()
     assert dialogue.bus.inbound.empty()
     provider.chat.assert_awaited_once()
     provider = decide(dialogue)
-    await dialogue.observe(replace(observed(dialogue, 3, text="下午三点", reply_to=800), sender_id="456"), directed=False)
+    await dialogue.observe(replace(observed(dialogue, 3, text="下午三点", reply_to=800, is_bot=True), sender_id="456"), directed=False)
     clock(dialogue).advance(4)
     await dialogue.run_due()
     assert dialogue.bus.inbound.qsize() == 1
@@ -378,7 +383,9 @@ async def test_confirmed_context_survives_restart_without_idle_model_calls(dialo
         now.advance(4)
         await restored.run_due()
         assert bus.inbound.qsize() == 1
-        snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+        provider.chat.assert_not_awaited()
+        batch = restored.store.db.execute("SELECT id FROM judge_batches ORDER BY through_seq DESC LIMIT 1").fetchone()[0]
+        snapshot = restored.judging._restore(batch).model_dump(mode="json")
         assert any(message["is_self"] and message["text"] == "什么时候出发？" for message in snapshot["messages"])
     finally:
         restored.close()

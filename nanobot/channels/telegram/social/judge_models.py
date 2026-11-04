@@ -31,6 +31,7 @@ class JudgeMessage(JudgeDTO):
     timestamp: float = Field(ge=0, allow_inf_nan=False)
     text: str = Field(max_length=4000)
     is_self: bool = False
+    is_bot: bool = False
     mentions_bot: bool = False
     reply: JudgeReply | None = None
     media: tuple[str, ...] = Field(default=(), max_length=8)

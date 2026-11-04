@@ -349,7 +349,9 @@ async def test_main_send_registers_local_wait_then_short_reply_reaches_v3(tmp_pa
     if task is not None:
         await task
     await social.run_due()
-    prompt = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
+    provider.chat.assert_not_awaited()
+    batch = social.store.db.execute("SELECT id FROM judge_batches ORDER BY through_seq DESC LIMIT 1").fetchone()[0]
+    prompt = social.judging._restore(batch).model_dump(mode="json")
     assert prompt["intent"]["purpose"] == "messages"
     assert prompt["followups"][0]["id"] == item["id"]
     assert any(message["is_self"] and "什么时候" in message["text"] for message in prompt["messages"])

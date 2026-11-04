@@ -60,7 +60,7 @@ class Messages:
     def set_judge_facts(self, key: str, seq: int, msg: ObservedMessage, judge_event: bool, directed: bool) -> None:
         self.db.execute("UPDATE messages SET judge_facts=? WHERE scope=? AND seq=?",
                         (json.dumps({"eligible": judge_event, "directed": directed, "bot_username": msg.bot_username,
-                                     "received_at": self.now()}), key, seq))
+                                     "received_at": self.now(), "is_bot": msg.is_bot}), key, seq))
 
     def set_revision(self, key: str, message_id: int, revision: int) -> None:
         self.db.execute("UPDATE messages SET revision=? WHERE scope=? AND message_id=?", (revision, key, message_id))

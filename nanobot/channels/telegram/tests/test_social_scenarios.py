@@ -77,12 +77,17 @@ async def test_send_rechecks_mid_turn_messages_and_replies_once(make_harness):
                          ids=["timeout", "exception"])
 async def test_judge_failure_falls_back_to_main_model(make_harness, error):
     chat = make_harness()
+    chat.script_model(chat.tool("social_set_wake", senders=["456"], on_messages=False))
+    await chat.member_says("等小王", directed=True)
+    await chat.tick()
+    calls = chat.model_calls()
+    wakes = len(chat.wakes())
     chat.fail_judge(error)
     await chat.member_says("普通新消息")
     await chat.tick()
     assert chat.judge_calls() == 1
-    assert len(chat.wakes()) == 1
-    assert chat.model_calls() == 1
+    assert len(chat.wakes()) == wakes + 1
+    assert chat.model_calls() == calls + 1
     assert chat.model_saw("普通新消息")
 
 
@@ -163,7 +168,7 @@ async def test_send_cooldown_rejects_a_second_message(make_harness):
     assert [item["text"] for item in chat.sent()] == ["第一句"]
 
 
-async def test_sleeping_still_sends_new_messages_through_judge(make_harness):
+async def test_directed_wakes_sleeping_bot_without_judge(make_harness):
     chat = make_harness()
     chat.script_model(chat.tool("social_wait", sleeping=True, infinite=True))
     await chat.member_says("先休息吧")
@@ -173,7 +178,7 @@ async def test_sleeping_still_sends_new_messages_through_judge(make_harness):
     judged = chat.judge_calls()
     await chat.member_says("@bot 醒醒", directed=True)
     await chat.tick()
-    assert chat.judge_calls() == judged + 1
+    assert chat.judge_calls() == judged
     assert chat.model_calls() > calls
     assert chat.model_saw("@bot 醒醒")
 

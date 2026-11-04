@@ -155,7 +155,7 @@ async def test_directed_trigger_upgrades_keyword_without_another_job(social):
     assert len(rows) == 1 and rows[0]["reason"] == "judge" and rows[0]["trigger_seq"] == 2
 
 
-async def test_plain_messages_and_other_bots_never_create_idle_model_loops(social):
+async def test_mixed_human_bot_batch_wakes_once_without_idle_model_loops(social):
     from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
 
     provider = decide(social, "observe")
@@ -166,9 +166,9 @@ async def test_plain_messages_and_other_bots_never_create_idle_model_loops(socia
     for _ in range(3):
         clock(social).advance(60)
         await social.run_due()
-    assert social.bus.inbound.empty()
-    assert social.store.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 0
-    provider.chat.assert_awaited_once()
+    assert social.bus.inbound.qsize() == 1
+    assert social.store.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
+    provider.chat.assert_not_awaited()
 
 
 async def test_wait_tool_ends_agent_turn_without_an_extra_model_request(tmp_path, social):
@@ -190,9 +190,10 @@ async def test_wait_tool_ends_agent_turn_without_an_extra_model_request(tmp_path
     assert social.bus.inbound.qsize() == 1
 
 
-async def test_sleep_ignores_ambient_but_direct_address_interrupts(social):
+async def test_sleep_with_selective_wait_ignores_ambient_but_direct_address_interrupts(social):
     social.config.scopes[0].wake_on_messages = True
     ctx = context(social)
+    social.waiting.set_wake(ctx, keywords=[], senders=["456"], on_messages=False)
     social.waiting.wait(ctx, 300, sleeping=True)
     finish(social, ctx)
     await social.observe(observed(social), directed=False)
@@ -284,7 +285,8 @@ async def test_model_conditions_are_scoped_and_operator_can_forbid_them(social):
     await social.observe(observed(social, 2, text="python"), directed=False)
     clock(social).advance(11)
     await social.run_due()
-    assert social.bus.inbound.qsize() == 1
+    assert social.bus.inbound.qsize() == 2
+    assert {social.bus.inbound.get_nowait().session_key for _ in range(2)} == {A.session_key, B.session_key}
     social.config.scopes[1].allow_ambient_wake = False
     other = context(social, scope=B, turn="other")
     with pytest.raises(PermissionError):
@@ -340,7 +342,7 @@ async def test_busy_trigger_read_by_the_current_model_does_not_run_another_turn(
     assert social.store.db.execute("SELECT COUNT(*) FROM judge_batches WHERE handoff_job IS NOT NULL").fetchone()[0] == 2
 
 
-async def test_sleep_discards_an_unseen_ambient_trigger_but_preserves_direct_address(social):
+async def test_sleep_admits_unseen_human_conversation_without_selective_wait(social):
     social.config.scopes[0].wake_on_messages = True
     ctx = context(social)
     await social.observe(observed(social), directed=False)
@@ -348,7 +350,7 @@ async def test_sleep_discards_an_unseen_ambient_trigger_but_preserves_direct_add
     finish(social, ctx)
     clock(social).advance(20)
     await social.run_due()
-    assert social.bus.inbound.empty()
+    assert social.bus.inbound.qsize() == 1
 
 
 async def test_cooldown_and_hourly_limit_delay_a_live_address(social):
@@ -551,11 +553,14 @@ async def test_repeated_send_returns_old_receipt_before_checking_new_messages(so
 
 @pytest.mark.parametrize("finished", [False, True], ids=["running-turn", "completed-turn"])
 async def test_late_judge_reuses_turn_that_already_saw_and_read_new_messages(social, finished):
+    from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
+
+    provider = decide(social)
     social.store.observe(observed(social, text="message A"), 500)
     ctx = context(social)
     social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
-    await social.observe(observed(social, 2, text="supplement B"), directed=True)
-    await social.observe(observed(social, 3, text="supplement C"), directed=True)
+    await social.observe(observed(social, 2, text="supplement B", is_bot=True), directed=False)
+    await social.observe(observed(social, 3, text="supplement C", is_bot=True), directed=False)
     social.set_sender(AsyncMock(return_value=501))
     with pytest.raises(PermissionError) as rejected:
         await social.delivery.send(ctx, "reply A", None)
@@ -567,6 +572,7 @@ async def test_late_judge_reuses_turn_that_already_saw_and_read_new_messages(soc
     clock(social).advance(2)
     await social.run_due()
     batch = social.store.db.execute("SELECT * FROM judge_batches").fetchone()
+    provider.chat.assert_awaited_once()
     assert json.loads(batch["decision"])["decision"] == "wake"
     assert batch["handoff_job"] == ctx.metadata["_social_job"]
     assert social.store.db.execute("SELECT COUNT(*) FROM wakes").fetchone()[0] == 1
