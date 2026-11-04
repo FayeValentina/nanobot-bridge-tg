@@ -110,7 +110,7 @@ class SocialStateTool(_SocialTool):
 
 class SocialSendTool(_SocialTool):
     tool_name = "social_send"
-    tool_description = "Publish in this group/topic. Pass exactly one of text (one message), sticker_id (one collected static sticker) or parts (the complete ordered list of 2–3 messages, including the first; each a string, {text, reply_to} or {sticker_id, reply_to}). reply_to quotes an observed message. Pass followup_id only for a proactive follow-up on a saved matter. Each message gets its own receipt."
+    tool_description = "Publish in this group/topic. Pass exactly one of text (one message), sticker_id (one collected static sticker) or parts (the complete ordered list of 2–3 messages, including the first; each a string, {text, reply_to} or {sticker_id, reply_to}). Omit reply_to unless the target would otherwise be unclear. Pass followup_id only for a proactive follow-up on a saved matter."
 
     @property
     def parameters(self) -> dict[str, Any]:
