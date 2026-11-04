@@ -475,6 +475,109 @@ async def test_same_turn_repeated_send_returns_the_same_receipt(social):
         await social.send(ctx, "another message", None)
 
 
+@pytest.mark.parametrize("parts", [False, True], ids=["text", "parts"])
+async def test_send_collects_new_messages_once_and_exposure_admits_their_wake(social, parts):
+    social.config.send_cooldown_seconds = 0
+    social.store.observe(observed(social, text="message A"), 500)
+    ctx = context(social)
+    social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
+    await social.observe(observed(social, 2, text="supplement B"), directed=True)
+    await social.observe(observed(social, 3, text="supplement C"), directed=True)
+    clock(social).advance(2)
+    await social.run_due()
+    scheduled = social.store.db.execute("SELECT * FROM wakes WHERE status='scheduled'").fetchone()
+    assert scheduled["trigger_seq"] == 3
+    social.set_sender(AsyncMock(return_value=501))
+
+    with pytest.raises(PermissionError) as rejected:
+        if parts:
+            await social.send_parts(ctx, ["reply A", "reply B/C"], None)
+        else:
+            await social.send(ctx, "reply A/B/C", None)
+    notice = str(rejected.value)
+    assert notice.startswith("NOT sent: new messages arrived")
+    assert "supplement B" in notice and "supplement C" in notice
+    assert social.store.deliveries.turn_actions(A.session_key, ctx.turn_id) == []
+    assert social.store.views.shown_sequences(A.session_key, ctx.turn_id) == {1}
+    assert social.store.wakes.get(scheduled["id"])["status"] == "scheduled"
+
+    admitted = social.store.note_seen(A.session_key, ctx.turn_id, notice)
+    assert scheduled["id"] in admitted
+    wake = social.store.wakes.get(scheduled["id"])
+    assert wake["status"] == "running" and wake["turn_id"] == ctx.turn_id
+    assert social.store.views.shown_sequences(A.session_key, ctx.turn_id) == {1, 2, 3}
+    # A second new arrival cannot bounce the same turn's revised send again.
+    social.store.observe(observed(social, 4, text="supplement D"), 500)
+    if parts:
+        result = await social.send_parts(ctx, ["reply A", "reply B/C"], None)
+        assert [receipt["status"] for receipt in result] == ["queued", "queued"]
+    else:
+        result = await social.send(ctx, "reply A/B/C", None)
+        assert result["status"] == "sent"
+    finish(social, ctx)
+    assert social.store.wakes.get(scheduled["id"])["status"] == "completed"
+    clock(social).advance(20)
+    await social.run_due()
+    assert social.bus.inbound.empty()
+
+
+async def test_new_self_message_does_not_block_send(social):
+    social.store.observe(observed(social, text="message A"), 500)
+    ctx = context(social)
+    social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
+    social.store.observe(replace(observed(social, 2, text="own message"), is_self=True), 500)
+    sender = AsyncMock(return_value=501)
+    social.set_sender(sender)
+    result = await social.send(ctx, "reply A", None)
+    assert result["status"] == "sent"
+    sender.assert_awaited_once()
+
+
+async def test_repeated_send_returns_old_receipt_before_checking_new_messages(social):
+    social.store.observe(observed(social, text="message A"), 500)
+    ctx = context(social)
+    social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
+    sender = AsyncMock(return_value=501)
+    social.set_sender(sender)
+    first = await social.send(ctx, "reply A", None)
+    social.store.observe(observed(social, 2, text="supplement B"), 500)
+    repeated = await social.send(ctx, "reply A", None)
+    assert repeated["action_id"] == first["action_id"]
+    assert repeated["status"] == "sent" and repeated["message_id"] == first["message_id"]
+    sender.assert_awaited_once()
+    with pytest.raises(PermissionError, match="^NOT sent: new messages arrived"):
+        await social.send(ctx, "different reply", None)
+
+
+@pytest.mark.parametrize("finished", [False, True], ids=["running-turn", "completed-turn"])
+async def test_late_judge_reuses_turn_that_already_saw_and_read_new_messages(social, finished):
+    social.store.observe(observed(social, text="message A"), 500)
+    ctx = context(social)
+    social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
+    await social.observe(observed(social, 2, text="supplement B"), directed=True)
+    await social.observe(observed(social, 3, text="supplement C"), directed=True)
+    social.set_sender(AsyncMock(return_value=501))
+    with pytest.raises(PermissionError) as rejected:
+        await social.send(ctx, "reply A", None)
+    social.store.note_seen(A.session_key, ctx.turn_id, str(rejected.value))
+    assert social.mark_read(ctx, 3) == 3
+    assert (await social.send(ctx, "reply A/B/C", None))["status"] == "sent"
+    if finished:
+        finish(social, ctx)
+    clock(social).advance(2)
+    await social.run_due()
+    batch = social.store.db.execute("SELECT * FROM judge_batches").fetchone()
+    assert json.loads(batch["decision"])["decision"] == "wake"
+    assert batch["handoff_job"] == ctx.metadata["_social_job"]
+    assert social.store.db.execute("SELECT COUNT(*) FROM wakes").fetchone()[0] == 1
+    assert social.bus.inbound.empty()
+    if not finished:
+        finish(social, ctx)
+    clock(social).advance(20)
+    await social.run_due()
+    assert social.bus.inbound.empty()
+
+
 async def test_platform_429_retry_uses_same_action_without_an_agent_or_new_model_request(social):
     tg = channel(social)
     tg._app.bot.send_message = AsyncMock(side_effect=[RetryAfter(5), SimpleNamespace(message_id=501)])

@@ -1,5 +1,7 @@
 """Black-box refactor contracts: change the harness, never storage-aware scenarios."""
 
+import asyncio
+
 import pytest
 
 from nanobot.channels.telegram.tests.social_harness import SocialHarness
@@ -34,6 +36,41 @@ async def test_ordinary_chat_and_unmentioned_followup_reach_main_model(make_harn
     assert chat.model_calls() > calls
     assert chat.model_saw("你想喝哪种？")
     assert len(chat.wakes()) == 2
+
+
+async def test_send_rechecks_mid_turn_messages_and_replies_once(make_harness):
+    chat = make_harness()
+    chat.script_model(chat.tool("social_sticker", action="import_set", set_name="Scenario_Pack"),
+                      chat.tool("social_sticker", action="view", set_name="Scenario_Pack"),
+                      chat.tool("social_send", text="只回复 A"),
+                      chat.tool("social_sticker", action="view", set_name="Scenario_Pack"),
+                      chat.tool("social_send", text="合并回复 A、B、C"))
+    await chat.member_says("消息 A")
+    running = asyncio.create_task(chat.tick())
+    async with asyncio.timeout(5):
+        # Existing image-view tooling yields while the frozen A-only turn runs.
+        while chat.model_calls() < 2 and not running.done():
+            await asyncio.sleep(0)
+        assert chat.model_calls() == 2
+        assert chat.model_saw("消息 A")
+        assert not chat.model_saw("连续补充 B")
+        await chat.member_says("连续补充 B")
+        await chat.member_says("连续补充 C")
+        await chat.queue_due()
+        while chat.model_calls() < 4 and not running.done():
+            await asyncio.sleep(0)
+        error = chat.last_tool_result("social_send")["error"]
+        assert error.startswith("NOT sent: new messages arrived")
+        assert "连续补充 B" in error and "连续补充 C" in error
+        await running
+    assert chat.last_tool_result("social_send")["status"] == "sent"
+    assert [item["text"] for item in chat.sent()] == ["合并回复 A、B、C"]
+    assert chat.model_saw("连续补充 B") and chat.model_saw("连续补充 C")
+    calls = chat.model_calls()
+    chat.advance(20)
+    await chat.tick()
+    assert chat.model_calls() == calls
+    assert len(chat.wakes()) == 1
 
 
 @pytest.mark.parametrize("error", [TimeoutError("judge timeout"), RuntimeError("judge failed")],

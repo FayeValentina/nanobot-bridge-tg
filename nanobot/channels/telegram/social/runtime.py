@@ -69,6 +69,8 @@ SocialSender = Callable[[ConversationScope, str, int | None], Awaitable[int]]
 SocialMediaLoader = Callable[[MediaReference, int], Awaitable[bytes]]
 SocialStickerSetLoader = Callable[[str], Awaitable[StickerSet]]
 
+NEW_MESSAGES_NOTICE = "NOT sent: new messages arrived after the snapshot you answered. Read them below and reply once to everything together (one send, text or parts); do not answer the earlier messages separately. If nothing changes your reply, send it again."
+
 
 def encode_view(view: Snapshot) -> str:
     return json.dumps(view, ensure_ascii=False, separators=(",", ":"))
@@ -102,6 +104,7 @@ class TelegramSocialRuntime:
         self.stickers = SocialStickers(self)
         self._media_lock = asyncio.Lock()
         self._send_locks: dict[str, asyncio.Lock] = {}
+        self._send_rechecked: dict[str, str] = {}
         self._closed = False
         self._recovered = False
         self._epoch = uuid4().hex
@@ -569,10 +572,31 @@ class TelegramSocialRuntime:
 
     def read_messages(self, ctx: RequestContext) -> str:
         scope = self.validate_context(ctx)
+        return self.read_messages_for(scope, ctx.turn_id)
+
+    def read_messages_for(self, scope: ConversationScope, turn: str | None) -> str:
         return encode_view(self.store.view(
             scope.session_key, count=self.config.snapshot_messages,
-            chars=self.config.snapshot_chars, turn_id=ctx.turn_id,
+            chars=self.config.snapshot_chars, turn_id=turn,
         ))
+
+    def _collect_new_messages(self, scope: ConversationScope, turn: str | None) -> None:
+        """Before a new send, show member messages that arrived after this turn's latest exposed snapshot.
+
+        Runs at most once per turn, so a busy group cannot bounce sends forever."""
+        key = scope.session_key
+        if turn is None:
+            return
+        if self._send_rechecked.get(key) == turn:
+            return
+        shown = self.store.views.shown_sequences(key, turn)
+        if not shown:
+            return
+        fresh = [row for row in self.store.messages.after(key, max(shown), self.config.snapshot_messages) if not row["is_self"]]
+        if not fresh:
+            return
+        self._send_rechecked[key] = turn
+        raise PermissionError(NEW_MESSAGES_NOTICE + "\n" + self.read_messages_for(scope, turn))
 
     def mark_read(self, ctx: RequestContext, through: int) -> int:
         scope = self.validate_context(ctx)
@@ -629,6 +653,7 @@ class TelegramSocialRuntime:
             previous_action = self.store.deliveries.latest_content(scope.session_key, version, ctx.turn_id, "sticker" if sticker else "text", text)
             if previous_action is not None:
                 return self._action_result(previous_action)
+            self._collect_new_messages(scope, ctx.turn_id)
             self._check_send_allowed(scope, ctx.turn_id, version, [text], 1)
             action = self.store.reserve_send(scope.session_key, version, text,
                                              kind="sticker" if sticker else "text", turn=ctx.turn_id, sticker=sticker, followup_id=followup_id)
@@ -677,6 +702,7 @@ class TelegramSocialRuntime:
                 rows = self.store.deliveries.group_parts(group[0])
                 if [str(row["content"]) for row in rows] == texts and rows[0]["reply_to"] == reply_to:
                     return [self._action_result(row) for row in rows]
+            self._collect_new_messages(scope, ctx.turn_id)
             self._check_send_allowed(scope, ctx.turn_id, version, texts, len(texts))
             rows = self.store.enqueue_parts(scope.session_key, version, ctx.turn_id, texts,
                                             reply_to, followup_id=followup_id)
