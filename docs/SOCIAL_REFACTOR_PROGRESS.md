@@ -5,7 +5,7 @@
 
 ## 交接：当前状态与下一步（新对话从这里开始读）
 
-**最后更新：2026-11-05，线上版本 `448f2eca`（P8-b + 引用修正，**Phase 8 完成**），social schema 22。** owner 已体验 Phase 5、B1、P7-a、B2-a，反馈正常；P8-a/P8-b 待 owner 群内体验（P8-a 后 owner 反馈回复偏慢，合并窗口已改回 10 秒）。
+**最后更新：2026-11-05，线上版本 `95dab48b`（P9-c；之后 P9-d `2ed13143` 只改评估脚本，无需部署），social schema 22。**Phase 0–9 全部完成。** owner 已体验 Phase 5、B1、P7-a、B2-a；P8/P9 的行为变更待 owner 继续体验反馈。
 
 - **已完成**：Phase 0、0.5、1、2、3，以及追加项 A1。测试 982 个（社交目录 + 契约 + gateway），场景测试 21 个，全部通过，零 xfail。
 - **Phase 3 结果**（P3-0 只读清单 + P3-a～P3-d，明细见下表）：`social/db/` 有 connection、schema 和 8 个仓储
@@ -67,12 +67,16 @@
   - **P8-a**（已完成，待 owner 群内体验）【行为变更】：protocol 由 Claude 重写并外置为 `templates/telegram/social_protocol.md`（15,237→8,869 字符，-41.8%），按 P7 后的准入机制更新；每次迭代注入的五段中文指导（facts_note、expression_guidance、pending_note、memory note、近期用语 note）并入 protocol 后删除；发送后不再要求每次显式调 social_wait（运行时本来会自动注册短等）。角色口头禅改为配置 `learning.catchphrases`（线上已填原四词，备份 `config.json.before-catchphrases-20261104`），代码与学习模板中不再有角色字面量。
   - **P8-b**（已完成，待 owner 群内体验）【行为变更】：工具 12→9（§5.3 表格实际是 9 个）：`social_send` 三选一 text/sticker_id/parts，parts 可混合贴纸与文字（`SendPart`；入队行写 kind/media_ref，无 schema 变更）；`social_wait` 吸收 set_wake 为 `until_condition{members,topics,questions,one_shot,ttl_seconds}`；`social_state` get/read/set_proactive（暂停主动联系不再受 allow_ambient_wake 限制）；删 `social_mark_read`；`social_get_media`→`social_media`；`social_sticker` 去掉 send。9 个描述均 ≤400 字符（Claude 撰写）；protocol 同步新名字并去掉写死的 `seconds=12`（9,057 字符，-40.6%）。get_state 只剩 14 个字段。runtime.py 336 行。
 - **P9-T0 只读诊断（已完成，`.agent/tasks/P9-T0.report.md`）**：owner 发现 turn 内每次迭代输入涨约 6k token。根因已确认：social hook 把 live memory 块注入最新 user/tool 消息，runner 在 after_iteration 恢复原文之前已把请求深拷贝进 accepted/H 前缀（runner.py:442/462/580、context_governance.py:166–181），所以第 n 次迭代的请求带 n 份块（线上每份约 5.6k token）；会话文件干净是因为只恢复了原始 transcript。块内最大项是无条件注入的 5 条完整活动笔记（约 5.5k cl100k token，activity.py:35 `SELECT *`）。首轮约 35.7k 中有约 11.8k 未在复现中归因（线上 workspace 的 bootstrap/长期记忆/skills 未提供）。修复方针待 owner 确定，与 Phase 9 一起实施。
-- **Phase 9 进行中**（owner 2026-11-05 确认开始）。owner 定的 token 方针：T1 live memory 每 turn 只注入一次（不补发更新）；T2 普通 turn 只注入活动索引、activity turn 注入当前活动完整记录；T3 首轮固定开销在 P9-0 中闭环后再决定精简项（不删历史、不收缩工具权限）；T4 去掉工具 schema 的 title。另含 P2-4 schema 基线压缩、P2-5 配置面收缩、评估脚本迁移、`tests/channels` 4 failed + 1 error。P9-0 只读清单已完成（`.agent/tasks/P9-0.report.md`）。拆为：
+- **重构收尾（Phase 0–9 完成后的状态，供后续对话参考）**：
+  - 量化目标：social 模块最大 407 行（无 >500 的模块）✓；主 protocol 15,237→9,112 字符（-40.2%）✓；代码中无中文提示词字面量与角色字面量 ✓（中文召回/过滤词表作为数据保留）；runtime.py 336 行（目标 <300，未达，剩余为装配与 get_state）；`db/` 之外仍有拥有者模块执行 SQL（jargon/learning/followups/memory/expressions/activity，Claude 设计决定：每表单一拥有者）。
+  - 已知遗留：turn 中途 compaction 会把 live memory 块带进摘要且之后不再携带（接受）；通用测试套件 15 个既有失败（与重构无关）；本地 venv 缺 Matrix 依赖 nh3；staging 实例库为 v0/v2，需旧版本升级后才能用新代码；评估脚本完整复跑需原始 V5 数据目录（`--data`，含 baseline-SOUL.md 与 replay.json）。
+  - 线上成本：首轮约 35.7k token 中，工作区长期记忆已从约 11.4k 降到约 4k（工作区整理），记忆块每 turn 只发一份（P9-a）。下一次 owner 关心成本时，先用 llm_usage 对比 P9 前后的真实 input_tokens。
+- **Phase 9 已完成**（owner 2026-11-05 确认开始）。owner 定的 token 方针：T1 live memory 每 turn 只注入一次（不补发更新）；T2 普通 turn 只注入活动索引、activity turn 注入当前活动完整记录；T3 首轮固定开销在 P9-0 中闭环后再决定精简项（不删历史、不收缩工具权限）；T4 去掉工具 schema 的 title。另含 P2-4 schema 基线压缩、P2-5 配置面收缩、评估脚本迁移、`tests/channels` 4 failed + 1 error。P9-0 只读清单已完成（`.agent/tasks/P9-0.report.md`）。拆为：
   - **P9-a**（已完成，`dd9ce2b8`）：live memory 只在 iteration 0 注入（接受限制：turn 中途 compaction 会把块带进摘要、之后不再携带）；普通 turn 注入活动索引，activity turn 另加 current_activity；`Tool.to_schema` 去掉 schema 节点的 title 注释（保留 social_activity 的 title 参数）。回放 4 请求 turn 210.7k→146.3k cl100k（-30.6%）。
   - **工作区整理**（owner 2026-11-05 选“A+B 都做”，Claude 手工，非代码）：备份在 `backups/workspace-prompts-before-p9-20261105/`。SOUL.md 删去与 protocol/角色重复的机制条目（6.4k→3.5k 字节）；MEMORY.md 删去过时的 Social Layer Source Map、read_through/social_mark_read、活动状态清单、仓库统计，研究笔记两节原样移到 `workspace/experiments/NOTES_reference.md` 只留索引（37.5k→13.8k 字节）；新建 `workspace/prompts/dream.md`（默认 Dream prompt + 不记 social 机制、研究细节放 experiments 的规则）。首轮固定开销预计再降约 8k token。注意 SOUL/USER 中“Al 发 /reset 是戳机器人”的记录保留（/reset 不是命令，/new 才是）。
   - **P9-b**（已完成，`961ea247`；线上 config 先删 4 个旧键，备份 `config.json.before-p9b-20261105`；部署后学习批次与主动调度未变）：删 C 类死配置字段与失效的常驻 wake 条件（SleepInterrupt、ReplyAttention、wake_* 常驻、WakeConfig 的 on_messages/probability/sleep_interrupts/coalesce_seconds、dynamicWait.enabled/unfinishedSeconds），WakeConfig 改 extra=ignore 以读取已存旧键；manifest 不再导入 config.schema。B 类不常量化，Learning/Proactive/Judge 配置不动（避免取消学习批次、重排调度）。部署前须先从线上 config 删除 wakeOnQuestion、wakeProbability、sleepInterrupts、dynamicWait.unfinishedSeconds。
   - **P9-c**（已完成，`95dab48b`；Claude 用新拷的线上库独立演练：sqlite_master 与行数不变，新空库与线上逐行一致）：schema v22 基线（线上 sqlite_master DDL 逐字），删除 v1–21 迁移与 17 个迁移测试；<22 或“v0 但有表”的库报错并提示用 `961ea247` 或更早版本升级。
-  - **P9-d**（已派发）：11 个评估脚本移到 `scripts/eval/` 并适配当前接口；fixtures 留原处且内容不改；summarize 改为必须显式 --output；pipeline.sh 同步并删去已不存在的 test_social_revisions。staging 库为 v0/v2，P9-c 后新代码无法打开（staging 未使用）。
+  - **P9-d**（已完成，`2ed13143`，未部署——生产代码无改动）：11 个评估脚本移到 `scripts/eval/` 并适配当前接口；fixtures 留原处且内容不改；summarize 改为必须显式 --output；pipeline.sh 同步并删去已不存在的 test_social_revisions。staging 库为 v0/v2，P9-c 后新代码无法打开（staging 未使用）。
   - 通用测试套件（tests/agent、tools、providers、config、gateway）在沙箱外有 15 个既有失败，P9-a 前后相同，与重构无关，未安排。
   - 非角色的中文数据（SCENE_HINTS、jargon 九个普通词、泛化口号、辱骂正则、研究查询后缀）作为数据保留，不算提示词字面量（Claude 决定）。
   - 观察项：expression 学习批次 `9f396031` 在 P8-a 前（12:58 起）已两次 `invalid extraction response`，改配置后按 config_changed 取消，同窗口重建为 `521226af`；若新批次仍失败，需查 expression 学习模型输出。
