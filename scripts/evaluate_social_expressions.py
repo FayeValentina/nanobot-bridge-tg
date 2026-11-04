@@ -56,7 +56,7 @@ async def replay(config_path: Path, output: Path) -> None:
                 batch = runtime.store.learning.prepare(scope.session_key, "expression")
                 if batch:
                     # Explicit offline extraction, not a scheduler timing probe.
-                    await runtime.expressions.run(batch)
+                    await runtime.learning._run(runtime.expressions, batch)
                 entries = runtime.expressions.library.list(scope.session_key)
                 results.append({"scope": alias, "batch": dict(runtime.store.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()) if batch else None,
                     "entries": [runtime.expressions.library.get(scope.session_key, str(entry["id"])) for entry in entries]})

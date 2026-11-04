@@ -310,11 +310,14 @@ class SocialLearning:
     def fail_batch(self, error: str, detail: str | None, updated: float, batch: str) -> None:
         self.db.execute("UPDATE learning_batches SET status='failed',reason=?,error_detail=COALESCE(?,error_detail),updated=? WHERE id=?", (error, detail, updated, batch))
 
+    def refund_attempt(self, batch: str) -> None:
+        self.db.execute("UPDATE learning_batches SET status='ready',attempts=attempts-1,updated=? WHERE id=? AND status='running'", (self.store.now(), batch))
+
     def clear_batch_error(self, batch: str) -> None:
         self.db.execute("UPDATE learning_batches SET error_detail=NULL WHERE id=?", (batch,))
 
     def last_batch_due(self) -> sqlite3.Row:
-        return self.db.execute("SELECT MAX(due) FROM learning_batches WHERE attempts>0").fetchone()
+        return self.db.execute("SELECT MAX(due) FROM learning_batches WHERE attempts>0 OR model_calls>0").fetchone()
 
     def pending_batches(self, kind: LearningKind) -> list[sqlite3.Row]:
         return self.db.execute("SELECT id,scope,attempts FROM learning_batches WHERE kind=? AND status IN ('ready','failed') ORDER BY created,id", (kind,)).fetchall()

@@ -49,13 +49,13 @@ async def test_training_replays_every_human_at_source_time_without_consuming_hol
 
     corpus=read_json(FIXTURES/'social_v5_baseline.json')
     sources=[]
-    async def empty_success(worker,batch):
-        row=worker.store.db.execute('SELECT sources FROM learning_batches WHERE id=?',(batch,)).fetchone()
+    async def empty_success(worker,row,scope):
+        batch = str(row["id"])
         import json
-        sources.extend(json.loads(row[0]))
+        sources.extend(json.loads(row["sources"]))
         worker.store.learning.finish(batch,success=True)
-    monkeypatch.setattr(ExpressionLearner,'run',empty_success)
-    monkeypatch.setattr(JargonLearner,'run',empty_success)
+    monkeypatch.setattr(ExpressionLearner,'process',empty_success)
+    monkeypatch.setattr(JargonLearner,'process',empty_success)
     monkeypatch.setattr('scripts.evaluate_social_v5.make_expression_provider',lambda *_:(AsyncMock(spec=LLMProvider),'test'))
     report=await train(Config(),corpus,{'messages':{},'stickers':{}},tmp_path/'unused.sqlite3',tmp_path)
     assert len(report['batches'])==4

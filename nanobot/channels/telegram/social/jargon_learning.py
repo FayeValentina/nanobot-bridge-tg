@@ -6,7 +6,6 @@ import json
 import re
 import sqlite3
 import time
-from collections.abc import Callable
 from typing import cast
 from uuid import uuid4
 
@@ -17,8 +16,8 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.channels.telegram.social.bindings import ScopeBindings
 from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.expressions import (
-    ExpressionLearner,
     ExpressionSource,
+    make_expression_provider,
     normalized,
     redacted_error_detail,
 )
@@ -29,9 +28,11 @@ from nanobot.channels.telegram.social.jargon import (
     ResearchResult,
 )
 from nanobot.channels.telegram.social.learning import LearningKind
+from nanobot.channels.telegram.social.learning_worker import LearningProviderError
 from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.store import SocialStore
-from nanobot.config.schema import TelegramSocialLearningModelConfig
+from nanobot.config.schema import Config, TelegramSocialLearningModelConfig
+from nanobot.providers.base import LLMProvider
 from nanobot.utils.prompt_templates import render_template
 
 
@@ -45,15 +46,29 @@ class FetchedBody(BaseModel):
     extractor: str = ""
 
 
-class JargonLearner(ExpressionLearner):
+class JargonLearner:
     kind: LearningKind = "jargon"
 
-    def __init__(self, store: SocialStore, bindings: ScopeBindings, judge_busy: Callable[[], bool]) -> None:
-        super().__init__(store, bindings, judge_busy)
+    def __init__(self, store: SocialStore, bindings: ScopeBindings) -> None:
+        self.store = store
+        self.bindings = bindings
+        self.provider: LLMProvider | None = None
+        self.model = ""
         self.jargon = JargonLibrary(self.store)
         self.tools: ToolRegistry | None = None
         self.prompt = render_template("telegram/social_jargon_discovery.md")
         self.research_prompt = render_template("telegram/social_jargon_research.md")
+
+    def configure_provider(self, config: Config) -> None:
+        try:
+            provider, model = make_expression_provider(config, getattr(self.store.learning.config, self.kind))
+        except (ValueError, KeyError):
+            self.provider, self.model = None, ""
+            return
+        self.set_provider(provider, model)
+
+    def set_provider(self, provider: LLMProvider, model: str) -> None:
+        self.provider, self.model = provider, model
 
     def prepare_reviews(self, scopes: list[str]) -> None:
         if not self.store.learning.config.enabled:
@@ -87,6 +102,8 @@ class JargonLearner(ExpressionLearner):
         with transaction(self.store.db):
             if response.usage:
                 self.store.learning.record_jargon_usage(response.usage.input_tokens, response.usage.output_tokens, batch)
+        if response.finish_reason == "error":
+            raise LearningProviderError(f"status={response.error_status_code}")
         if response.finish_reason != "stop" or response.tool_calls or response.content is None or len(response.content) > 32000:
             raise ValueError("invalid jargon response")
         return response.content
@@ -100,7 +117,7 @@ class JargonLearner(ExpressionLearner):
         for term in terms:
             if any(normalized(term) in normalized(page.text) for page in pages):
                 continue
-            # run() retains this active batch throughout its bounded research.
+            # process() retains this active batch throughout its bounded research.
             budget = cast(sqlite3.Row, self.store.learning.batch(batch))
             if budget["search_calls"] >= config.research_max_searches or budget["fetch_calls"] >= config.research_max_fetches or budget["research_chars"] >= config.research_max_chars:
                 break
@@ -145,18 +162,11 @@ class JargonLearner(ExpressionLearner):
                     continue
         return pages
 
-    async def run(self, batch: str) -> None:
+    async def process(self, row: sqlite3.Row, scope: ConversationScope) -> None:
+        batch = str(row["id"])
         started = time.monotonic()
-        error = ""
-        error_detail: str | None = None
+        settings = self.store.learning.config.jargon.model_copy(deep=True)
         try:
-            row = self.store.learning.batch(batch)
-            if row is None or self.provider is None:
-                return
-            scope = ConversationScope.from_session_key(str(row["scope"]))
-            settings = self.store.learning.config.jargon.model_copy(deep=True)
-            if scope is None or (binding := self.bindings.binding(scope)) is None or binding.paused or self.busy() or row["attempts"] >= 1 + settings.max_retries:
-                return
             sources = [ExpressionSource.model_validate(s) for s in json.loads(row["sources"])]
             with transaction(self.store.db):
                 self.jargon.expire(scope.session_key)
@@ -208,30 +218,9 @@ class JargonLearner(ExpressionLearner):
                     if entry_id:
                         self.jargon.finish_research(self.store.now(), entry_id)
                 self.store.learning.finish(batch, success=True, result_count=len(ids))
-        except asyncio.CancelledError:
-            error = "interrupted"
-            raise
-        except TimeoutError as exc:
-            error = "timeout"
-            error_detail = redacted_error_detail(exc)
-            logger.warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
-        except ValueError as exc:
-            error = "invalid_or_changed_input"
-            error_detail = redacted_error_detail(exc)
-            logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
-        except Exception as exc:
-            error = "provider_exception"
-            error_detail = redacted_error_detail(exc)
-            logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
         finally:
             if not self.store.closed:
                 with transaction(self.store.db):
-                    row = self.store.learning.batch_status(batch)
-                    if row and row["status"] == "running" and error:
-                        self.store.learning.fail_batch(error, error_detail, self.store.now(), batch)
-                        sources = json.loads(row["sources"])
-                        self.store.learning.count(str(row["scope"]), "jargon:failed", 1, sources[0]["message_id"], sources[-1]["message_id"])
-                    if row and row["status"] == "succeeded":
-                        self.store.learning.clear_batch_error(batch)
-                    if row:
+                    current = self.store.learning.batch_status(batch)
+                    if current:
                         self.store.learning.record_jargon_latency(int((time.monotonic() - started) * 1000), batch)

@@ -396,7 +396,7 @@ async def test_worker_error_detail_is_redacted_and_cleared_on_success(tmp_path, 
         records = []
         sink = logger.add(lambda message: records.append(message.record))
         try:
-            await worker.run(batch)
+            await runtime.learning._run(worker, batch)
         finally:
             logger.remove(sink)
         record = next(r for r in records if f"batch={batch} kind={kind} error={code}" in r["message"])
@@ -404,6 +404,9 @@ async def test_worker_error_detail_is_redacted_and_cleared_on_success(tmp_path, 
         assert (record["exception"] is not None) == (exception is not TimeoutError)
         row = runtime.store.db.execute("SELECT * FROM learning_batches WHERE id=?", (batch,)).fetchone()
         assert row["status"] == "failed" and row["reason"] == code and row["attempts"] == 1
+        assert runtime.store.db.execute(
+            "SELECT count FROM learning_counts WHERE scope=? AND reason=?",
+            (A.session_key, f"{kind}:failed")).fetchone()[0] == 1
         detail = row["error_detail"]
         assert detail.startswith(f"{exception.__name__}: boom") and len(detail) == 300
         assert all(secret not in detail for secret in ("sk-abc123", "secret-auth", "secret-key", "secret-token"))
@@ -414,7 +417,7 @@ async def test_worker_error_detail_is_redacted_and_cleared_on_success(tmp_path, 
         assert cursor == 0
         provider.chat.side_effect = None
         provider.chat.return_value = LLMResponse(content=json.dumps({"expressions" if kind == "expression" else "jargon": []}))
-        await worker.run(batch)
+        await runtime.learning._run(worker, batch)
         row = runtime.store.db.execute("SELECT status,error_detail,attempts FROM learning_batches WHERE id=?", (batch,)).fetchone()
         assert tuple(row) == ("succeeded", None, 2)
         assert runtime.store.learning.status(A.session_key)["batches"][0]["error_detail"] is None

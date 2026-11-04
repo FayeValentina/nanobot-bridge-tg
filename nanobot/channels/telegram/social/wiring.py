@@ -32,8 +32,7 @@ class SocialWiring:
         self.config_path = config_path
 
     def connect_agent(self, main_busy: Callable[[], bool]) -> None:
-        self.runtime.expressions.main_busy = main_busy
-        self.runtime.jargon.main_busy = main_busy
+        self.runtime.learning.main_busy = main_busy
         self.runtime.jargon.tools = self.tools
 
     def refresh(self, config: Config) -> None:

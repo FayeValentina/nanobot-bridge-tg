@@ -214,7 +214,7 @@ async def test_worker_default_window_priority_interval_concurrency_and_silence(r
     assert instance.store.learning.prepare(A.session_key, "expression") is None
     add(instance.store, 10)
     instance.store.learning.collect_due([A.session_key])
-    worker = instance.expressions
+    worker = instance.learning
     worker.main_busy = lambda: True
     worker.start_due([A.session_key])
     assert worker.task is None
@@ -246,7 +246,7 @@ async def test_failure_retry_budget_and_interval_survive_restart(runtime):
         add(instance.store, mid)
     instance.store.learning.collect_due([A.session_key])
     provider.chat.side_effect = RuntimeError("secret-provider-key-must-not-persist")
-    worker = instance.expressions
+    worker = instance.learning
     worker.start_due([A.session_key])
     await worker.task
     assert provider.chat.await_count == 1
@@ -254,7 +254,7 @@ async def test_failure_retry_budget_and_interval_survive_restart(runtime):
     restored = TelegramSocialRuntime(instance.config, instance.root, MessageBus(), now=lambda: clock[0])
     restored.expressions.set_provider(provider, "test-model")
     restored.store.learning.recover()
-    worker = restored.expressions
+    worker = restored.learning
     try:
         worker.start_due([A.session_key])
         assert worker.task is None  # Durable five-minute deadline, not an in-memory timer.
@@ -285,13 +285,13 @@ async def test_worker_yields_network_wait_and_scope_revocation_cancels_commit(ru
 
     provider.chat.side_effect = wait
     instance.store.learning.collect_due([A.session_key])
-    instance.expressions.start_due([A.session_key])
+    instance.learning.start_due([A.session_key])
     await entered.wait()
     # run_due completes while the background provider is waiting.
     await asyncio.wait_for(instance.run_due(), .5)
     instance.config.enabled = False
     release.set()
-    await instance.expressions.task
+    await instance.learning.task
     assert not instance.expressions.library.list(A.session_key)
 
 
@@ -375,15 +375,15 @@ async def test_zero_retry_setting_and_disabled_provider_do_not_call_main(runtime
         add(instance.store, mid)
     instance.store.learning.collect_due([A.session_key])
     provider.chat.return_value = LLMResponse(content="not JSON")
-    instance.expressions.start_due([A.session_key])
-    await instance.expressions.task
+    instance.learning.start_due([A.session_key])
+    await instance.learning.task
     clock[0] += 301
-    instance.expressions.start_due([A.session_key])
+    instance.learning.start_due([A.session_key])
     assert provider.chat.await_count == 1
     args = provider.chat.call_args.kwargs
     assert args["max_tokens"] == 2048 and args["tools"] is None and args["tool_choice"] == "none"
     monkeypatch.setattr("nanobot.channels.telegram.social.expressions.make_expression_provider", lambda *_: (_ for _ in ()).throw(ValueError("unconfigured")))
     instance.expressions.configure_provider(Config())
     assert instance.expressions.provider is None
-    instance.expressions.start_due([A.session_key])
+    instance.learning.start_due([A.session_key])
     assert provider.chat.await_count == 1

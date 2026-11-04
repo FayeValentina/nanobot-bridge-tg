@@ -257,7 +257,7 @@ async def train(config: Config, corpus: dict[str, Any], assets: dict[str, Any], 
             for scope in SCOPES.values():
                 batch = runtime.store.learning.prepare(scope.session_key, worker.kind)
                 if batch:
-                    await worker.run(batch)
+                    await runtime.learning._run(worker, batch)
                 clock[0] += 301
         batches = [dict(r) for r in runtime.store.db.execute('SELECT * FROM learning_batches')]
         for row in batches:

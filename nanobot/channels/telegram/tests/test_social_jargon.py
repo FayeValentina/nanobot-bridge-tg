@@ -18,7 +18,7 @@ from nanobot.channels.telegram.social.jargon import (
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.config.schema import TelegramSocialConfig
-from nanobot.providers.base import LLMProvider, LLMResponse
+from nanobot.providers.base import LLMProvider, LLMResponse, LLMUsage
 
 A = ConversationScope('telegram', -1001, 42)
 
@@ -65,7 +65,7 @@ def response(*candidates):
 async def run(runtime):
     batch = runtime.store.learning.prepare(A.session_key, 'jargon')
     assert batch
-    await runtime.jargon.run(batch)
+    await runtime.learning._run(runtime.jargon, batch)
     return dict(runtime.store.db.execute('SELECT * FROM learning_batches WHERE id=?', (batch,)).fetchone())
 
 
@@ -230,7 +230,7 @@ async def test_manual_query_submission_and_review_never_wake_or_search_foregroun
     runtime.jargon.prepare_reviews([A.session_key])
     batch=runtime.store.db.execute("SELECT id,purpose FROM learning_batches WHERE kind='jargon'").fetchone()
     assert batch['purpose']=='review'
-    await runtime.jargon.run(batch['id'])
+    await runtime.learning._run(runtime.jargon, batch['id'])
     assert search.await_count==1 and provider.chat.await_count==0  # No body => no speculative meaning model call.
     assert runtime.store.learning.status(A.session_key)['cursors']==before or runtime.store.db.execute("SELECT event_id FROM learning_cursors WHERE kind='jargon'").fetchone()[0]==0
     assert runtime.bus.inbound_size==runtime.bus.outbound_size==0
@@ -254,7 +254,7 @@ async def test_correction_during_web_research_rejects_stale_result(env):
     fetch.side_effect=delayed
     provider.chat.return_value=LLMResponse(content='{"findings":[]}')
     batch=runtime.store.db.execute("SELECT id FROM learning_batches WHERE kind='jargon'").fetchone()[0]
-    task=asyncio.create_task(runtime.jargon.run(batch))
+    task=asyncio.create_task(runtime.learning._run(runtime.jargon, batch))
     await entered.wait()
     updated=runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='correct',entry_id=entry['id'],expected_revision=entry['revision'],origin='operator',local_meaning='群内仅表示收工',reason='操作者明确纠正'))['jargon']
     release.set()
@@ -288,20 +288,33 @@ async def test_expression_and_jargon_share_one_task_and_durable_interval(env):
     runtime, provider, search, _, clock = env
     add(runtime)
     expression_provider = AsyncMock(spec=LLMProvider)
-    expression_provider.chat.return_value = LLMResponse(content='{"expressions":[]}')
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed(**kwargs):
+        entered.set()
+        await release.wait()
+        return LLMResponse(content='{"expressions":[]}')
+
+    expression_provider.chat.side_effect = delayed
     runtime.expressions.set_provider(expression_provider, 'test-expression')
     provider.chat.return_value = response()
     runtime.store.learning.collect_due([A.session_key])
-    runtime.expressions.start_due([A.session_key])
-    first = runtime.expressions.task
-    runtime.jargon.start_due([A.session_key])
-    assert runtime.expressions.task is first and runtime.jargon.task is None
+    runtime.learning.start_due([A.session_key])
+    first = runtime.learning.task
+    await entered.wait()
+    runtime.learning.start_due([A.session_key])
+    assert runtime.learning.task is first
+    assert provider.chat.await_count == 0
+    assert [tuple(row) for row in runtime.store.db.execute(
+        "SELECT kind,status FROM learning_batches ORDER BY kind")] == [("expression", "running"), ("jargon", "ready")]
+    release.set()
     await first
-    runtime.jargon.start_due([A.session_key])
-    assert runtime.jargon.task is None
+    runtime.learning.start_due([A.session_key])
+    assert runtime.learning.task is first
+    assert provider.chat.await_count == 0
     clock[0] += 301
-    runtime.jargon.start_due([A.session_key])
-    await runtime.jargon.task
+    runtime.learning.start_due([A.session_key])
+    await runtime.learning.task
     assert expression_provider.chat.await_count == provider.chat.await_count == 1
     assert search.await_count == 0
 
@@ -414,3 +427,72 @@ def test_frozen_actual_model_and_network_report_has_traceable_sources():
             assert entry['status'] in {'candidate','understand_only','usable','disabled'}
             if case['case']=='not_found':
                 assert not entry['local_meaning'] and not entry['public_meaning']
+
+
+@pytest.mark.parametrize("kind", ["expression", "jargon"])
+@pytest.mark.parametrize("previous_failures", [0, 1])
+@pytest.mark.parametrize("status", [402, 429, 503])
+async def test_provider_error_refunds_attempt_without_failure_count(env, kind, previous_failures, status):
+    runtime, provider, _, _, _ = env
+    processor = runtime.expressions if kind == "expression" else runtime.jargon
+    processor.set_provider(provider, "test-learning")
+    add(runtime)
+    batch = runtime.store.learning.prepare(A.session_key, kind)
+    if previous_failures:
+        provider.chat.side_effect = ValueError("invalid output")
+        await runtime.learning._run(processor, batch)
+        provider.chat.side_effect = None
+    before = runtime.store.learning.batch(batch)
+    failures = runtime.store.db.execute(
+        "SELECT COALESCE(SUM(count),0) FROM learning_counts WHERE scope=? AND reason=?",
+        (A.session_key, f"{kind}:failed")).fetchone()[0]
+    provider.chat.return_value = LLMResponse(content=None, finish_reason="error", error_status_code=status,
+                                           usage=LLMUsage.reported(input_tokens=12, output_tokens=3))
+    records = []
+    sink = logger.add(lambda message: records.append(message.record))
+    try:
+        await runtime.learning._run(processor, batch)
+    finally:
+        logger.remove(sink)
+    after = runtime.store.learning.batch(batch)
+    assert after["status"] == "ready" and after["attempts"] == before["attempts"]
+    assert after["due"] == runtime.now() + runtime.config.learning.interval_seconds
+    # A refunded call still holds the global learning interval, so an outage is not retried every cycle.
+    assert runtime.store.learning.last_batch_due()[0] == after["due"]
+    assert after["model_calls"] == before["model_calls"] + 1
+    assert after["input_tokens"] == before["input_tokens"] + 12
+    assert after["output_tokens"] == before["output_tokens"] + 3
+    assert after["latency_ms"] >= before["latency_ms"]
+    assert after["sources"] == before["sources"]
+    assert runtime.store.db.execute(
+        "SELECT COALESCE(SUM(count),0) FROM learning_counts WHERE scope=? AND reason=?",
+        (A.session_key, f"{kind}:failed")).fetchone()[0] == failures
+    assert runtime.store.db.execute(
+        "SELECT event_id FROM learning_cursors WHERE scope=? AND kind=?", (A.session_key, kind)).fetchone()[0] == 0
+    record = next(r for r in records if "attempt refunded" in r["message"])
+    assert record["level"].name == "WARNING" and record["exception"] is None
+    assert record["message"] == f"Social learning batch={batch} kind={kind} provider error=status={status}; attempt refunded"
+    provider.chat.return_value = LLMResponse(content=json.dumps({"expressions" if kind == "expression" else "jargon": []}))
+    await runtime.learning._run(processor, batch)
+    assert runtime.store.learning.batch(batch)["status"] == "succeeded"
+    assert runtime.store.learning.batch(batch)["attempts"] == before["attempts"] + 1
+
+
+@pytest.mark.parametrize("same_time", [False, True])
+async def test_learning_worker_orders_oldest_kind_and_expression_wins_tie(env, same_time):
+    runtime, provider, _, _, clock = env
+    add(runtime)
+    jargon_batch = runtime.store.learning.prepare(A.session_key, "jargon")
+    clock[0] += 0 if same_time else 1
+    expression_batch = runtime.store.learning.prepare(A.session_key, "expression")
+    expression_provider = AsyncMock(spec=LLMProvider)
+    expression_provider.chat.return_value = LLMResponse(content='{"expressions":[]}')
+    runtime.expressions.set_provider(expression_provider, "test-expression")
+    provider.chat.return_value = response()
+    runtime.learning.start_due([A.session_key])
+    await runtime.learning.task
+    first, second = (expression_batch, jargon_batch) if same_time else (jargon_batch, expression_batch)
+    assert runtime.store.learning.batch(first)["status"] == "succeeded"
+    assert runtime.store.learning.batch(second)["status"] == "ready"
+    assert expression_provider.chat.await_count == int(same_time)
+    assert provider.chat.await_count == int(not same_time)

@@ -130,7 +130,7 @@ async def evaluate(args):
             teacher.store.observe(ObservedMessage(SCOPES['main'],mid,mid,'participant-1','Controlled member',at,text,learning_text=text),500)
             batch=teacher.store.learning.prepare(SCOPES['main'].session_key,'jargon')
             if batch:
-                await teacher.jargon.run(batch)
+                await teacher.learning._run(teacher.jargon, batch)
             entries=teacher.jargon.jargon.entries(SCOPES['main'].session_key)
             rows.append({'stage':stage,'origin':'explicit_synthetic_online_correction_control','input':text,'turns':responses,
                          'learned_after_reply':True,'jargon_after':entries,

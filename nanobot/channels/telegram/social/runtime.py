@@ -37,6 +37,7 @@ from nanobot.channels.telegram.social.judge import (
     JudgeProviderSettings,
     PendingWindows,
 )
+from nanobot.channels.telegram.social.learning_worker import LearningWorker
 from nanobot.channels.telegram.social.media import SocialMedia, SocialMediaCache, SocialMediaLoader
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
 from nanobot.channels.telegram.social.models import (
@@ -92,10 +93,9 @@ class TelegramSocialRuntime:
         self._closed = False
         self._recovered = False
         self._epoch = uuid4().hex
-        self.expressions = ExpressionLearner(self.store, self.bindings, self.judging.busy)
-        self.jargon = JargonLearner(self.store, self.bindings, self.judging.busy)
-        self.expressions.peer = self.jargon
-        self.jargon.peer = self.expressions
+        self.expressions = ExpressionLearner(self.store, self.bindings)
+        self.jargon = JargonLearner(self.store, self.bindings)
+        self.learning = LearningWorker(self.store, self.bindings, (self.expressions, self.jargon), lambda: self.judging.busy())
         self.selector = ContextSelector(self.store, lambda: self.config, self.now)
         self.delivery = SocialDelivery(self.store, self.bindings, self.proactive, self.waiting,
                                        self.selector, self.scheduler.notify, lambda: self.config, self.now)
@@ -106,8 +106,7 @@ class TelegramSocialRuntime:
         if not self._closed:
             self.scheduler.cancel()
             self.judging.cancel()
-            self.expressions.cancel()
-            self.jargon.cancel()
+            self.learning.cancel()
             self.selector.cancel()
             self.store.close()
             self._closed = True
@@ -273,9 +272,7 @@ class TelegramSocialRuntime:
                 scopes = [key for key, binding in bindings.items() if not binding.paused]
                 self.jargon.prepare_reviews(scopes)
                 self.store.learning.collect_due(scopes)
-                workers = sorted([self.expressions, self.jargon], key=lambda worker: self.store.learning.earliest_batch(worker.kind, 1 + getattr(self.config.learning, worker.kind).max_retries)[0])
-                for worker in workers:
-                    worker.start_due(scopes)
+                self.learning.start_due(scopes)
             except Exception:
                 logger.exception("V5 material collection failed")
 

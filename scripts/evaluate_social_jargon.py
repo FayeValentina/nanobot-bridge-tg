@@ -53,7 +53,7 @@ async def evaluate(config_path: Path, output: Path) -> None:
                     runtime.jargon.prepare_reviews([scope.session_key])
                     batch = runtime.store.db.execute("SELECT id FROM learning_batches WHERE kind='jargon'").fetchone()[0]
                 assert batch
-                await runtime.jargon.run(batch)
+                await runtime.learning._run(runtime.jargon, batch)
                 entries = runtime.jargon.jargon.entries(scope.session_key)
                 row = dict(runtime.store.db.execute('SELECT * FROM learning_batches WHERE id=?',(batch,)).fetchone())
                 row.pop('sources',None)
@@ -78,7 +78,7 @@ async def evaluate(config_path: Path, output: Path) -> None:
                         runtime.store.observe(ObservedMessage(scope,101,1,'human','Member',clock[0],text,learning_text=text,is_edit=True),100)
                         new_batch=runtime.store.learning.prepare(scope.session_key,'jargon')
                         assert new_batch
-                        await runtime.jargon.run(new_batch)
+                        await runtime.learning._run(runtime.jargon, new_batch)
                         live=runtime.jargon.jargon.get(scope.session_key,str(old['id']))
                         checks['correction_overrides_old_revision'] = live['local_meaning']=='临时加场' and live['revision']==corrected['revision']
                         entries=runtime.jargon.jargon.entries(scope.session_key)

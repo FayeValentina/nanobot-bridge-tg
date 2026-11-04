@@ -4,14 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import time
 import unicodedata
-from collections.abc import Callable
 from difflib import SequenceMatcher
-from typing import Literal
+from typing import Literal, cast
 from uuid import uuid4
 
-from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.channels.telegram.social.bindings import ScopeBindings
@@ -251,67 +250,33 @@ def make_expression_provider(config: Config, settings: TelegramSocialLearningMod
 
 class ExpressionLearner:
     kind: LearningKind = "expression"
-    def __init__(self, store: SocialStore, bindings: ScopeBindings, judge_busy: Callable[[], bool]) -> None:
+    def __init__(self, store: SocialStore, bindings: ScopeBindings) -> None:
         self.store = store
         self.bindings = bindings
-        self.judge_busy = judge_busy
-        self.peer: ExpressionLearner | None = None
         self.library = ExpressionLibrary(self.store)
         self.provider: LLMProvider | None = None
         self.model = ""
-        self.task: asyncio.Task[None] | None = None
-        self.main_busy: Callable[[], bool] = lambda: False
         self.prompt = render_template("telegram/social_expression_learning.md")
 
     def configure_provider(self, config: Config) -> None:
         try:
             provider, model = make_expression_provider(config, getattr(self.store.learning.config, self.kind))
         except (ValueError, KeyError):
-            self.cancel()
             self.provider, self.model = None, ""
             return
         self.set_provider(provider, model)
 
     def set_provider(self, provider: LLMProvider, model: str) -> None:
-        self.cancel()
         self.provider, self.model = provider, model
 
-    def cancel(self) -> None:
-        if self.task is not None and not self.task.done():
-            self.task.cancel()
+    async def process(self, row: sqlite3.Row, scope: ConversationScope) -> None:
+        from nanobot.channels.telegram.social.learning_worker import LearningProviderError
 
-    def busy(self) -> bool:
-        return bool(self.main_busy() or self.judge_busy() or self.store.wakes.any_active())
-
-    def start_due(self, scopes: list[str]) -> None:
-        if (self.provider is None or not scopes or not self.store.learning.config.enabled
-                or any(task is not None and not task.done() for task in (self.task, self.peer.task if self.peer else None)) or self.busy()):
-            return
-        # Durable global start interval also covers failed/cancelled requests and restarts.
-        last = self.store.learning.last_batch_due()[0]
-        if last is not None and self.store.now() < last:
-            return
-        for row in self.store.learning.pending_batches(self.kind):
-            settings = getattr(self.store.learning.config, self.kind)
-            if row["scope"] in scopes and row["attempts"] < 1 + settings.max_retries:
-                self.task = asyncio.create_task(self.run(str(row["id"])), name=f"social-{self.kind}-learning")
-                return
-
-    async def run(self, batch: str) -> None:
+        batch = str(row["id"])
         response: LLMResponse | None = None
         started = time.monotonic()
-        error = ""
-        error_detail: str | None = None
+        settings = self.store.learning.config.expression.model_copy(deep=True)
         try:
-            row = self.store.learning.batch(batch)
-            if row is None or self.provider is None:
-                return
-            scope = ConversationScope.from_session_key(str(row["scope"]))
-            if scope is None or (binding := self.bindings.binding(scope)) is None or binding.paused or self.busy():
-                return
-            settings = self.store.learning.config.expression.model_copy(deep=True)
-            if row["attempts"] >= 1 + settings.max_retries:
-                return
             generation = self.library.generation(scope.session_key)
             payload = {"sources": json.loads(row["sources"]), "library": self.library.payload(scope.session_key),
                        "max_candidates": self.store.learning.config.expression_candidates,
@@ -326,8 +291,11 @@ class ExpressionLearner:
             with transaction(self.store.db):
                 self.store.learning.start_expression_call(self.store.now() + self.store.learning.config.interval_seconds, self.model, batch)
             async with asyncio.timeout(settings.timeout_seconds):
-                response = await self.provider.chat(messages=[{"role": "system", "content": self.prompt}, {"role": "user", "content": content}],
+                # LearningWorker checks provider availability before entering process.
+                response = await cast(LLMProvider, self.provider).chat(messages=[{"role": "system", "content": self.prompt}, {"role": "user", "content": content}],
                     tools=None, tool_choice="none", model=self.model, max_tokens=settings.max_tokens, temperature=0)
+            if response.finish_reason == "error":
+                raise LearningProviderError(f"status={response.error_status_code}")
             if response.finish_reason != "stop" or response.tool_calls or response.content is None or len(response.content) > 24000:
                 raise ValueError("invalid extraction response")
             result = ExtractionResult.model_validate_json(response.content)
@@ -335,31 +303,10 @@ class ExpressionLearner:
             if binding is None or binding.paused:
                 raise ValueError("scope revoked or paused")
             self.library.commit(batch, result, generation)
-        except asyncio.CancelledError:
-            error = "interrupted"
-            raise
-        except TimeoutError as exc:
-            error = "timeout"
-            error_detail = redacted_error_detail(exc)
-            logger.warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
-        except ValueError as exc:
-            error = "invalid_or_changed_input"
-            error_detail = redacted_error_detail(exc)
-            logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
-        except Exception as exc:
-            error = "provider_exception"
-            error_detail = redacted_error_detail(exc)
-            logger.opt(exception=True).warning("Social learning batch={} kind={} error={}: {}", batch, self.kind, error, error_detail)
         finally:
             if not self.store.closed:
                 with transaction(self.store.db):
                     current = self.store.learning.batch_status(batch)
-                    if current and current[0] == "running" and error:
-                        self.store.learning.fail_batch(error, error_detail, self.store.now(), batch)
-                        sources = json.loads(current["sources"])
-                        self.store.learning.count(str(current["scope"]), "expression:failed", 1, sources[0]["message_id"], sources[-1]["message_id"])
-                    if current and current[0] == "succeeded":
-                        self.store.learning.clear_batch_error(batch)
                     if current and current[0] in {"running", "succeeded", "failed", "cancelled"}:
                         usage = response.usage if response else None
                         self.store.learning.record_expression_usage(usage.input_tokens if usage else 0, usage.output_tokens if usage else 0, int((time.monotonic() - started) * 1000), batch)
