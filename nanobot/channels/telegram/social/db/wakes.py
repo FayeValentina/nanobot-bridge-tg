@@ -288,20 +288,6 @@ class Wakes:
         row = self.db.execute("SELECT * FROM wakes WHERE id=? AND scope=?", (job, key)).fetchone()
         if row is not None and row["condition_config"] != "{}" and row["condition_config"] != self.scopes.state(key)["wake_config"]:
             raise PermissionError("temporary wake conditions changed")
-        if row is None:
-            return
-        # Read-only exception: Judge depends on Wakes, not the reverse.
-        for batch in self.db.execute("SELECT input_meta,decision FROM judge_batches WHERE handoff_job=?", (job,)):
-            if batch[0] is None:
-                continue
-            metadata = json.loads(batch[0])
-            sources = json.loads(batch[1])["source_seqs"] if batch[1] else metadata["new_seqs"]
-            revisions = {item["seq"]:item["revision"] for item in metadata["excerpts"]}
-            for seq in sources:
-                message = self.messages.judge_source(key, seq)
-                if (message is None or revisions.get(seq) != message[0]
-                        or (seq in metadata["new_seqs"] and not json.loads(message[1]).get("eligible"))):
-                    raise PermissionError("judged source is no longer retained or changed")
 
     def release_pending(self, key: str) -> None:
         with transaction(self.db):
@@ -313,8 +299,7 @@ class Wakes:
                               "UNION ALL SELECT MIN(MIN(due,expires)) FROM actions WHERE status='queued' "
                               "UNION ALL SELECT MIN(next_check) FROM proactive_state UNION ALL SELECT MIN(next_activity_check) FROM proactive_state "
                               "UNION ALL SELECT MIN(quiet_due) FROM dialogue_waits UNION ALL SELECT MIN(total_due) FROM dialogue_waits "
-                              "UNION ALL SELECT MIN(condition_expires) FROM dialogue_waits UNION ALL SELECT MIN(CAST(json_extract(wake_config,'$.expires_at') AS REAL)) FROM scopes WHERE wake_config<>'{}' "
-                              "UNION ALL SELECT MIN(pending_due) FROM judge_state WHERE inflight=0)").fetchone()
+                              "UNION ALL SELECT MIN(condition_expires) FROM dialogue_waits UNION ALL SELECT MIN(CAST(json_extract(wake_config,'$.expires_at') AS REAL)) FROM scopes WHERE wake_config<>'{}')").fetchone()
         return float(row[0]) if row[0] is not None else None
 
     def _refund(self, row: sqlite3.Row) -> None:
@@ -462,6 +447,27 @@ class Wakes:
 
     def scheduled(self, key: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT id,reason FROM wakes WHERE scope=? AND status='scheduled'", (key,)).fetchone()
+
+    def admit_batch(self, key: str, new_seqs: Sequence[int], through_seq: int, *, admission: dict[str, str],
+                    fulfills_intent: bool, one_shot: bool, condition_config: str, condition_expires: float | None,
+                    expires: float, purpose: str, quiet_seconds: float, quiet_due: float, total_due: float,
+                    after_seq: int) -> None:
+        """Hand an admitted batch to the wake state machine; reuse a turn that already showed it."""
+        for active in self.recent_turns(key):
+            shown = self.views.shown_sequences(key, str(active["turn_id"]))
+            if set(new_seqs) <= shown:
+                if fulfills_intent and one_shot and condition_config == self.scopes.state(key)["wake_config"]:
+                    self.clear_wake_config(key)
+                return
+        self.schedule(key, through_seq, WakeReason.JUDGE, 0)
+        wake = self.scheduled(key)
+        if wake is None:
+            return
+        if fulfills_intent and condition_expires is not None:
+            expires = min(expires, condition_expires)
+        self.attach_judgement(wake["id"], expires, condition_config if fulfills_intent else "{}", None)
+        self.db.execute("UPDATE wakes SET admission=? WHERE id=?", (json.dumps(admission), wake["id"]))
+        self.add_dialogue_job(wake["id"], purpose, quiet_seconds, quiet_due, total_due, after_seq, through_seq)
 
     def attach_judgement(self, job: str, expires: float, condition_config: str, proactive_source: str | None) -> None:
         self.db.execute("UPDATE wakes SET expires=MIN(expires,?),condition_config=?,proactive_source=? WHERE id=?", (expires, condition_config, proactive_source, job))

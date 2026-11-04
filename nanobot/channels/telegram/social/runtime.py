@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -31,8 +32,11 @@ from nanobot.channels.telegram.social.expressions import ExpressionEdit, Express
 from nanobot.channels.telegram.social.hook import SocialExposureHook
 from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.jargon_learning import JargonLearner
-from nanobot.channels.telegram.social.judge import JudgeProviderSettings
-from nanobot.channels.telegram.social.judge_runtime import JudgeCoordinator
+from nanobot.channels.telegram.social.judge import (
+    JudgeCoordinator,
+    JudgeProviderSettings,
+    PendingWindows,
+)
 from nanobot.channels.telegram.social.media import SocialMedia, SocialMediaCache, SocialMediaLoader
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
 from nanobot.channels.telegram.social.models import (
@@ -70,15 +74,16 @@ class TelegramSocialRuntime:
         self.store = SocialStore(root, now=now)
         self.bindings = ScopeBindings(self.store, self.roles, channel)
         self.memory = SocialMemory(self.store)
-        self.proactive = SocialProactive(self.store, self.memory)
+        self.windows = PendingWindows()
+        self.proactive = SocialProactive(self.store, self.memory, self.windows)
         self.now = now
-        self.scheduler = SocialScheduler(self.store, self.run_due)
+        self.scheduler = SocialScheduler(self.store, self.run_due, lambda: self.judging.next_due())
         self.config = config
         self.media = SocialMedia(SocialMediaCache(root / "media-cache"), self.store, self.bindings, lambda: self.config)
-        self.waiting = SocialWaiting(self.store, self.bindings, self.proactive,
+        self.waiting = SocialWaiting(self.store, self.bindings, self.proactive, self.windows,
                                      self.scheduler.notify, lambda: self.config, self.now)
         self.stickers = SocialStickers(self.store, self.bindings, self.media, lambda: self.config)
-        self.judging = JudgeCoordinator(self.store, self.bindings, self.waiting, self.media,
+        self.judging = JudgeCoordinator(self.store, self.bindings, self.waiting, self.windows,
                                         self.scheduler.notify, lambda: self.config, self.now,
                                         judge_provider, judge_provider_version)
         self._cycle_lock = asyncio.Lock()
@@ -87,8 +92,8 @@ class TelegramSocialRuntime:
         self._closed = False
         self._recovered = False
         self._epoch = uuid4().hex
-        self.expressions = ExpressionLearner(self.store, self.bindings, lambda: bool(self.judging.tasks))
-        self.jargon = JargonLearner(self.store, self.bindings, lambda: bool(self.judging.tasks))
+        self.expressions = ExpressionLearner(self.store, self.bindings, self.judging.busy)
+        self.jargon = JargonLearner(self.store, self.bindings, self.judging.busy)
         self.expressions.peer = self.jargon
         self.jargon.peer = self.expressions
         self.selector = ContextSelector(self.store, lambda: self.config, self.now)
@@ -160,16 +165,21 @@ class TelegramSocialRuntime:
     def sync_scope(self, scope: ConversationScope) -> None:
         binding = self.binding(scope)
         if binding is None:
+            self.windows.discard(scope.session_key)
             self.store.bind(scope, "disabled")
             self.proactive.sync(scope, None)
             return
         try:
             resolved = self.bindings.resolve(scope)
         except PermissionError:
+            self.windows.discard(scope.session_key)
             self.store.bind(scope, "unavailable")
             return
+        if not self.store.scopes.owns(scope.session_key) or self.store.scopes.state(scope.session_key)["version"] != resolved.version:
+            self.windows.discard(scope.session_key)
         self.store.bind(scope, resolved.version)
         if binding.paused:
+            self.windows.discard(scope.session_key)
             self.store.pause(scope.session_key)
         self.proactive.sync(scope, binding)
 
@@ -219,14 +229,15 @@ class TelegramSocialRuntime:
         if "*" not in binding.observe_from and message.sender_id not in binding.observe_from:
             return
         self.sync_scope(message.scope)
+        self.waiting.conditions(message.scope.session_key)
         eligible = not (message.is_self or message.is_edit or binding.paused) and 0 <= self.now() - message.timestamp < 120
-        _, new = self.store.observe(message, self.config.retention_messages,
+        seq, new = self.store.observe(message, self.config.retention_messages,
                                       fresh=eligible,
-                                      judge_event=eligible, directed=directed,
-                                      judge_delay=self.judging.coalesce_delay(message.scope),
-                                      max_delay=self.config.dynamic_wait.max_seconds)
+                                      judge_event=eligible, directed=directed)
         self.scheduler.notify()
         if new and eligible:
+            facts = json.loads(self.store.messages.range(message.scope.session_key, seq - 1, seq, 1)[0]["judge_facts"])
+            self.judging.note(message.scope, seq, facts["received_at"])
             if self.config.coalesce_seconds == 0:
                 await self.run_due()
 
@@ -286,7 +297,7 @@ class TelegramSocialRuntime:
             return
         self._recovered = True
         self.store.recover()
-        self.store.judge.recover()
+        self.judging.recover()
         self.store.learning.recover()
         await self.run_due()
         self.scheduler.start()
@@ -301,7 +312,7 @@ class TelegramSocialRuntime:
         requests = self.store.wakes.request_usage(scope.session_key, self.now() - 3600)
         sends = self.store.deliveries.attempt_count(scope.session_key, self.now() - 3600)
         last_send = self.store.deliveries.last_send(scope.session_key)
-        intent = self.judging.intent(scope)
+        intent = self.judging.intent(scope.session_key)
         return {"role_id": binding.role_id, "role_file": str(self.bindings.role_file(binding)),
                 "tool_permissions": "shared_with_normal_chat",
                 "read_through": state["read_through"], "seen_through": state["seen_through"],

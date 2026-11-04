@@ -296,7 +296,7 @@ async def test_unrelated_config_change_keeps_waiting_and_history(make_harness):
     await chat.tick()
     assert chat.last_tool_result("social_wait")["deferred"]
     calls = chat.model_calls()
-    chat.reconfigure(judge={"timeoutSeconds": 25, "minIntervalSeconds": 0, "maxRetries": 0})
+    chat.reconfigure(judge={"timeoutSeconds": 25})
     chat.advance(5)
     await chat.tick()
     assert chat.model_calls() == calls

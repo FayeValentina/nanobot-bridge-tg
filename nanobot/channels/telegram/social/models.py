@@ -116,7 +116,7 @@ class Snapshot(TypedDict):
     wake_reason: str | None
     opportunity: dict[str, object] | None
     dialogue: DialogueContext | None
-    judgement: list[dict[str, object]]
+    admission: dict[str, str] | None
     view_end: str
 
 

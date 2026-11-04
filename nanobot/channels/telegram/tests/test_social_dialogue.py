@@ -13,7 +13,7 @@ from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
-from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
+from nanobot.channels.telegram.tests.test_social_judge import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
 from nanobot.channels.telegram.tests.test_social_scheduler import (
     clock,
@@ -299,9 +299,7 @@ async def test_local_admission_catches_plain_answer_without_idle_model_calls(dia
     msg, view = take(dialogue)
     assert view["wake_reason"] == "judge"
     provider.chat.assert_not_awaited()
-    batch = dialogue.store.db.execute("SELECT id FROM judge_batches ORDER BY through_seq DESC LIMIT 1").fetchone()[0]
-    snapshot = dialogue.judging._restore(batch).model_dump(mode="json")
-    assert any(message["is_self"] and message["text"] == "你什么时候出发？" for message in snapshot["messages"])
+    assert any(message["is_self"] and message["text"] == "你什么时候出发？" for message in view["messages"])
     ctx2 = admit(dialogue, msg)
     finish(dialogue, ctx2)
     clock(dialogue).advance(600)
@@ -339,9 +337,7 @@ async def test_reply_arriving_during_platform_send_is_not_lost(dialogue):
     assert view["wake_reason"] == "judge"
     assert any(m["text"] == "下午三点" for m in view["messages"])
     provider.chat.assert_not_awaited()
-    batch = dialogue.store.db.execute("SELECT id FROM judge_batches ORDER BY through_seq DESC LIMIT 1").fetchone()[0]
-    snapshot = dialogue.judging._restore(batch).model_dump(mode="json")
-    assert any(message["is_self"] and message["text"] == "你什么时候出发？" for message in snapshot["messages"])
+    assert any(message["is_self"] and message["text"] == "你什么时候出发？" for message in view["messages"])
 
 
 async def test_judge_observes_unrelated_participant_then_accepts_reply(dialogue):
@@ -361,7 +357,7 @@ async def test_judge_observes_unrelated_participant_then_accepts_reply(dialogue)
     await dialogue.run_due()
     assert dialogue.bus.inbound.qsize() == 1
     snapshot = json.loads(provider.chat.call_args.kwargs["messages"][1]["content"])
-    assert snapshot["messages"][-1]["reply"]["kind"] == "bot"
+    assert snapshot["new"][-1]["reply"]["kind"] == "bot"
 
 
 async def test_confirmed_context_survives_restart_without_idle_model_calls(dialogue):
@@ -384,9 +380,8 @@ async def test_confirmed_context_survives_restart_without_idle_model_calls(dialo
         await restored.run_due()
         assert bus.inbound.qsize() == 1
         provider.chat.assert_not_awaited()
-        batch = restored.store.db.execute("SELECT id FROM judge_batches ORDER BY through_seq DESC LIMIT 1").fetchone()[0]
-        snapshot = restored.judging._restore(batch).model_dump(mode="json")
-        assert any(message["is_self"] and message["text"] == "什么时候出发？" for message in snapshot["messages"])
+        _, view = take(restored)
+        assert any(message["is_self"] and message["text"] == "什么时候出发？" for message in view["messages"])
     finally:
         restored.close()
 
@@ -547,6 +542,7 @@ async def test_restart_preserves_automatic_quiet_deadline(dialogue):
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
         restored.store.recover()
+        restored.judging.recover()
         await restored.run_due()
         assert bus.inbound.empty()
         now.advance(4)

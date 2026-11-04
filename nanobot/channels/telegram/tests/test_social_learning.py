@@ -256,6 +256,27 @@ def test_upgrade_schema_thirteen_preserves_all_existing_source_values(store, tmp
         store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
         store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
         store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
+        store.db.executescript("""
+ALTER TABLE wakes DROP COLUMN admission;
+ALTER TABLE judge_state ADD COLUMN pending_first REAL;
+ALTER TABLE judge_state ADD COLUMN pending_last REAL;
+ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN pending_due REAL;
+ALTER TABLE judge_state ADD COLUMN pending_max REAL;
+ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
+ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
+CREATE TABLE judge_batches (
+    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
+    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
+    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
+    condition_config TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
+        """)
         store.db.execute("PRAGMA user_version=13")
     store.close()
     restored = SocialStore(tmp_path, now=lambda: 1000.)
@@ -413,6 +434,27 @@ def test_upgrade_seventeen_retains_learning_batches_and_adds_nullable_detail(sto
         store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
         store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
         store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
+        store.db.executescript("""
+ALTER TABLE wakes DROP COLUMN admission;
+ALTER TABLE judge_state ADD COLUMN pending_first REAL;
+ALTER TABLE judge_state ADD COLUMN pending_last REAL;
+ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN pending_due REAL;
+ALTER TABLE judge_state ADD COLUMN pending_max REAL;
+ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
+ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
+CREATE TABLE judge_batches (
+    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
+    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
+    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
+    condition_config TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
+        """)
         store.db.execute("PRAGMA user_version=17")
     store.close()
     restored = SocialStore(tmp_path, now=lambda: 1000.)

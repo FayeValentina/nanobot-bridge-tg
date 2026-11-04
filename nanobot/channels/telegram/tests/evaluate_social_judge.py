@@ -17,11 +17,11 @@ from loguru import logger
 
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.telegram.social.judge import SocialJudge, make_judge_provider
-from nanobot.channels.telegram.social.judge_models import (
+from nanobot.channels.telegram.social.judge import (
     JUDGE_PROMPT_VERSION,
-    JudgeDecision,
-    JudgeSnapshot,
+    JudgeInput,
+    JudgeVerdict,
+    make_judge_provider,
 )
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
@@ -29,47 +29,39 @@ from nanobot.channels.telegram.social.models import (
     QuotedMessage,
 )
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
-from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import (
     Config,
     TelegramSocialConfig,
     TelegramSocialJudgeConfig,
     TelegramSocialScopeConfig,
 )
+from nanobot.utils.prompt_templates import render_template
 
 
 async def evaluate(args):
-    settings = TelegramSocialJudgeConfig(oauth_storage_dir=args.oauth_dir, max_retries=0,
-                                         max_fallbacks_per_hour=0, min_interval_seconds=0)
+    settings = TelegramSocialJudgeConfig(oauth_storage_dir=args.oauth_dir)
     provider, version = make_judge_provider(Config(), settings)
     if args.snapshot:
         # Historical model-input replay only: never hand an expired batch to the
         # scheduler or change the live assessment/read watermarks.
-        snapshot = JudgeSnapshot.model_validate_json(args.snapshot.read_text())
+        snapshot = JudgeInput.model_validate_json(args.snapshot.read_text())
         results = []
-        with tempfile.TemporaryDirectory(prefix="judge-input-replay-") as directory:
-            store = SocialStore(Path(directory))
-            try:
-                judge = SocialJudge(store, settings, provider)
-                prompt = args.system_prompt.read_text() if args.system_prompt else judge.system_prompt(snapshot)
-                for index in range(args.repeat):
-                    response = await provider.chat(
-                        messages=[{"role": "system", "content": prompt},
-                                  {"role": "user", "content": snapshot.prompt_json()}],
-                        tools=None, model=settings.model, max_tokens=settings.max_tokens,
-                        temperature=0, reasoning_effort=settings.reasoning_effort, tool_choice="none")
-                    if response.tool_calls or response.finish_reason != "stop" or response.content is None:
-                        raise ValueError("historical replay did not return a final decision")
-                    decision = JudgeDecision.model_validate_json(response.content)
-                    decision.validate_for(snapshot)
-                    result = {"run": index+1, "decision": decision.model_dump(mode="json"),
-                              "matched": args.expected is None or decision.decision == args.expected}
-                    results.append(result)
-                    print(json.dumps(result, ensure_ascii=False), flush=True)
-            finally:
-                store.close()
+        identity = {"bot_username": snapshot.bot_username, "bot_name": snapshot.bot_name, "nicknames": snapshot.nicknames}
+        prompt = args.system_prompt.read_text() if args.system_prompt else render_template("telegram/social_judge.md") + "\nRuntime target bot identity: " + json.dumps(identity, ensure_ascii=False)
+        for index in range(args.repeat):
+            response = await provider.chat(
+                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": snapshot.prompt_json()}],
+                tools=None, model=settings.model, max_tokens=settings.max_tokens,
+                temperature=0, reasoning_effort=settings.reasoning_effort, tool_choice="none")
+            if response.tool_calls or response.finish_reason != "stop" or response.content is None:
+                raise ValueError("historical replay did not return a final decision")
+            decision = JudgeVerdict.model_validate_json(response.content)
+            result = {"run": index+1, "decision": decision.model_dump(mode="json"),
+                      "matched": args.expected is None or decision.decision == args.expected}
+            results.append(result)
+            print(json.dumps(result, ensure_ascii=False), flush=True)
         args.output.write_text(json.dumps({"model": settings.model, "historical_input_replay": True,
-            "messages": len(snapshot.messages), "results": results}, ensure_ascii=False, indent=2))
+            "messages": len(snapshot.context) + len(snapshot.new), "results": results}, ensure_ascii=False, indent=2))
         args.output.chmod(0o600)
         if not all(result["matched"] for result in results):
             raise SystemExit("Historical model-input replay has mismatches")
@@ -127,17 +119,15 @@ async def evaluate(args):
                 await runtime.run_due()
                 await asyncio.gather(*list(runtime.judging.tasks.values()))
                 await runtime.run_due()
-                row = runtime.store.db.execute("SELECT * FROM judge_batches ORDER BY created DESC LIMIT 1").fetchone()
-                decision = json.loads(row["decision"]) if row and row["decision"] else {}
-                attempt = runtime.store.db.execute("SELECT latency_ms,input_tokens,output_tokens,total_tokens,error_code "
-                                                   "FROM judge_attempts ORDER BY rowid DESC LIMIT 1").fetchone()
-                snapshot = runtime.judging._restore(row["id"]) if row else None
+                row = runtime.store.db.execute("SELECT admission,condition_config FROM wakes WHERE admission IS NOT NULL ORDER BY created DESC LIMIT 1").fetchone()
+                admission = json.loads(row["admission"]) if row else None
+                decision = {"decision": "wake" if admission else "observe",
+                            "fulfills_intent": bool(row and row["condition_config"] != "{}")}
                 result = {"case": case["name"], "expected": case["expected"], "decision": decision,
-                    "matched": decision.get("decision") == case["expected"] and decision.get("fulfills_intent") == case.get("fulfills", False),
-                    "elapsed_ms": round((time.monotonic()-started)*1000), "attempt": dict(attempt) if attempt else None,
-                    "full_chars": len(snapshot.model_dump_json()) if snapshot else 0,
-                    "model_chars": len(snapshot.prompt_json()) if snapshot else 0,
-                    "main_candidates": runtime.bus.inbound.qsize(), "status": row["status"] if row else "missing"}
+                    "admission": admission,
+                    "matched": decision["decision"] == case["expected"] and decision["fulfills_intent"] == case.get("fulfills", False),
+                    "elapsed_ms": round((time.monotonic()-started)*1000),
+                    "main_candidates": runtime.bus.inbound.qsize()}
                 assert runtime.store.scopes.state(scope.session_key)["read_through"] == 0
                 assert runtime.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
                 # A setup wake is historical; it must not be delivered again.
@@ -161,7 +151,7 @@ if __name__ == "__main__":
     parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("fixtures") / "social_judge_v3c.json")
     parser.add_argument("--case", action="append")
     parser.add_argument("--persona", type=Path, help="Use the reviewed role file in the actual 600-character summary")
-    parser.add_argument("--snapshot", type=Path, help="Replay an exported JudgeSnapshot without scheduling/delivery")
+    parser.add_argument("--snapshot", type=Path, help="Replay an exported JudgeInput without scheduling/delivery")
     parser.add_argument("--system-prompt", type=Path, help="Replay a saved baseline system prompt with --snapshot")
     parser.add_argument("--repeat", type=int, default=1, choices=range(1, 11))
     parser.add_argument("--expected", choices=["wake", "observe"])

@@ -7,7 +7,7 @@ import random
 import sqlite3
 from collections.abc import Callable
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from nanobot.channels.telegram.social.db.connection import transaction
@@ -27,9 +27,14 @@ def is_quiet(binding: TelegramSocialScopeConfig, now: float) -> bool:
     return start <= minute < end if start < end else minute >= start or minute < end
 
 
+if TYPE_CHECKING:
+    from nanobot.channels.telegram.social.judge import PendingWindows
+
+
 class SocialProactive:
-    def __init__(self, store: SocialStore, memory: SocialMemory, *,
+    def __init__(self, store: SocialStore, memory: SocialMemory, windows: PendingWindows, *,
                  random_value: Callable[[], float] = random.random) -> None:
+        self.windows = windows
         self.store = store
         self.memory = memory
         self.db = store.db
@@ -130,7 +135,7 @@ class SocialProactive:
                 state = self.store.scopes.last_member_at(key)
                 if state[0] is not None and now - float(state[0]) < binding.proactive.idle_seconds:
                     return "member_active"
-                if self.store.judge.pending(key):
+                if self.windows.has(key):
                     return "conversation_arrived"
         elif binding.proactive.require_context:
             return "context_required"
@@ -165,7 +170,7 @@ class SocialProactive:
             common = "deferred"
         elif self.store.wakes.active_wake(key, now):
             common = "busy"
-        elif self.store.judge.pending(key):
+        elif self.windows.has(key):
             common = "busy"
         elif self.store.scopes.state(key)["mode"] == "active":
             common = "busy"

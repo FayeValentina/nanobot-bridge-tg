@@ -194,7 +194,7 @@ def test_expiry_hides_fact_and_requires_new_evidence_to_relearn(tmp_path):
         "coalesceSeconds": 0,
         "cooldownSeconds": 0,
         "sendCooldownSeconds": 0,
-        "judge": {"minIntervalSeconds": 0},
+        "judge": {},
         "scopes": [
             {"chatId": -1001, "threadId": 42, "roleId": "a", "background": "ALPHA BACKGROUND"},
             {"chatId": -1002, "threadId": 42, "roleId": "b"},

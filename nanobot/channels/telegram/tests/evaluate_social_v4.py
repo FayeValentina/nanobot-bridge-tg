@@ -121,7 +121,7 @@ async def pump(runtime: TelegramSocialRuntime, clock: Clock) -> None:
         if tasks:
             await asyncio.gather(*tasks)
         await runtime.run_due()
-        pending = runtime.store.db.execute("SELECT MIN(pending_due) FROM judge_state WHERE pending_due IS NOT NULL").fetchone()[0]
+        pending = runtime.judging.next_due()
         if pending is None or not runtime.bus.inbound.empty():
             break
         clock.value = max(clock.value, float(pending))
@@ -334,8 +334,7 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                 await pump(runtime, clock)
                 if not runtime.bus.inbound.empty():
                     await run_main(runtime.bus.inbound.get_nowait())
-            judgement = [dict(row) for row in runtime.store.db.execute("SELECT status,decision,attempts FROM judge_batches")]
-            judgement_metrics = [dict(row) for row in runtime.store.db.execute("SELECT latency_ms,input_tokens,output_tokens,total_tokens,error_code FROM judge_attempts")]
+            admissions = [json.loads(row[0]) for row in runtime.store.db.execute("SELECT admission FROM wakes WHERE admission IS NOT NULL")]
             followup = runtime.store.followups.describe(memory_id).model_dump() if memory_id else None
             question = any("?" in text or "？" in text for text in publications)
             checks = {"main_completed": bool(turns) and all(not turn["error"] for turn in turns),
@@ -368,12 +367,12 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
             if name in {"search_failed", "search_disabled"}:
                 checks["unavailable_web_stays_quiet"] = not publications
             if input_text is None:
-                checks["idle_bypassed_judge"] = not judgement
+                checks["idle_bypassed_judge"] = not admissions
             result = {"case": name, "input_text": input_text, "automated_checks": checks,
                 "elapsed_ms": round((time.monotonic()-case_started)*1000),
                 "matched": all(checks.values()), "needs_semantic_review": True, "publications": publications,
                 "has_question_mark": question, "turns": turns, "followup": followup,
-                "no_reply_calls": no_reply_calls, "web": web_trace, "judge": judgement, "judge_metrics": judgement_metrics,
+                "no_reply_calls": no_reply_calls, "web": web_trace, "admissions": admissions,
                 "main_calls": provider.calls[initial_calls:], "proactive": runtime.proactive.status(SCOPE.session_key),
                 "actions": [dict(row) for row in runtime.store.db.execute("SELECT status,message_id,group_id FROM actions WHERE message_id>=500")],
                 "ordinary_deliveries": [dict(row) for row in runtime.store.db.execute("SELECT status,message_ids FROM message_deliveries")]}

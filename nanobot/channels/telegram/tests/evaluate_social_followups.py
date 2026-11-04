@@ -111,21 +111,10 @@ async def evaluate(args):
                 await runtime.run_due()
                 await asyncio.gather(*list(runtime.judging.tasks.values()))
                 await runtime.run_due()
-                for _ in range(social_settings.judge.max_retries):
-                    pending = runtime.store.db.execute("SELECT status,decision,due FROM judge_batches ORDER BY created DESC LIMIT 1").fetchone()
-                    if pending is None or pending["status"] != "pending" or pending["decision"] is not None:
-                        break
-                    await asyncio.sleep(max(0,pending["due"]-runtime.now()))
-                    await runtime.run_due()
-                    await asyncio.gather(*list(runtime.judging.tasks.values()))
-                    await runtime.run_due()
-                decision = runtime.store.db.execute("SELECT id,decision,attempts,status,error_code,due,expires FROM judge_batches ORDER BY created DESC LIMIT 1").fetchone()
-                if decision is None or decision["decision"] is None:
-                    raise RuntimeError(f"intermediary did not decide: {dict(decision) if decision is not None else 'no batch'}")
-                judge_result = {"model":social_settings.judge.model,"decision":json.loads(decision["decision"]),"model_calls":decision["attempts"]}
-                judge_result["metrics"] = [dict(row) for row in runtime.store.db.execute(
-                    "SELECT latency_ms,input_tokens,output_tokens,total_tokens FROM judge_attempts WHERE batch_id=? ORDER BY attempt", (decision["id"],))]
-                assert judge_result["decision"]["decision"] == "wake"
+                admission = runtime.store.db.execute("SELECT admission FROM wakes WHERE admission IS NOT NULL ORDER BY created DESC LIMIT 1").fetchone()
+                if admission is None:
+                    raise RuntimeError("no admitted wake")
+                judge_result = {"model": social_settings.judge.model, "admission": json.loads(admission[0])}
                 inbound = runtime.bus.inbound.get_nowait()
                 ctx.metadata.update(inbound.metadata)
                 runtime.waiting.admit_request(ctx)

@@ -66,7 +66,7 @@ async def test_training_replays_every_human_at_source_time_without_consuming_hol
     assert report['learning_does_not_advance_main'] and report['public_sends']==0
 
 
-def test_release_rebind_preserves_judge_cursor_and_active_proactive_deadline(tmp_path):
+def test_release_rebind_resets_judge_cursor_and_preserves_active_proactive_deadline(tmp_path):
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.telegram.social.models import ObservedMessage
     from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
@@ -83,13 +83,12 @@ def test_release_rebind_preserves_judge_cursor_and_active_proactive_deadline(tmp
     try:
         runtime.store.observe(ObservedMessage(scope,1,1,'member','Member',now[0],'new'),500)
         with runtime.store.db:
-            runtime.store.db.execute('UPDATE judge_state SET assessed_through=0,pending_due=1002 WHERE scope=?',(scope.session_key,))
+            runtime.store.db.execute('UPDATE judge_state SET assessed_through=0 WHERE scope=?',(scope.session_key,))
         due=runtime.proactive.status(scope.session_key)['next_check']
         runtime.store.bind(scope,'new-protocol')
         runtime.proactive.sync(scope,cfg.scopes[0])
-        assert runtime.store.judge.through(scope.session_key)==0
+        assert runtime.store.judge.through(scope.session_key)==1
         assert runtime.proactive.status(scope.session_key)['next_check']==due
-        assert runtime.store.db.execute('SELECT pending_due FROM judge_state WHERE scope=?',(scope.session_key,)).fetchone()[0]==1000
         # A real policy change still reschedules; a mere protocol rebind does not.
         cfg.scopes[0].proactive.min_interval_seconds=60
         cfg.scopes[0].proactive.max_interval_seconds=60

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from nanobot.agent.tools.context import RequestContext
 from nanobot.channels.telegram.social.bindings import ScopeBindings
@@ -20,16 +20,21 @@ from nanobot.config.schema import (
     TelegramSocialWakeConfig,
 )
 
+if TYPE_CHECKING:
+    from nanobot.channels.telegram.social.judge import PendingWindows
+
 
 class SocialWaiting:
     """wait / sleep / set_wake semantics and model-configured wake conditions."""
 
     def __init__(self, store: SocialStore, bindings: ScopeBindings, proactive: SocialProactive,
+                 windows: PendingWindows,
                  notify: Callable[[], None], config: Callable[[], TelegramSocialConfig],
                  now: Callable[[], float]) -> None:
         self.store = store
         self.bindings = bindings
         self.proactive = proactive
+        self.windows = windows
         self.notify = notify
         self.config = config
         self.now = now
@@ -99,6 +104,9 @@ class SocialWaiting:
                                                quiet=quiet, seconds=seconds, on_timeout=on_timeout,
                                                condition_expires=conditions.expires_at if purpose == "messages" and (dynamic or infinite) else None,
                                                selective=True, max_delay=self.config().dynamic_wait.max_seconds)
+            # wait_for_quiet returns total_due as the dialogue deadline or None.
+            if result["deferred"]:
+                self.windows.shorten(scope.session_key, quiet, cast(float | None, result["total_due"]))
             ctx.attributes["social_deferred"] = result["deferred"]
             self.notify()
             return result
@@ -175,8 +183,11 @@ class SocialWaiting:
         if confirmed is None:
             return
         conditions, dynamic = self.effective(key, binding)
-        self.store.wait_for_quiet(key, turn, purpose="messages", quiet=self.config().dynamic_wait.quiet_seconds,
+        result = self.store.wait_for_quiet(key, turn, purpose="messages", quiet=self.config().dynamic_wait.quiet_seconds,
                                   seconds=min(30, self.config().max_wait_seconds), on_timeout=False, selective=True,
                                   condition_expires=conditions.expires_at if dynamic else None,
                                   max_delay=self.config().dynamic_wait.max_seconds)
+        # wait_for_quiet returns total_due as the dialogue deadline or None.
+        if result["deferred"]:
+            self.windows.shorten(key, self.config().dynamic_wait.quiet_seconds, cast(float | None, result["total_due"]))
         self.notify()

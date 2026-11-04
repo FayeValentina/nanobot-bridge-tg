@@ -281,8 +281,7 @@ class ExpressionLearner:
             self.task.cancel()
 
     def busy(self) -> bool:
-        return bool(self.main_busy() or self.judge_busy() or self.store.wakes.any_active()
-                    or self.store.judge.any_pending())
+        return bool(self.main_busy() or self.judge_busy() or self.store.wakes.any_active())
 
     def start_due(self, scopes: list[str]) -> None:
         if (self.provider is None or not scopes or not self.store.learning.config.enabled

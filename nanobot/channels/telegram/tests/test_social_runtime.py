@@ -55,7 +55,7 @@ def social(tmp_path):
         "coalesceSeconds": 0,
         "cooldownSeconds": 0,
         "sendCooldownSeconds": 0,
-        "judge": {"minIntervalSeconds": 0},
+        "judge": {},
         "scopes": [
             {"chatId": -1001, "threadId": 42, "roleId": "a", "background": "ALPHA BACKGROUND"},
             {"chatId": -1002, "threadId": 42, "roleId": "b"},

@@ -20,7 +20,7 @@ from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import SocialDeliveryUnknownError
 from nanobot.channels.telegram.social.runtime import SOCIAL_PROTOCOL, TelegramSocialRuntime
 from nanobot.channels.telegram.social.store import SocialStore
-from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
+from nanobot.channels.telegram.tests.test_social_judge import decide
 from nanobot.channels.telegram.tests.test_social_proactive import enable, tick
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, channel
 from nanobot.channels.telegram.tests.test_social_scheduler import (
@@ -350,11 +350,10 @@ async def test_main_send_registers_local_wait_then_short_reply_reaches_v3(tmp_pa
         await task
     await social.run_due()
     provider.chat.assert_not_awaited()
-    batch = social.store.db.execute("SELECT id FROM judge_batches ORDER BY through_seq DESC LIMIT 1").fetchone()[0]
-    prompt = social.judging._restore(batch).model_dump(mode="json")
-    assert prompt["intent"]["purpose"] == "messages"
-    assert prompt["followups"][0]["id"] == item["id"]
-    assert any(message["is_self"] and "什么时候" in message["text"] for message in prompt["messages"])
+    assert social.judging.intent(A.session_key) is None
+    assert social.store.followups.summary(A.session_key)[0]["id"] == item["id"]
+    assert any(message["is_self"] and "什么时候" in message["text"]
+               for message in social.store.view(A.session_key, count=20, chars=10000)["messages"])
     clock(social).advance(social.config.cooldown_seconds)
     await social.run_due()
     assert not social.bus.inbound.empty()
@@ -381,6 +380,27 @@ def test_schema_twelve_upgrade_preserves_sources(social):
     social.store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
     social.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
     social.store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
+    social.store.db.executescript("""
+ALTER TABLE wakes DROP COLUMN admission;
+ALTER TABLE judge_state ADD COLUMN pending_first REAL;
+ALTER TABLE judge_state ADD COLUMN pending_last REAL;
+ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN pending_due REAL;
+ALTER TABLE judge_state ADD COLUMN pending_max REAL;
+ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
+ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
+CREATE TABLE judge_batches (
+    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
+    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
+    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
+    condition_config TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
+    """)
     social.store.db.execute("PRAGMA user_version=12")
     social.store.db.commit()
     messages = [tuple(row) for row in social.store.db.execute("SELECT * FROM messages")]
@@ -402,6 +422,27 @@ def test_schema_twelve_upgrade_failure_rolls_back(social, monkeypatch):
     social.store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
     social.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
     social.store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
+    social.store.db.executescript("""
+ALTER TABLE wakes DROP COLUMN admission;
+ALTER TABLE judge_state ADD COLUMN pending_first REAL;
+ALTER TABLE judge_state ADD COLUMN pending_last REAL;
+ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN pending_due REAL;
+ALTER TABLE judge_state ADD COLUMN pending_max REAL;
+ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
+ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
+CREATE TABLE judge_batches (
+    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
+    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
+    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
+    condition_config TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
+    """)
     social.store.db.execute("PRAGMA user_version=12")
     social.store.db.commit()
     social.close()
@@ -457,11 +498,32 @@ def test_schema_twenty_merges_delivery_rows_and_preserves_followup_ids(social):
         db.execute("INSERT INTO message_deliveries VALUES('legacy-queued',?,'pending-turn',?,'queued','[]','pending receipt','old-version')",
                    (A.session_key, social.now()))
         db.execute("UPDATE followup_sends SET delivery_id='legacy-sent' WHERE delivery_id=?", (action,))
+        db.executescript("""
+ALTER TABLE wakes DROP COLUMN admission;
+ALTER TABLE judge_state ADD COLUMN pending_first REAL;
+ALTER TABLE judge_state ADD COLUMN pending_last REAL;
+ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN pending_due REAL;
+ALTER TABLE judge_state ADD COLUMN pending_max REAL;
+ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
+ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
+CREATE TABLE judge_batches (
+    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
+    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
+    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
+    condition_config TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
+        """)
         db.execute("PRAGMA user_version=20")
     social.close()
     restored = SocialStore(social.root, now=social.now)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 21
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         rows = {row["id"]: dict(row) for row in restored.db.execute("SELECT * FROM actions")}
         assert len(rows) == 3
         assert (rows[action]["kind"], rows[action]["status"], rows[action]["content"], rows[action]["message_ids"]) == ("text", "sent", "legacy reservation", "[501]")

@@ -65,7 +65,7 @@ class SocialHarness:
             "coalesceSeconds": 0, "cooldownSeconds": 0, "sendCooldownSeconds": 0,
             "maxRequestsPerHour": 120, "maxSendsPerHour": 60,
             "dynamicWait": {"quietSeconds": 0.1},
-            "judge": {"minIntervalSeconds": 0, "maxRetries": 0},
+            "judge": {},
             "learning": {"enabled": False},
             "scopes": [{"chatId": -1001, "threadId": 42, "roleId": "friend",
                         "wakeOnMessages": True}],

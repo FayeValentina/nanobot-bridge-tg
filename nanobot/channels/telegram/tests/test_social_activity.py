@@ -74,9 +74,8 @@ async def test_work_still_respects_request_budget_stop_and_new_member_priority(s
     inbound = social.bus.inbound.get_nowait()
     with social.store.db:
         social.store.db.execute("UPDATE scopes SET last_member_at=? WHERE key=?", (social.now(), A.session_key))
-    # idleSeconds=0 in this fixture, so an in-flight judge batch is the priority guard.
-    with social.store.db:
-        social.store.db.execute("UPDATE judge_state SET inflight=1 WHERE scope=?", (A.session_key,))
+    # idleSeconds=0 in this fixture, so a pending message window is the priority guard.
+    social.windows.add(A.session_key, 1, social.now())
     with pytest.raises(PermissionError, match="conversation_arrived"):
         claim(social, inbound)
 
@@ -177,6 +176,27 @@ def test_schema_sixteen_migration_preserves_data_and_rolls_back(social, monkeypa
         db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
         db.execute("ALTER TABLE actions DROP COLUMN message_ids")
         db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
+        db.executescript("""
+ALTER TABLE wakes DROP COLUMN admission;
+ALTER TABLE judge_state ADD COLUMN pending_first REAL;
+ALTER TABLE judge_state ADD COLUMN pending_last REAL;
+ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN pending_due REAL;
+ALTER TABLE judge_state ADD COLUMN pending_max REAL;
+ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
+ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
+CREATE TABLE judge_batches (
+    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
+    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
+    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
+    condition_config TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
+        """)
         db.execute("PRAGMA user_version=16")
     scopes = [tuple(row) for row in db.execute("SELECT * FROM scopes")]
     social.close()

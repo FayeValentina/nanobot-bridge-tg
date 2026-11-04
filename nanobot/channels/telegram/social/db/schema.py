@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from nanobot.channels.telegram.social.store import SocialStore
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 
 def initialize_social_schema(store: SocialStore) -> None:
@@ -34,6 +34,7 @@ def initialize_social_schema(store: SocialStore) -> None:
                 update_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
                 sender_id TEXT NOT NULL, display_name TEXT NOT NULL, at REAL NOT NULL,
                 text TEXT NOT NULL, reply_to INTEGER, media TEXT NOT NULL, is_self INTEGER NOT NULL,
+                judge_facts TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY(scope, seq), UNIQUE(scope, message_id)
             );
             CREATE TABLE updates (channel TEXT NOT NULL, id INTEGER NOT NULL,
@@ -47,8 +48,10 @@ def initialize_social_schema(store: SocialStore) -> None:
                 id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
                 version TEXT NOT NULL, trigger_seq INTEGER NOT NULL,
                 status TEXT NOT NULL, created REAL NOT NULL, expires REAL NOT NULL,
-                turn_id TEXT
+                turn_id TEXT, admission TEXT
             );
+            CREATE TABLE judge_state (scope TEXT PRIMARY KEY, assessed_through INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE runtime_settings (name TEXT PRIMARY KEY, value TEXT NOT NULL, revision INTEGER NOT NULL);
             CREATE TABLE actions (
                 id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
                 version TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL,
@@ -211,7 +214,7 @@ def initialize_social_schema(store: SocialStore) -> None:
             PRAGMA user_version=8;
             COMMIT;
         """)
-    if version < 9:
+    if 0 < version < 9:
         store.db.executescript("""
             BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS judge_state (
@@ -238,7 +241,7 @@ def initialize_social_schema(store: SocialStore) -> None:
             PRAGMA user_version=9;
             COMMIT;
         """)
-    if version < 10:
+    if 0 < version < 10:
         with store.db:
             for table, columns in {
                 "messages": {"judge_facts": "TEXT NOT NULL DEFAULT '{}'"},
@@ -256,7 +259,7 @@ def initialize_social_schema(store: SocialStore) -> None:
             store.db.execute("INSERT INTO judge_state(scope,assessed_through) SELECT key,next_seq-1 FROM scopes WHERE 1 "
                             "ON CONFLICT(scope) DO UPDATE SET assessed_through=MAX(assessed_through,excluded.assessed_through)")
             store.db.execute("PRAGMA user_version=10")
-    if version < 11:
+    if 0 < version < 11:
         _upgrade_without_hashes(store)
     if version < 12:
         with store.db:
@@ -336,7 +339,28 @@ def initialize_social_schema(store: SocialStore) -> None:
             COMMIT;
         """)
     if version == 0:
-        store.db.execute("PRAGMA user_version=21")
+        store.db.execute("PRAGMA user_version=22")
+    if 0 < version < 22:
+        _upgrade_judge_schema(store)
+
+
+def _upgrade_judge_schema(store: SocialStore) -> None:
+    """Export the schema-21 intermediary history before retiring its tables."""
+    with store.db:
+        store.db.execute("BEGIN IMMEDIATE")
+        history = {table: [dict(row) for row in store.db.execute(f"SELECT * FROM {table}")]
+                   for table in ("judge_batches", "judge_attempts")}
+        backup = store.root / "backups"
+        backup.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (backup / "judge-history-schema21.json").write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
+        store.db.execute("DROP TABLE judge_attempts")
+        store.db.execute("DROP TABLE judge_batches")
+        store.db.execute("CREATE TABLE judge_state_v22 (scope TEXT PRIMARY KEY, assessed_through INTEGER NOT NULL DEFAULT 0)")
+        store.db.execute("INSERT INTO judge_state_v22 SELECT scope,assessed_through FROM judge_state")
+        store.db.execute("DROP TABLE judge_state")
+        store.db.execute("ALTER TABLE judge_state_v22 RENAME TO judge_state")
+        store.db.execute("ALTER TABLE wakes ADD COLUMN admission TEXT")
+        store.db.execute("PRAGMA user_version=22")
 
 
 def _upgrade_without_hashes(store: SocialStore) -> None:

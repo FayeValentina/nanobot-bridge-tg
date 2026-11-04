@@ -1,20 +1,15 @@
-"""Message-pool integration: local admission, semantic judge and durable handoff."""
+"""In-memory message windows, local admission and single-call judge handoff."""
 
 import asyncio
-import base64
-import io
 import json
 from dataclasses import replace
-from unittest.mock import AsyncMock
 
 import pytest
-from PIL import Image
 from telegram import Update
 
-from nanobot.channels.telegram.social.judge_models import JudgeSnapshot
-from nanobot.channels.telegram.social.models import QuotedMessage
+from nanobot.channels.telegram.social.judge import JudgeInput, PendingWindows
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
-from nanobot.channels.telegram.tests.test_social_media import picture, reference
+from nanobot.channels.telegram.tests.test_social_judge import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, channel, telegram_update
 from nanobot.channels.telegram.tests.test_social_scheduler import (
     clock,
@@ -23,34 +18,12 @@ from nanobot.channels.telegram.tests.test_social_scheduler import (
     observed,
     social,
 )
-from nanobot.providers.base import LLMProvider, LLMResponse
 
 __all__ = ["social"]
 
 
-def decide(runtime, decision="wake", *, fulfills=False, error=False):
-    provider = AsyncMock(spec=LLMProvider)
-
-    async def respond(**kwargs):
-        content = kwargs["messages"][1]["content"]
-        snapshot = json.loads(content[0]["text"] if isinstance(content, list) else content)
-        if error:
-            return LLMResponse(content=None, finish_reason="error")
-        source = snapshot["new_seqs"][-1:] or tuple(message["seq"] for message in snapshot["messages"] if not message["is_self"])[-1:]
-        return LLMResponse(content=json.dumps({"decision":decision,"through_seq":snapshot["through_seq"],
-                                              "source_seqs":list(source) if decision=="wake" else [],
-                                              "reason":"canned integration outcome", "fulfills_intent":fulfills}))
-
-    provider.chat.side_effect = respond
-    runtime.judging.set_provider(provider, "integration-provider")
-    return provider
-
-
 def sent_snapshot(provider):
-    content = provider.chat.call_args.kwargs["messages"][1]["content"]
-    data = json.loads(content[0]["text"] if isinstance(content, list) else content)
-    return JudgeSnapshot.model_validate_json(json.dumps({**data, "scope": A.session_key,
-        "version": "test", "expires": data["created"] + 120}))
+    return JudgeInput.model_validate_json(provider.chat.call_args.kwargs["messages"][1]["content"])
 
 
 async def due(runtime, seconds=2):
@@ -67,7 +40,7 @@ async def test_every_human_or_directed_batch_wakes_locally_even_with_legacy_prob
     provider.chat.assert_not_awaited()
     inbound=social.bus.inbound.get_nowait()
     view=json.loads(inbound.content.split("\n",1)[1])
-    assert view["wake_reason"]=="judge" and view["judgement"][0]["decision"]["decision"]=="wake"
+    assert view["wake_reason"]=="judge" and view["admission"]["by"] == ("directed" if directed else "conversation")
     assert social.store.scopes.state(A.session_key)["seen_through"]==0
     assert social.store.db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='wake_samples'").fetchone() is None
 
@@ -121,10 +94,9 @@ async def test_peer_bot_messages_use_existing_judge_without_address_gate(social,
     assert await tg._observe_social(update)
     await due(social)
     assert provider.chat.await_count == (0 if directed else 1)
-    row = social.store.db.execute("SELECT id FROM judge_batches").fetchone()
-    snapshot = social.judging._restore(row["id"])
-    assert snapshot.messages[-1].mentions_bot is directed
-    assert snapshot.messages[-1].is_bot
+    if not directed:
+        assert sent_snapshot(provider).new[-1].is_bot
+        assert not sent_snapshot(provider).new[-1].mentions_bot
     assert social.bus.inbound.qsize() == 1
 
 
@@ -158,7 +130,7 @@ async def test_continuous_messages_are_batched_with_a_fixed_total_cap(social):
     await social.run_due()
     provider.chat.assert_awaited_once()
     snapshot=sent_snapshot(provider)
-    assert snapshot.new_seqs==(1,2,3,4)
+    assert tuple(message.seq for message in snapshot.new)==(1,2,3,4)
     assert social.store.scopes.state(A.session_key)["next_seq"]==6
     assert social.bus.inbound.qsize()==1
 
@@ -175,9 +147,9 @@ async def test_topic_root_is_not_presented_as_a_member_reply(social, creator):
     await tg._observe_social(Update.de_json(data,None))
     await due(social)
     provider.chat.assert_not_awaited()
-    snapshot = social.judging._restore(social.store.db.execute("SELECT id FROM judge_batches").fetchone()[0])
-    assert snapshot.messages[-1].reply.kind=="topic_root"
-    assert not snapshot.messages[-1].mentions_bot
+    row = social.store.messages.by_seq(A.session_key, 1)
+    assert json.loads(row["reply_context"])["is_topic_root"]
+    assert not json.loads(row["judge_facts"])["directed"]
 
 
 async def test_judge_latency_does_not_hold_receiver_or_cycle_lock(social):
@@ -201,24 +173,13 @@ async def test_judge_latency_does_not_hold_receiver_or_cycle_lock(social):
     await asyncio.gather(*list(social.judging.tasks.values()))
     assert social.store.judge.through(A.session_key)==1
     assert social.store.scopes.state(A.session_key)["read_through"]==0
-
-
-async def test_network_failures_make_one_bounded_fallback_without_legacy_triggers(social):
-    social.config.judge.retry_delay_seconds=0
-    provider=decide(social,error=True)
-    await social.observe(observed(social, is_bot=True,text="plain input"),directed=False)
+    assert social.windows.has(A.session_key)
     await due(social)
-    await social.run_due()
-    await social.run_due()
-    assert provider.chat.await_count==2
-    assert social.bus.inbound.qsize()==1
-    row=social.store.db.execute("SELECT status,attempts,handoff_job FROM judge_batches").fetchone()
-    assert tuple(row)[:2]==("fallback",2) and row[2]
-    await social.run_due()
-    assert provider.chat.await_count==2 and social.bus.inbound.qsize()==1
+    assert social.store.judge.through(A.session_key) == 2
+    assert provider.chat.await_count == 2
 
 
-async def test_edit_during_judgement_invalidates_even_unchanged_text(social):
+async def test_edit_during_judgement_does_not_recheck_source(social):
     provider = decide(social)
     original = provider.chat.side_effect
     release = asyncio.Event()
@@ -235,25 +196,19 @@ async def test_edit_during_judgement_invalidates_even_unchanged_text(social):
     release.set()
     await asyncio.gather(*list(social.judging.tasks.values()))
     await social.run_due()
-    assert social.bus.inbound.empty()
-    assert social.store.db.execute("SELECT status FROM judge_batches").fetchone()[0] == "cancelled"
+    assert social.bus.inbound.qsize() == 1
     assert social.store.scopes.state(A.session_key)["read_through"] == 0
 
 
 async def test_decision_and_main_handoff_commit_in_one_transaction(social):
-    social.config.judge.retry_delay_seconds=0
-    provider=decide(social)
     social.store.db.execute("CREATE TRIGGER fail_handoff BEFORE INSERT ON wakes BEGIN SELECT RAISE(ABORT,'test'); END")
     social.store.db.commit()
     await social.observe(observed(social),directed=True)
-    await due(social)
-    assert social.store.judge.through(A.session_key)==0
-    assert social.store.db.execute("SELECT status FROM judge_batches").fetchone()[0]=="pending"
+    batch = social.windows.take(A.session_key)
+    with pytest.raises(Exception, match="test"):
+        await social.judging._run(A, batch)
+    assert social.store.judge.through(A.session_key) == 0
     assert social.bus.inbound.empty()
-    social.store.db.execute("DROP TRIGGER fail_handoff")
-    social.store.db.commit()
-    await due(social,1)
-    assert social.bus.inbound.qsize()==1 and provider.chat.await_count==0
 
 
 async def test_two_topics_keep_separate_context_and_main_routes(social):
@@ -278,26 +233,6 @@ async def test_no_new_content_means_no_intermediary_polling(social):
     provider.chat.assert_awaited_once()
 
 
-async def test_restart_preserves_frozen_retry_and_does_not_reset_attempt_budget(social):
-    social.config.judge.retry_delay_seconds=3
-    provider=decide(social,error=True)
-    await social.observe(observed(social, is_bot=True),directed=False)
-    await due(social)
-    batch=social.store.db.execute("SELECT id FROM judge_batches").fetchone()[0]
-    root,config,bus,now=social.root,social.config,social.bus,social.now
-    social.close()
-    restored=TelegramSocialRuntime(config,root,bus,now=now,judge_provider=provider,judge_provider_version="integration-provider")
-    try:
-        await restored.recover()
-        clock(restored).advance(3)
-        await restored.run_due()
-        assert restored.store.judge.record(batch).attempts==2
-        assert restored.store.judge.record(batch).status=="fallback"
-        assert bus.inbound.qsize()==1
-    finally:
-        restored.close()
-
-
 async def test_pause_cancels_pending_judge_without_an_expired_deadline_spin(social):
     provider=decide(social)
     await social.observe(observed(social),directed=True)
@@ -320,17 +255,10 @@ async def test_standing_preferences_do_not_invent_a_selective_wait(social, mode)
     await social.observe(observed(social, text="你别用繁体字"), directed=False)
     await due(social)
     provider.chat.assert_not_awaited()
-    snapshot = social.judging._restore(social.store.db.execute("SELECT id FROM judge_batches").fetchone()[0])
-    assert snapshot.intent is None
-    assert snapshot.participation.on_question
-    assert snapshot.participation.keywords == ("旅行",)
-    assert snapshot.participation.senders == ("456",)
-    assert snapshot.main_running == (mode == "active")
-    assert snapshot.mode == "observing"
+    assert social.judging.intent(A.session_key) is None
     if mode == "observing":
         assert social.bus.inbound.qsize() == 1
-        row = social.store.db.execute("SELECT through_seq,handoff_job FROM judge_batches").fetchone()
-        assert row["through_seq"] == 1 and row["handoff_job"]
+    assert social.store.judge.through(A.session_key) == 1
     assert social.store.scopes.state(A.session_key)["read_through"] == 0
 
 
@@ -345,11 +273,8 @@ async def test_real_selective_wait_keeps_conditions_deadline_and_one_shot(social
     await social.observe(observed(social, text="今晚吃面"), directed=False)
     await due(social)
     snapshot = sent_snapshot(provider)
-    assert snapshot.intent.purpose == "messages"
     assert snapshot.intent.keywords == ("到家",) and snapshot.intent.senders == ("456",)
-    assert snapshot.intent.infinite == infinite
-    assert snapshot.intent.until == (None if infinite else snapshot.intent.condition_expires - 30)
-    assert snapshot.intent.one_shot and snapshot.intent.condition_expires > social.now()
+    assert snapshot.intent.one_shot and snapshot.intent.expires_at > social.now()
     assert social.bus.inbound.empty()
     assert social.store.scopes.state(A.session_key)["wake_config"] != "{}"
 
@@ -378,8 +303,7 @@ async def test_expired_temporary_wait_does_not_fall_back_to_question_only_observ
     await social.observe(observed(social, text="你别用繁体字"), directed=False)
     await due(social)
     provider.chat.assert_not_awaited()
-    snapshot = social.judging._restore(social.store.db.execute("SELECT id FROM judge_batches").fetchone()[0])
-    assert snapshot.intent is None and snapshot.mode == "observing"
+    assert social.judging.intent(A.session_key) is None
     assert social.bus.inbound.qsize() == 1
 
 
@@ -393,9 +317,7 @@ async def test_sleep_observation_is_not_a_selective_question_wait(social):
     await social.observe(observed(social, text="你别用繁体字"), directed=False)
     await due(social)
     provider.chat.assert_not_awaited()
-    snapshot = social.judging._restore(social.store.db.execute("SELECT id FROM judge_batches").fetchone()[0])
-    assert snapshot.intent.purpose == "observe"
-    assert '"waiting_for_questions": false' in snapshot.intent.description
+    assert social.judging.intent(A.session_key) is None
 
 
 def test_state_distinguishes_retired_configuration_and_effective_preferences(social):
@@ -410,159 +332,6 @@ def test_state_distinguishes_retired_configuration_and_effective_preferences(soc
     assert "unfinished_seconds" not in state["dialogue_config"]["dynamic_wait"]
 
 
-async def test_restart_with_changed_judge_rebuilds_pending_input_without_reusing_old_intent(social):
-    social.config.judge.retry_delay_seconds = 3
-    provider = decide(social, error=True)
-    await social.observe(observed(social, is_bot=True, text="你别用繁体字"), directed=False)
-    await due(social)
-    batch = social.store.db.execute("SELECT id FROM judge_batches").fetchone()[0]
-    root, config, bus, now = social.root, social.config, social.bus, social.now
-    social.close()
-    restored = TelegramSocialRuntime(config, root, bus, now=now, judge_provider=provider,
-                                     judge_provider_version="changed-prompt-provider")
-    try:
-        ready = decide(restored)
-        restored.judging.set_provider(ready, "changed-prompt-provider")
-        await restored.recover()
-        assert restored.store.judge.record(batch).status == "cancelled"
-        assert restored.store.judge.record(batch).error_code == "provider_changed"
-        assert bus.inbound.qsize() == 1
-        assert restored.store.scopes.state(A.session_key)["read_through"] == 0
-    finally:
-        restored.close()
-
-
-async def settle_images(social):
-    await due(social)
-    await asyncio.gather(*list(social.judging.tasks.values()))
-    await social.run_due()
-
-
-@pytest.mark.parametrize("kind,caption", [("photo", "[non-text message]"), ("photo", "今天的晚饭"),
-                                         ("document", "[non-text message]")])
-async def test_judge_sees_native_image_before_deciding_and_can_wake_main(social, kind, caption):
-    provider = decide(social)
-    loader = AsyncMock(return_value=picture((1800, 900)))
-    social.set_media_services(loader, AsyncMock())
-    ref = reference(kind=kind)
-    await social.observe(observed(social, is_bot=True, text=caption, media=(kind,), media_refs=(ref,)), directed=False)
-    await settle_images(social)
-    content = provider.chat.call_args.kwargs["messages"][1]["content"]
-    images = [block for block in content if block["type"] == "image_url"]
-    assert len(images) == 1
-    with Image.open(io.BytesIO(base64.b64decode(images[0]["image_url"]["url"].split(",", 1)[1]))) as image:
-        assert image.size == (768, 384)
-    assert "Message 1 (seq 1)" in content[-1]["text"]
-    assert "_meta" not in images[0] and str(social.root) not in json.dumps(content)
-    loader.assert_awaited_once()
-    assert social.bus.inbound.qsize() == 1
-    assert social.store.scopes.state(A.session_key)["read_through"] == 0
-    metadata = social.store.db.execute("SELECT input_meta FROM judge_batches").fetchone()[0]
-    assert "base64" not in metadata and "download-file" not in metadata
-
-
-async def test_album_image_budget_and_topic_isolation(social):
-    social.config.judge.media_max_images = 2
-    provider = decide(social)
-    loader = AsyncMock(return_value=picture())
-    social.set_media_services(loader, AsyncMock())
-    # An unrelated old image in another topic must never be downloaded.
-    social.store.observe(observed(social, 99, is_bot=True, scope=B, media=("photo",),
-                                 media_refs=(reference(file_id="other-topic", unique_id="other"),)), 500)
-    for seq in range(1, 5):
-        await social.observe(observed(social, seq, is_bot=True, text="[non-text message]", media=("photo",),
-            media_refs=(reference(file_id=f"file-{seq}", unique_id=f"unique-{seq}"),), album_id="album"), directed=False)
-    await settle_images(social)
-    blocks = provider.chat.call_args.kwargs["messages"][1]["content"]
-    assert sum(block["type"] == "image_url" for block in blocks) == 2
-    assert "image limit" in blocks[-1]["text"]
-    assert [call.args[0].file_id for call in loader.call_args_list] == ["file-1", "file-2"]
-
-
-async def test_new_text_reply_can_show_its_quoted_image(social):
-    provider = decide(social)
-    loader = AsyncMock(return_value=picture())
-    social.set_media_services(loader, AsyncMock())
-    quote = QuotedMessage(message_id=77, sender_id="member", name="Member", timestamp=social.now()-100, text="",
-                          media_refs=[reference()])
-    await social.observe(observed(social, is_bot=True, text="这个怎么看？", reply_to=77, reply=quote), directed=False)
-    await settle_images(social)
-    blocks = provider.chat.call_args.kwargs["messages"][1]["content"]
-    assert sum(block["type"] == "image_url" for block in blocks) == 1
-    assert "Quoted message 77, replied to by seq 1" in blocks[-1]["text"]
-
-
-@pytest.mark.parametrize("failure", ["download", "invalid", "oversize", "timeout"])
-async def test_unavailable_judge_image_is_explicit_without_extra_model_calls(social, failure):
-    provider = decide(social, "observe")
-    loader = AsyncMock(return_value=b"broken" if failure == "invalid" else picture())
-    if failure == "download":
-        loader.side_effect = RuntimeError("offline")
-    if failure == "timeout":
-        social.config.judge.media_timeout_seconds = 0.1
-
-        async def blocked(*args):
-            await asyncio.Event().wait()
-
-        loader.side_effect = blocked
-    social.set_media_services(loader, AsyncMock())
-    ref = reference(size=social.config.media_max_bytes+1) if failure == "oversize" else reference()
-    await social.observe(observed(social, is_bot=True, media=("photo",), media_refs=(ref,)), directed=False)
-    await settle_images(social)
-    provider.chat.assert_awaited_once()
-    blocks = provider.chat.call_args.kwargs["messages"][1]["content"]
-    assert not any(block["type"] == "image_url" for block in blocks)
-    assert "unavailable" in blocks[-1]["text"]
-    assert social.bus.inbound.empty()
-    assert social.store.judge.through(A.session_key) == 1
-
-
-@pytest.mark.parametrize("change", ["pause", "edit"])
-async def test_invalidated_judge_image_download_never_calls_model(social, change):
-    provider = decide(social)
-    message = observed(social, is_bot=True, media=("photo",), media_refs=(reference(),))
-
-    async def pause(*args):
-        if change == "pause":
-            social.store.pause(A.session_key)
-        else:
-            await social.observe(replace(message, update_id=99, is_edit=True), directed=False)
-        return picture()
-
-    social.set_media_services(AsyncMock(side_effect=pause), AsyncMock())
-    await social.observe(message, directed=False)
-    await settle_images(social)
-    provider.chat.assert_not_awaited()
-    assert social.bus.inbound.empty()
-    assert not list(social.media.cache.root.iterdir())
-
-
-async def test_bounded_judge_retry_reuses_downloaded_original(social):
-    social.config.judge.retry_delay_seconds = 0
-    provider = decide(social, error=True)
-    loader = AsyncMock(return_value=picture())
-    social.set_media_services(loader, AsyncMock())
-    await social.observe(observed(social, is_bot=True, media=("photo",), media_refs=(reference(),)), directed=False)
-    await settle_images(social)
-    await asyncio.gather(*list(social.judging.tasks.values()))
-    await social.run_due()
-    assert provider.chat.await_count == 2
-    loader.assert_awaited_once()
-    assert social.store.db.execute("SELECT attempts,status FROM judge_batches").fetchone()["status"] == "fallback"
-
-
-async def test_exhausted_judge_budget_does_not_download_images(social):
-    social.config.judge.max_requests_per_hour = 1
-    decide(social, "observe")
-    await social.observe(observed(social, is_bot=True), directed=False)
-    await due(social)
-    loader = AsyncMock(return_value=picture())
-    social.set_media_services(loader, AsyncMock())
-    await social.observe(observed(social, 2, is_bot=True, media=("photo",), media_refs=(reference(),)), directed=False)
-    await settle_images(social)
-    loader.assert_not_awaited()
-
-
 @pytest.mark.parametrize("purpose", ["reply", "messages"])
 async def test_general_reply_wait_never_inherits_standing_question_only_preference(social, purpose):
     social.config.scopes[0].wake_on_question = True
@@ -573,12 +342,8 @@ async def test_general_reply_wait_never_inherits_standing_question_only_preferen
     social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
     social.waiting.wait(ctx, 30, purpose=purpose)
     finish(social, ctx)
-    intent = social.judging.intent(A)
-    assert intent.purpose == purpose
-    assert intent.keywords == () and intent.senders == ()
-    assert '"waiting_for_questions": false' in intent.description
-    assert '"waiting_for_messages": true' in intent.description
-    assert "not only questions" in intent.description
+    assert social.judging.intent(A.session_key) is None
+    assert social.store.wakes.wait(A.session_key)["purpose"] == purpose
 
 
 @pytest.mark.parametrize("legacy", [False, True], ids=["current-facts", "legacy-facts"])
@@ -598,13 +363,8 @@ async def test_human_conversation_is_decided_locally_without_attempts(social, le
     await due(social)
     provider.chat.assert_not_awaited()
     assert social.bus.inbound.qsize() == 1
-    row = social.store.db.execute("SELECT * FROM judge_batches").fetchone()
-    decision = json.loads(row["decision"])
-    assert row["status"] == "decided" and row["attempts"] == 0
-    assert decision == {"decision": "wake", "through_seq": 1, "source_seqs": [1],
-                        "fulfills_intent": False,
-                        "reason": "host: fresh conversation without a selective wait"}
-    assert social.store.db.execute("SELECT COUNT(*) FROM judge_attempts").fetchone()[0] == 0
+    wake = social.store.db.execute("SELECT admission FROM wakes").fetchone()
+    assert json.loads(wake[0]) == {"by": "conversation", "reason": "host: fresh conversation without a selective wait"}
     assert social.store.judge.through(A.session_key) == 1
 
 
@@ -620,8 +380,8 @@ async def test_directed_bypasses_selective_wait_without_consuming_it(social, is_
     await due(social)
     provider.chat.assert_not_awaited()
     inbound = social.bus.inbound.get_nowait()
-    decision = json.loads(social.store.db.execute("SELECT decision FROM judge_batches").fetchone()[0])
-    assert decision["reason"] == "host: directed at the bot" and not decision["fulfills_intent"]
+    admission = json.loads(social.store.db.execute("SELECT admission FROM wakes ORDER BY created DESC LIMIT 1").fetchone()[0])
+    assert admission == {"by": "directed", "reason": "host: directed at the bot"}
     from nanobot.agent.tools.context import RequestContext
 
     resumed = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
@@ -639,7 +399,7 @@ async def test_selective_sender_wait_uses_judge_for_nondirected_human(social):
     await social.observe(observed(social), directed=False)
     await due(social)
     provider.chat.assert_awaited_once()
-    assert not sent_snapshot(provider).messages[-1].is_bot
+    assert not sent_snapshot(provider).new[-1].is_bot
     assert social.bus.inbound.empty()
 
 
@@ -652,12 +412,10 @@ async def test_only_bot_batches_need_semantic_admission(social, include_human):
     await due(social)
     assert provider.chat.await_count == (0 if include_human else 1)
     assert social.bus.inbound.qsize() == 1
-    row = social.store.db.execute("SELECT attempts,decision FROM judge_batches").fetchone()
-    assert row["attempts"] == (0 if include_human else 1)
-    if include_human:
-        assert json.loads(row["decision"])["source_seqs"] == [2]
-    else:
-        assert sent_snapshot(provider).messages[-1].is_bot
+    admission = json.loads(social.store.db.execute("SELECT admission FROM wakes").fetchone()[0])
+    assert admission["by"] == ("conversation" if include_human else "judge")
+    if not include_human:
+        assert sent_snapshot(provider).new[-1].is_bot
 
 
 async def test_on_messages_alone_does_not_require_judge(social):
@@ -680,8 +438,122 @@ async def test_local_handoff_reuses_running_turn_that_has_seen_the_batch(social)
     social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
     await due(social)
     provider.chat.assert_not_awaited()
-    row = social.store.db.execute("SELECT status,handoff_job,decision FROM judge_batches").fetchone()
-    assert row["status"] == "decided" and row["handoff_job"] == ctx.metadata["_social_job"]
-    assert json.loads(row["decision"])["reason"] == "host: fresh conversation without a selective wait"
+    assert social.store.judge.through(A.session_key) == 2
     assert social.store.db.execute("SELECT COUNT(*) FROM wakes").fetchone()[0] == 1
+    assert social.bus.inbound.empty()
+
+
+
+
+def test_pending_windows_add_due_shorten_take():
+    windows = PendingWindows()
+    assert not windows.any() and windows.next_due(lambda key: 2, 10) is None
+    windows.add("a", 1, 100)
+    windows.add("a", 3, 102)
+    windows.add("b", 1, 101)
+    assert windows.keys() == ["a", "b"] and windows.has("a")
+    assert windows.due("a", 5, 6) == 106
+    assert windows.next_due(lambda key: 2, 10) == 103
+    windows.shorten("a", 1, 102.5)
+    assert windows.due("a", 5, 6) == 102.5
+    windows.shorten("a", 8, None)
+    assert windows.due("a", 2, 6) == 106  # Old SQL overrides the existing due, still bounded by maximum.
+    windows.add("a", 4, 103)
+    assert windows.due("a", 2, 6) == 105
+    batch = windows.take("a")
+    assert (batch.first_at, batch.last_at, batch.through_seq, batch.due_cap) == (100, 103, 4, None)
+    assert windows.take("a") is None and not windows.has("a")
+    windows.discard("b")
+    assert not windows.any()
+
+
+async def test_c_observe_advances_watermark_without_wake(social):
+    provider = decide(social, "observe")
+    await social.observe(observed(social, is_bot=True), directed=False)
+    await due(social)
+    provider.chat.assert_awaited_once()
+    assert social.bus.inbound.empty() and social.store.judge.through(A.session_key) == 1
+
+
+@pytest.mark.parametrize("failure", ["exception", "timeout", "invalid", "provider-error"])
+async def test_failed_judge_wakes_once_with_unavailable_admission(social, monkeypatch, failure):
+    provider = decide(social, error=failure == "provider-error")
+    records = []
+    monkeypatch.setattr("nanobot.channels.telegram.social.judge.record_llm_call", records.append)
+    if failure == "exception":
+        provider.chat.side_effect = RuntimeError("offline")
+    elif failure == "timeout":
+        social.judging.judge.settings.timeout_seconds = 0.01
+        async def blocked(**kwargs):
+            await asyncio.Event().wait()
+        provider.chat.side_effect = blocked
+    elif failure == "invalid":
+        from nanobot.providers.base import LLMResponse
+        provider.chat.side_effect = None
+        provider.chat.return_value = LLMResponse(content="broken")
+    await social.observe(observed(social, is_bot=True), directed=False)
+    await due(social)
+    await asyncio.gather(*list(social.judging.tasks.values()))
+    await social.run_due()
+    view = json.loads(social.bus.inbound.get_nowait().content.split("\n", 1)[1])
+    assert view["admission"] == {"by": "judge", "reason": "judge unavailable"}
+    assert social.store.judge.through(A.session_key) == 1
+    provider.chat.assert_awaited_once()
+    assert len(records) == 1 and records[0].source == "system"
+    await social.run_due()
+    assert social.bus.inbound.empty()
+
+
+async def test_restart_recovers_only_recent_eligible_messages_after_watermark(social):
+    await social.observe(observed(social, 1), directed=False)
+    with social.store.db:
+        social.store.judge.set_through(A.session_key, 1)
+    await social.observe(observed(social, 2), directed=False)
+    clock(social).advance(121)
+    await social.observe(observed(social, 3, is_self=True), directed=False)
+    await social.observe(observed(social, 4, is_bot=True), directed=False)
+    social.close()
+    restored = TelegramSocialRuntime(social.config, social.root, social.bus, now=social.now)
+    try:
+        provider = decide(restored, "observe")
+        restored.judging.recover()
+        batch = restored.windows.take(A.session_key)
+        assert batch.through_seq == 4 and batch.first_at == restored.now()
+        restored.judging.note(A, 4, batch.first_at)
+        await due(restored)
+        assert [message.seq for message in sent_snapshot(provider).new] == [4]
+        assert restored.store.judge.through(A.session_key) == 4
+        assert restored.bus.inbound.empty()
+    finally:
+        restored.close()
+
+
+async def test_judge_call_records_one_system_usage(social, monkeypatch):
+    from nanobot.llm_usage import LLMUsageStore
+    from nanobot.providers.base import LLMResponse, LLMUsage
+
+    usage = LLMUsageStore(social.root / "usage.sqlite3")
+    records = []
+    def record(call):
+        records.append(call)
+        usage.record(call)
+    monkeypatch.setattr("nanobot.channels.telegram.social.judge.record_llm_call", record)
+    provider = decide(social)
+    provider.chat.side_effect = None
+    provider.chat.return_value = LLMResponse(content='{"decision":"observe","reason":"receipt"}',
+        usage=LLMUsage.estimated(input_tokens=30, output_tokens=10))
+    await social.observe(observed(social, is_bot=True), directed=False)
+    await due(social)
+    assert len(records) == 1 and records[0].source == "system"
+    assert records[0].model == social.config.judge.model and records[0].provider == "integration-provider"
+    assert records[0].usage.total_tokens == 40
+    assert usage.usage_payload()["requests_30d"] == 1
+
+
+async def test_empty_expired_batch_advances_watermark_locally(social):
+    provider = decide(social)
+    await social.observe(observed(social, is_bot=True), directed=False)
+    await due(social, 121)
+    assert social.store.judge.through(A.session_key) == 1
+    provider.chat.assert_not_awaited()
     assert social.bus.inbound.empty()

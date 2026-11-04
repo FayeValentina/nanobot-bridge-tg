@@ -255,7 +255,7 @@ async def test_album_items_keep_identity_and_share_one_wake(social):
         raw["message"]["media_group_id"] = "album-1"
         await tg._observe_social(Update.de_json(raw, None))
     assert social.store.db.execute("SELECT COUNT(*) FROM wakes WHERE status='scheduled'").fetchone()[0] == 0
-    assert social.store.db.execute("SELECT COUNT(*) FROM judge_state WHERE pending_due IS NOT NULL").fetchone()[0] == 1
+    assert social.windows.keys() == [A.session_key]
     await asyncio.sleep(1.05)
     await social.run_due()
     await asyncio.gather(*list(social.judging.tasks.values()))

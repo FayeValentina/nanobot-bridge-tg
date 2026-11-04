@@ -19,7 +19,7 @@ from nanobot.channels.telegram.social.models import ConversationScope, Proactive
 from nanobot.channels.telegram.social.proactive import is_quiet
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
-from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
+from nanobot.channels.telegram.tests.test_social_judge import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
 from nanobot.channels.telegram.tests.test_social_scheduler import (
     clock,
@@ -276,7 +276,7 @@ async def test_context_free_opportunity_ignores_legacy_require_context(social):
     assert view(inbound)["messages"] == []
     assert view(inbound)["opportunity"]["kind"] == "idle"
     assert view(inbound)["opportunity"]["seq"] == 0
-    assert view(inbound)["judgement"] == []
+    assert view(inbound)["admission"] is None
     assert social.store.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
 
 
@@ -721,6 +721,7 @@ async def test_group_wide_opportunities_use_discovered_topic_bindings_after_rest
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
         decide(restored)
+        restored.judging.recover()
         clock(social).advance(60)
         await restored.run_due()
         inbounds = [bus.inbound.get_nowait() for _ in range(bus.inbound.qsize())]

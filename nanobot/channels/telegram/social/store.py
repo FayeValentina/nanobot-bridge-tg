@@ -15,7 +15,7 @@ from loguru import logger
 from nanobot.channels.telegram.social.activity import SocialActivity
 from nanobot.channels.telegram.social.db.connection import open_social_db, savepoint, transaction
 from nanobot.channels.telegram.social.db.deliveries import Deliveries
-from nanobot.channels.telegram.social.db.judge import Judge
+from nanobot.channels.telegram.social.db.judge_state import JudgeState
 from nanobot.channels.telegram.social.db.messages import Messages
 from nanobot.channels.telegram.social.db.proactive_state import ProactiveState
 from nanobot.channels.telegram.social.db.schema import initialize_social_schema
@@ -38,6 +38,7 @@ from nanobot.channels.telegram.social.models import (
 
 class SocialStore:
     def __init__(self, root: Path, *, now: Callable[[], float] = time.time) -> None:
+        self.root = root
         self.now = now
         self.db = open_social_db(root)
         initialize_social_schema(self)
@@ -46,7 +47,7 @@ class SocialStore:
         self.views = Views(self.db, now, self.scopes)
         self.stickers = StickerLibrary(self.db, now)
         self.wakes = Wakes(self.db, now, self.scopes, self.messages, self.views)
-        self.judge = Judge(self.db, now, self.scopes, self.messages, self.views, self.wakes)
+        self.judge = JudgeState(self.db)
         self.deliveries = Deliveries(self.db, now, self.scopes)
         self.proactive_state = ProactiveState(self.db, now)
         self.activities = SocialActivity(self)
@@ -65,7 +66,7 @@ class SocialStore:
         with transaction(self.db):
             self.scopes.upsert(scope, version)
             self.wakes.reset_binding(scope.session_key, version)
-            self.judge.reset_binding(scope.session_key, version)
+            self.judge.reset_binding(scope.session_key)
             self.deliveries.fail_other_versions(scope.session_key, version)
             self.followups.sync_receipts(scope.session_key)
 
@@ -79,8 +80,7 @@ class SocialStore:
             self.learning.count(message.scope.session_key, "capture_error", 1, message.message_id, message.message_id)
 
     def observe(self, msg: ObservedMessage, retention: int, *,
-                max_delay: float = 12, fresh: bool = False,
-                judge_event: bool = False, judge_delay: float = 1.5,
+                fresh: bool = False, judge_event: bool = False,
                 directed: bool = False) -> tuple[int, bool]:
         key = msg.scope.session_key
         with transaction(self.db):
@@ -107,8 +107,6 @@ class SocialStore:
             self.messages.prune_updates(msg.scope.channel, msg.update_id - max(10000, retention * 100))
             if fresh:
                 self.wakes.note_member_activity(key, seq)
-            if judge_event:
-                self.judge.queue(key,seq,delay=judge_delay,maximum=max_delay)
             return seq, True
 
     def view(
@@ -169,11 +167,7 @@ class SocialStore:
             "wake_reason": wake["reason"] if job_id else None,
             "opportunity": None,
             "dialogue": self.wakes.dialogue_job(job_id) if job_id else None,
-            "judgement": [{"id": str(item["id"]), "status": str(item["status"]),
-                           "through_seq": int(item["through_seq"]),
-                           "decision": json.loads(item["decision"]) if item["decision"] else None,
-                           "error_code": item["error_code"]}
-                          for item in self.judge.latest_for_job(job_id)] if job_id else [],
+            "admission": json.loads(wake["admission"]) if job_id and wake["admission"] else None,
             "view_end": view_id,
         }
         if job_id:
@@ -298,7 +292,6 @@ class SocialStore:
             self.wakes.pause(key)
             self.deliveries.fail_queued(key, "paused")
             self.followups.sync_receipts(key)
-            self.judge.pause(key)
 
     def wait_for_quiet(self, key: str, turn: str, *, purpose: str, quiet: float,
                        seconds: float | None, on_timeout: bool, sleep_seconds: float | None = None,
@@ -309,8 +302,6 @@ class SocialStore:
             result = self.wakes.wait_for_quiet(key, turn, purpose=purpose, quiet=quiet, seconds=seconds,
                 on_timeout=on_timeout, sleep_seconds=sleep_seconds, quiet_due=quiet_due,
                 condition_expires=condition_expires, selective=selective, sleep_until=sleep_until, max_delay=max_delay)
-            if result["deferred"] and purpose in {"reply", "messages"}:
-                self.judge.shorten_pending(key, quiet, result["total_due"])
             return result
 
     def enqueue_parts(self, key: str, version: str, turn: str, parts: list[tuple[str, int | None]],

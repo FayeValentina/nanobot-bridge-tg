@@ -40,6 +40,27 @@ class Clock:
 
 def remove_v4_columns(db):
     """Build an actual pre-V4 fixture before replaying its migrations."""
+    db.executescript("""
+ALTER TABLE wakes DROP COLUMN admission;
+ALTER TABLE judge_state ADD COLUMN pending_first REAL;
+ALTER TABLE judge_state ADD COLUMN pending_last REAL;
+ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN pending_due REAL;
+ALTER TABLE judge_state ADD COLUMN pending_max REAL;
+ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
+ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
+CREATE TABLE judge_batches (
+    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
+    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
+    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
+    condition_config TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
+    """)
     remove_v4b_tables(db)
     db.execute("ALTER TABLE scopes DROP COLUMN last_member_at")
     columns = {row[1] for row in db.execute("PRAGMA table_info(proactive_state)")}
@@ -61,7 +82,7 @@ def social(tmp_path):
     config = TelegramSocialConfig.model_validate({
         "enabled": True,
         "repairUnsentFinal": False,
-        "judge": {"minIntervalSeconds": 0},
+        "judge": {},
         "scopes": [
             {"chatId": A.chat_id, "threadId": A.thread_id, "roleId": "guest"},
             {"chatId": B.chat_id, "threadId": B.thread_id, "roleId": "guest"},
@@ -141,7 +162,7 @@ async def test_operator_trigger_conditions(social, kind, text, sender, reason):
     await social.run_due()
     view = json.loads(social.bus.inbound.get_nowait().content.split("\n", 1)[1])
     assert view["wake_reason"] == "judge"
-    assert view["judgement"][0]["decision"]["decision"] == "wake"
+    assert view["admission"]["by"] == "conversation"
 
 
 async def test_directed_trigger_upgrades_keyword_without_another_job(social):
@@ -157,7 +178,7 @@ async def test_directed_trigger_upgrades_keyword_without_another_job(social):
 
 
 async def test_mixed_human_bot_batch_wakes_once_without_idle_model_loops(social):
-    from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
+    from nanobot.channels.telegram.tests.test_social_judge import decide
 
     provider = decide(social, "observe")
     social.config.scopes[0].wake_on_messages = True
@@ -340,7 +361,7 @@ async def test_busy_trigger_read_by_the_current_model_does_not_run_another_turn(
     await social.run_due()
     assert calls == 2 and social.bus.inbound.empty()
     assert social.store.db.execute("SELECT COUNT(*) FROM wakes WHERE status='completed'").fetchone()[0] == 1
-    assert social.store.db.execute("SELECT COUNT(*) FROM judge_batches WHERE handoff_job IS NOT NULL").fetchone()[0] == 2
+    assert social.store.judge.through(A.session_key) == 2
 
 
 async def test_sleep_admits_unseen_human_conversation_without_selective_wait(social):
@@ -451,8 +472,8 @@ async def test_restart_after_wait_decision_does_not_replay_the_unfinished_old_tu
         restored.close()
 
 
-async def test_observation_dedup_and_wake_creation_commit_together(social):
-    social.store.db.execute("CREATE TRIGGER reject_wake BEFORE UPDATE OF pending_due ON judge_state WHEN NEW.pending_due IS NOT NULL "
+async def test_observation_dedup_and_facts_commit_together(social):
+    social.store.db.execute("CREATE TRIGGER reject_wake BEFORE INSERT ON messages "
                             "BEGIN SELECT RAISE(ABORT,'simulated disk error'); END")
     with pytest.raises(sqlite3.IntegrityError):
         await social.observe(observed(social), directed=True)
@@ -554,7 +575,7 @@ async def test_repeated_send_returns_old_receipt_before_checking_new_messages(so
 
 @pytest.mark.parametrize("finished", [False, True], ids=["running-turn", "completed-turn"])
 async def test_late_judge_reuses_turn_that_already_saw_and_read_new_messages(social, finished):
-    from nanobot.channels.telegram.tests.test_social_judge_runtime import decide
+    from nanobot.channels.telegram.tests.test_social_judge import decide
 
     provider = decide(social)
     social.store.observe(observed(social, text="message A"), 500)
@@ -572,10 +593,8 @@ async def test_late_judge_reuses_turn_that_already_saw_and_read_new_messages(soc
         finish(social, ctx)
     clock(social).advance(2)
     await social.run_due()
-    batch = social.store.db.execute("SELECT * FROM judge_batches").fetchone()
     provider.chat.assert_awaited_once()
-    assert json.loads(batch["decision"])["decision"] == "wake"
-    assert batch["handoff_job"] == ctx.metadata["_social_job"]
+    assert social.store.judge.through(A.session_key) == 3
     assert social.store.db.execute("SELECT COUNT(*) FROM wakes").fetchone()[0] == 1
     assert social.bus.inbound.empty()
     if not finished:

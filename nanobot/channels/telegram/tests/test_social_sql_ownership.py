@@ -6,7 +6,7 @@ def test_social_sql_ownership():
     allowed = {
         "social/db/connection.py", "social/db/schema.py", "social/db/scopes.py",
         "social/db/messages.py", "social/db/views.py", "social/db/stickers.py",
-        "social/db/wakes.py", "social/db/judge.py", "social/db/deliveries.py",
+        "social/db/wakes.py", "social/db/judge_state.py", "social/db/deliveries.py",
         "social/db/proactive_state.py",
         # Owner modules of knowledge/learning tables; move under db/ when Phase 6/7 regroups them.
         "social/memory.py", "social/jargon.py", "social/followups.py", "social/activity.py",
