@@ -10,15 +10,91 @@ block the stop.
 import asyncio
 import time
 from contextlib import suppress
+from unittest.mock import MagicMock
 
 from nanobot.agent.hook import AgentRunHookContext
 from nanobot.agent.tools.mcp import MCPProvider
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.runtime import SOCIAL_TOOLS
+from nanobot.channels.telegram.social.wiring import (
+    SocialWiring,
+    build_social_runtime,
+    social_config,
+)
 from nanobot.cli.gateway_runtime import (
     _close_gateway_runtime,
     _gateway_readiness_payload,
     _MCPReadinessHook,
 )
+from nanobot.config.schema import Config
+from nanobot.providers.base import LLMProvider
+
+
+def test_social_wiring_skips_disabled_telegram(tmp_path) -> None:
+    config = Config.model_validate({
+        "channels": {"telegram": {"enabled": False, "social": {"enabled": True}}},
+    })
+    tools = ToolRegistry()
+
+    social = build_social_runtime(config, tmp_path / "config.json", MessageBus(), tools)
+
+    assert social is None
+    assert not set(tools.tool_names) & SOCIAL_TOOLS
+    assert not (tmp_path / "telegram-social").exists()
+
+
+def test_social_wiring_skips_disabled_social(tmp_path) -> None:
+    config = Config.model_validate({
+        "channels": {"telegram": {"enabled": True, "social": {"enabled": False}}},
+    })
+    tools = ToolRegistry()
+
+    social = build_social_runtime(config, tmp_path / "config.json", MessageBus(), tools)
+
+    assert social is None
+    assert not set(tools.tool_names) & SOCIAL_TOOLS
+    assert not (tmp_path / "telegram-social").exists()
+
+
+def test_social_wiring_registers_all_social_tools(tmp_path, monkeypatch) -> None:
+    config = Config.model_validate({
+        "channels": {"telegram": {"enabled": True, "social": {"enabled": True}}},
+    })
+    provider = MagicMock(spec=LLMProvider)
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.social.wiring.make_judge_provider",
+        lambda *_: (provider, "test-provider"),
+    )
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.social.expressions.make_expression_provider",
+        lambda *_: (provider, "test-model"),
+    )
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.social.selection.make_expression_provider",
+        lambda *_: (provider, "test-model"),
+    )
+    tools = ToolRegistry()
+
+    social = build_social_runtime(config, tmp_path / "config.json", MessageBus(), tools)
+
+    assert isinstance(social, SocialWiring)
+    try:
+        assert len(tools) == 12
+        assert tools.tool_names == sorted(SOCIAL_TOOLS)
+    finally:
+        social.close()
+
+
+def test_social_config_defaults_codex_oauth_beside_config(tmp_path) -> None:
+    config = Config.model_validate({
+        "channels": {"telegram": {"social": {"judge": {"provider": "openai_codex"}}}},
+    })
+    config_path = tmp_path / "instance" / "config.json"
+
+    social = social_config(config, config_path)
+
+    assert social.judge.oauth_storage_dir == str(config_path.parent / "telegram-social" / "oauth")
 
 
 class _FakeAgent:

@@ -17,6 +17,7 @@ from nanobot.agent.hooks import create_file_edit_activity_hook
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tools.mcp import MCPProvider
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.channels.telegram.social.wiring import build_social_runtime
 from nanobot.cli import terminal as cli_terminal
 from nanobot.cli.runtime_config import _migrate_cron_store
 from nanobot.cli.webui_support import (
@@ -480,34 +481,13 @@ def _run_gateway(
     cron = CronService(cron_store_path)
     trigger_store = LocalTriggerStore(config.workspace_path)
 
-    from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
-    from nanobot.channels.telegram.social.judge import make_judge_provider
-    from nanobot.channels.telegram.social.runtime import SOCIAL_TOOLS, TelegramSocialRuntime
-    from nanobot.config.schema import TelegramSocialConfig
-
-    telegram_section = config.channels.model_dump(by_alias=True).get("telegram", {})
-    social_config = TelegramSocialConfig.model_validate(
-        cast(dict[str, Any], telegram_section).get("social", {}) if isinstance(telegram_section, dict) else {},
-    )
-    if social_config.judge.provider == "openai_codex" and social_config.judge.oauth_storage_dir is None:
-        social_config.judge.oauth_storage_dir = str(Path(config_path).parent / "telegram-social" / "oauth")
-    social_judge_provider, social_judge_version = make_judge_provider(config, social_config.judge)
-    telegram_social = TelegramSocialRuntime(
-        social_config, Path(config_path).parent / "telegram-social", bus,
-        judge_provider=social_judge_provider, judge_provider_version=social_judge_version,
-    )
-    telegram_social.expressions.configure_provider(config)
-    telegram_social.jargon.configure_provider(config)
-    telegram_social.selector.configure_provider(config)
-
     turn_delivery_factory = TurnDeliveryFactory(
         bus,
         route_policy=WebuiTurnRoutePolicy(session_manager),
     )
 
     tools = ToolRegistry()
-    for name in sorted(SOCIAL_TOOLS):
-        tools.register(SOCIAL_TOOL_CLASSES[name](telegram_social))
+    social = build_social_runtime(config, Path(config_path), bus, tools)
     mcp_provider = MCPProvider.from_config(config, tools)
 
     recovery = RecoveryCoordinator(
@@ -531,15 +511,14 @@ def _run_gateway(
         provider_signature=provider_snapshot.signature,
         local_trigger_store=trigger_store,
         hooks=[_MCPReadinessHook(mcp_provider)],
-        hook_factories=[create_file_edit_activity_hook, telegram_social.hook_factory],
+        hook_factories=[create_file_edit_activity_hook, *([social.runtime.hook_factory] if social else [])],
         tool_registry=tools,
         recovery_admission=recovery,
-        session_policy_resolver=telegram_social.policy_for_session,
-        request_admission=telegram_social.waiting.admit_request,
+        session_policy_resolver=social.runtime.policy_for_session if social else None,
+        request_admission=social.runtime.waiting.admit_request if social else None,
     )
-    telegram_social.expressions.main_busy = lambda: bool(agent._active_tasks)  # pyright: ignore[reportPrivateUsage]
-    telegram_social.jargon.main_busy = telegram_social.expressions.main_busy
-    telegram_social.jargon.tools = tools
+    if social:
+        social.connect_agent(lambda: bool(agent._active_tasks))  # pyright: ignore[reportPrivateUsage]
     def _schedule_webui_background(awaitable: Awaitable[None]) -> None:
         agent.schedule_background(cast(Coroutine[Any, Any, None], awaitable))
 
@@ -750,18 +729,8 @@ def _run_gateway(
         from nanobot.config.loader import load_config
 
         fresh_config = load_config()
-        fresh_telegram = fresh_config.channels.model_dump(by_alias=True).get("telegram", {})
-        fresh_social = TelegramSocialConfig.model_validate(
-            cast(dict[str, Any], fresh_telegram).get("social", {}) if isinstance(fresh_telegram, dict) else {},
-        )
-        if fresh_social.judge.provider == "openai_codex" and fresh_social.judge.oauth_storage_dir is None:
-            fresh_social.judge.oauth_storage_dir = str(Path(config_path).parent / "telegram-social" / "oauth")
-        telegram_social.configure(fresh_social)
-        fresh_judge, fresh_judge_version = make_judge_provider(fresh_config, telegram_social.config.judge)
-        telegram_social.judging.set_provider(fresh_judge, fresh_judge_version)
-        telegram_social.expressions.configure_provider(fresh_config)
-        telegram_social.jargon.configure_provider(fresh_config)
-        telegram_social.selector.configure_provider(fresh_config)
+        if social:
+            social.refresh(fresh_config)
 
     def _webui_skill_state_action(disabled_skills: set[str]) -> None:
         config.agents.defaults.disabled_skills = sorted(disabled_skills)
@@ -788,7 +757,7 @@ def _run_gateway(
         webui_skill_state_action=_webui_skill_state_action,
         webui_recovery_action=recovery.handle_action,
         config_path=Path(config_path),
-        telegram_social=telegram_social,
+        telegram_social=social.runtime if social else None,
     )
 
     def _pick_heartbeat_target() -> tuple[str, str]:
@@ -1081,7 +1050,8 @@ def _run_gateway(
                 flushed = agent.sessions.flush_all()
                 if flushed:
                     logger.info("Shutdown: flushed {} session(s) to disk", flushed)
-                telegram_social.close()
+                if social:
+                    social.close()
             finally:
                 restore_shutdown_handlers()
 
