@@ -44,14 +44,17 @@
   代价：单条消息回复约慢 8.5 秒。**owner 实测通过**（14:22:54–14:23:24 每 10 秒一条共 4 条 → 两个 judge wake 并入同一 turn、一次 3 段回复覆盖全部、发送前收取触发 1 次）。
   **之后 owner 要求窗口改为 20 秒**：Claude 小修 `90abae4a`（schema 中 coalesceSeconds、dynamicWait.quietSeconds 上限 10→60），线上配置改为 coalesceSeconds 20、maxCoalesceSeconds 20、quietSeconds 20 / unfinishedSeconds 20 / maxSeconds 45（备份 `config.json.before-burst20-20261104`）；单条消息回复约慢 18.5 秒。
   观察项：同日 14:22 一次 proactive turn 的 V5 selector 报 `ValidationError ... Choice string_type`（selection 降级为空，不影响回复），来源未查；已知未覆盖：judge 批次含未曝光新消息时仍可能另起 turn；普通 message 工具不做检查。
-- **Phase 6 进行中**（owner 2026-11-04 确认开始）。只读清单 P6-0 已完成（`.agent/tasks/P6-0.report.md`：runtime 46 个方法的归属、6 个持 runtime 的组件及其访问面、gateway 装配、test_commands 9 个失败的原因、工具层、测试面、19 条疑点）。
+- **Phase 6 已完成**（owner 2026-11-04 确认开始）。只读清单 P6-0 已完成（`.agent/tasks/P6-0.report.md`：runtime 46 个方法的归属、6 个持 runtime 的组件及其访问面、gateway 装配、test_commands 9 个失败的原因、工具层、测试面、19 条疑点）。
   Claude 的设计约定：组件接收 `config: Callable[[], TelegramSocialConfig]`、`now`、`notify` 回调和具体仓储/服务；runtime 不保留被移走方法的转发，调用方直接改用新位置（测试机械改名）。拆为：
   - **P6-a**（已完成）：`waiting.py`（SocialWaiting）、`media.py` 的 SocialMedia、`validate_context` 移入 ScopeBindings；judge/stickers 不再持 runtime，`reportPrivateUsage` 抑制全部删除。
   - **P6-b**（已完成）：`delivery.py`（全部发送路径 + send_sticker + 普通 message 记账）、`hook.py`。
   - **P6-c**（已完成）：Expression/Jargon learner、ContextSelector 去反向引用；工具一个类一个（名字/参数/语义不变，基类保留捕获 RuntimeError）。
-  - **P6-d**：`wiring.py`（gateway 唯一入口、热重载复用、main_busy 回调、disabled 时的处理待定）；修 `tests/cli/test_commands.py`（替身需过 Codex OAuth 类型检查，不放宽生产检查）。
+  - **P6-d**（已完成）：`wiring.py`（`build_social_runtime` / `SocialWiring.connect_agent/refresh/close`），gateway 不再导入 social 内部；Telegram 或 social 未启用时不装配（之后开启需重启）；test_commands 的 9 个失败随之消失，替身无需修改。
+  Phase 6 结果：social/runtime.py 960→352 行（目标 <300 留给 Phase 7/8 继续收缩，get_state 43 行、policy_for_session 38 行仍在）；social/ 中没有任何组件持有 runtime。
   P6-0 疑点中暂不处理、已记录：recover 标记提前写入、close 只取消不等待、set_wake 普通分支不 notify、文件 watcher 不刷新 social、channel 构造时用自身 social config 覆盖 gateway 补的 OAuth 路径。
-  `tests/cli/test_commands.py` 9 个既有失败计划在 Phase 6 修；`tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。
+  `tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。
+- **下一步：Phase 7**（judge 简化 §5.1；LearningWorker P1-5；selection 简化，含 selection 动态 SQL 与 learning.py 对 expressions/jargon 表的读写），风险中。开始前先问 owner，照例先派只读分析。
+  `tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。评估脚本（scripts/ 与 tests/evaluate_*）多处已失效（store.wake、message_deliveries、冻结 hook 编译），留给评估脚本迁移。
 - **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
   `Wakes._check_trigger_source` 读 judge_batches 的只读例外（Phase 7 judge 简化时重看）；P3-0 疑点 Q4/Q5（Phase 4）、Q6（Phase 7）、
   Q10/Q11/Q13–Q15（按所属 Phase）。P3-0 清单 `.agent/tasks/P3-0.report.md` 的行号已过时，只作线索。
@@ -68,8 +71,7 @@
 - Codex 派发命令、`.agent/codex_pytest_env.py` 沙箱插件、发布规则（**禁止从 worktree 部署**）都写在 `.agent/orchestration.md`。
 
 **已知的既有问题（重构前就存在，尚未安排）**
-- 核心测试 20 个失败（task_cancel、unified_session、session_fsync、message_tool_suppress 等）；`tests/cli/test_commands.py` 9 个失败
-  （测试里伪造的 `make_provider` 不接受 `preset` 参数，计划在 Phase 6 修）。这两组测试都不在发布管线中。
+- 核心测试 20 个失败（task_cancel、unified_session、session_fsync、message_tool_suppress 等），不在发布管线中。（`tests/cli/test_commands.py` 的 9 个失败已在 P6-d 解决。）
 - 发布脚本回滚时会沿用失败那次部署的挂载参数（A1 事故中暴露），以后改到部署脚本时修。
 - memory 和 jargon 之间有一个延迟导入，Phase 3 按表重新划分时解决。
 - `nanobot/channels/telegram/tests/evaluate_*` 评估脚本和大夹具还没移到 `scripts/eval/`（原 P0 计划项，优先级低）。
@@ -100,3 +102,4 @@
 | P6-a waiting/media 拆出，judge/stickers 去反向引用（纯重构） | 6 | `8d50aa77` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway 1040 passed（Claude 复跑）；场景测试未改；ruff 全仓干净；basedpyright social/ 0 errors；judge_runtime/stickers/jargon 中 `self.runtime`、`reportPrivateUsage` 0 处 | runtime.py 960→727；生产代码净增约 59 行（构造与签名）。**Claude 修正简报设计缺陷**：`save_preview` 放在 SocialMedia 会跨类访问 cache 私有方法（Codex 如实上报未绕过），改为 `SocialMediaCache.save_preview(scope, raw, limit)`。删除死方法 `JudgeCoordinator.enqueue` |
 | P6-b delivery/hook 拆出（纯重构） | 6 | `8bd39b18` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway 1040 passed（Claude 复跑）；场景测试未改；ruff 干净；basedpyright social/ 0 errors；Codex 用 AST 比对 14 个发送方法与 8 个 hook 方法在替换后与原代码一致 | runtime.py 727→341；生产代码净增 67 行（导入与构造）。`scripts/evaluate_social_v5.py` 冻结 hook 编译依赖已移出的名字，评估脚本迁移时处理 |
 | P6-c learner/selector 去反向引用，工具一个类一个（纯重构） | 6 | `3fa0f3e7` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway 1041 passed（Claude 复跑，新增工具集合一致性测试）；场景测试未改；12 个工具 name/description/schema 改动前后导出逐字节相同；ruff 干净；basedpyright 0 errors；social/ 中 `self.runtime` 0 处 | 两个 learner 的单批次互斥改为 `peer` 互查，取代 `runtime.learning_task`；runtime 新增 `activity_action`/`expression_action`，delivery 新增 `followup_status`，工具层不再访问 store。工具文件 201→301 行（12 个类声明），其余生产代码净增 14 行 |
+| P6-d `wiring.py` 成为 gateway 唯一 social 入口【小幅装配变更】 | 6 | `7b6dff01` | 2026-11-04 healthy，Telegram channel 正常启动（social 启用时 channel 缺 runtime 会直接报错，未报），日志无异常 | tests/cli + 契约 + gateway 594 passed（Claude 在沙箱外复跑；此前 test_commands 9 failed）；社交目录 958 passed；ruff 干净；basedpyright 0 errors；gateway 中 social 内部名字 0 处 | wiring.py 69 行，gateway 净减 30 行。Codex 沙箱内另有 5 个 cli 失败（临时 git 初始化、Unix socket 权限），沙箱外全部通过。保持原状的装配疑点：文件 watcher 不刷新 social、channel 构造时用自身 social config 覆盖、热刷新 judge 配置两次 |
