@@ -157,16 +157,18 @@ class SocialDelivery:
             result["message_id"] = int(message_ids[0])
         return result
 
-    async def send_parts(self, ctx: RequestContext, texts: list[str], reply_to: int | None,
+    async def send_parts(self, ctx: RequestContext, parts: list[tuple[str, int | None]],
                          *, followup_id: str | None = None) -> list[DeliveryResult]:
         scope = self.bindings.validate_context(ctx)
-        if not 2 <= len(texts) <= 3:
+        if not 2 <= len(parts) <= 3:
             raise ValueError("a burst must contain two or three short parts")
-        texts = [self._public_text(text) for text in texts]
+        parts = [(self._public_text(text), reply_to) for text, reply_to in parts]
+        texts = [text for text, _ in parts]
         if len(set(texts)) != len(texts):
             raise ValueError("duplicate parts are not allowed")
-        if reply_to is not None and not self.store.messages.has_message(scope.session_key, reply_to):
-            raise PermissionError("reply target was not observed in this group/topic")
+        for _, reply_to in parts:
+            if reply_to is not None and not self.store.messages.has_message(scope.session_key, reply_to):
+                raise PermissionError("reply target was not observed in this group/topic")
         if self.sender is None:
             raise RuntimeError("Telegram sender is unavailable")
         assert ctx.turn_id is not None
@@ -177,12 +179,12 @@ class SocialDelivery:
             # Repeated identical calls return each child's receipt, including partial failures.
             for group in self.store.deliveries.turn_groups(scope.session_key, version, ctx.turn_id):
                 rows = self.store.deliveries.group_parts(group[0])
-                if [str(row["content"]) for row in rows] == texts and rows[0]["reply_to"] == reply_to:
+                if [(str(row["content"]), row["reply_to"]) for row in rows] == parts:
                     return [self._action_result(row) for row in rows]
             self._collect_new_messages(scope, ctx.turn_id)
             self._check_send_allowed(scope, ctx.turn_id, version, texts, len(texts))
-            rows = self.store.enqueue_parts(scope.session_key, version, ctx.turn_id, texts,
-                                            reply_to, followup_id=followup_id)
+            rows = self.store.enqueue_parts(scope.session_key, version, ctx.turn_id, parts,
+                                            followup_id=followup_id)
             self.notify()
             return [self._action_result(row) for row in rows]
 

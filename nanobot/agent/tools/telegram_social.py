@@ -125,7 +125,7 @@ class SocialMarkReadTool(_SocialTool):
 
 class SocialSendTool(_SocialTool):
     tool_name = "social_send"
-    tool_description = "Publish here using exactly one of text or parts. For one message, pass text only. For 2–3 paced messages, pass parts as the COMPLETE ordered list, including the first message, and omit text. Each part must add distinct content; do not repeat or rephrase the first part. Each has its own receipt. reply_to must be observed here. For a proactive question/share about a saved matter, pass its stable followup_id; at most two confirmed attempts, parts count once. Omit for ordinary answers."
+    tool_description = "Publish here using exactly one of text or parts. For one message, pass text only. For 2–3 paced messages, pass parts as the COMPLETE ordered list, including the first message, and omit text. Each part must add distinct content; do not repeat or rephrase the first part. Each has its own receipt. reply_to must be observed here; with parts, top-level reply_to quotes only the first part, and any part may instead carry its own reply_to. For a proactive question/share about a saved matter, pass its stable followup_id; at most two confirmed attempts, parts count once. Omit for ordinary answers."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -134,9 +134,14 @@ class SocialSendTool(_SocialTool):
                 "text": {"type": "string", "minLength": 1, "maxLength": 4000,
                          "description": "One complete message. Omit when using parts."},
                 "reply_to": {"type": "integer", "minimum": 1},
-                "parts": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "parts": {"type": "array", "items": {"anyOf": [
+                              {"type": "string", "minLength": 1, "maxLength": 4000},
+                              {"type": "object", "properties": {
+                                  "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                                  "reply_to": {"type": "integer", "minimum": 1}},
+                               "required": ["text"], "additionalProperties": False}]},
                           "minItems": 2, "maxItems": 3,
-                          "description": "Complete ordered list of 2–3 distinct messages, including the first. Omit text."},
+                          "description": "Complete ordered list of 2–3 distinct messages, including the first. Omit text. Each item is a string, or {text, reply_to} to quote an observed message for that part only; quote only where a person naturally would."},
             }, "required": [], "additionalProperties": False,
                 "oneOf": [{"required": ["text"]}, {"required": ["parts"]}]}
 
@@ -154,7 +159,12 @@ class SocialSendTool(_SocialTool):
         if ("text" in kwargs) == ("parts" in kwargs):
             raise ValueError(self._send_shape_error())
         if "parts" in kwargs:
-            result = {"actions": await self.runtime.delivery.send_parts(ctx, kwargs["parts"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))}
+            parts: list[tuple[str, int | None]] = [
+                (part, None) if isinstance(part, str) else (part["text"], part.get("reply_to"))
+                for part in kwargs["parts"]]
+            if parts and parts[0][1] is None:
+                parts[0] = (parts[0][0], kwargs.get("reply_to"))
+            result = {"actions": await self.runtime.delivery.send_parts(ctx, parts, followup_id=kwargs.get("followup_id"))}
         else:
             result = await self.runtime.delivery.send(ctx, kwargs["text"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))
         if kwargs.get("followup_id"):

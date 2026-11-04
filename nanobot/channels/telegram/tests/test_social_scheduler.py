@@ -12,7 +12,8 @@ import pytest
 from pydantic import ValidationError
 from telegram.error import RetryAfter
 
-from nanobot.agent.tools.context import RequestContext
+from nanobot.agent.tools.context import RequestContext, request_context
+from nanobot.agent.tools.telegram_social import SocialSendTool
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.models import (
@@ -493,7 +494,7 @@ async def test_send_collects_new_messages_once_and_exposure_admits_their_wake(so
 
     with pytest.raises(PermissionError) as rejected:
         if parts:
-            await social.delivery.send_parts(ctx, ["reply A", "reply B/C"], None)
+            await social.delivery.send_parts(ctx, [("reply A", None), ("reply B/C", None)])
         else:
             await social.delivery.send(ctx, "reply A/B/C", None)
     notice = str(rejected.value)
@@ -511,7 +512,7 @@ async def test_send_collects_new_messages_once_and_exposure_admits_their_wake(so
     # A second new arrival cannot bounce the same turn's revised send again.
     social.store.observe(observed(social, 4, text="supplement D"), 500)
     if parts:
-        result = await social.delivery.send_parts(ctx, ["reply A", "reply B/C"], None)
+        result = await social.delivery.send_parts(ctx, [("reply A", None), ("reply B/C", None)])
         assert [receipt["status"] for receipt in result] == ["queued", "queued"]
     else:
         result = await social.delivery.send(ctx, "reply A/B/C", None)
@@ -607,18 +608,77 @@ async def test_burst_quotes_the_reply_target_only_on_its_first_part(social):
     await social.observe(observed(social), directed=False)
     sender = AsyncMock(side_effect=[501, 502])
     social.set_sender(sender)
-    await social.delivery.send_parts(context(social), ["first", "second"], 1)
+    await social.delivery.send_parts(context(social), [("first", 1), ("second", None)])
     await social.run_due()
     clock(social).advance(2)
     await social.run_due()
     assert [call.args[2] for call in sender.await_args_list] == [1, None]
 
 
+@pytest.mark.parametrize("parts,reply_to,expected", [
+    (["哈哈哈", "猪食这词是谁先说的"], 1, [1, None]),
+    ([{"text": "哈哈哈"}, "猪食这词是谁先说的"], 1, [1, None]),
+    ([{"text": "哈哈哈", "reply_to": 1}, {"text": "不过说真的", "reply_to": 2}], None, [1, 2]),
+    ([{"text": "哈哈哈", "reply_to": 1}, {"text": "不过说真的", "reply_to": 2}], 2, [1, 2]),
+])
+async def test_social_send_tool_uses_each_parts_reply_target(social, parts, reply_to, expected):
+    social.store.observe(observed(social, text="猪食"), 500)
+    social.store.observe(observed(social, 2, text="另一位成员的话"), 500)
+    sender = AsyncMock(side_effect=[501, 502])
+    social.set_sender(sender)
+    ctx = context(social)
+    with request_context(ctx):
+        result = json.loads(await SocialSendTool(social).execute(parts=parts, reply_to=reply_to))
+    assert [row["status"] for row in result["actions"]] == ["queued", "queued"]
+    await social.run_due()
+    clock(social).advance(2)
+    await social.run_due()
+    assert [call.args[2] for call in sender.await_args_list] == expected
+
+
+async def test_social_send_tool_rejects_unobserved_second_reply_before_enqueue(social):
+    social.store.observe(observed(social, text="猪食"), 500)
+    social.set_sender(AsyncMock(return_value=501))
+    with request_context(context(social)):
+        result = await SocialSendTool(social).execute(parts=[
+            {"text": "哈哈哈", "reply_to": 1}, {"text": "不过说真的", "reply_to": 2},
+        ])
+    assert result == "reply target was not observed in this group/topic"
+    assert result.is_error
+    assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
+
+
+async def test_burst_idempotency_compares_every_reply_target_after_public_text(social):
+    social.store.observe(observed(social), 500)
+    social.store.observe(observed(social, 2), 500)
+    social.set_sender(AsyncMock(return_value=501))
+    ctx = context(social)
+    queued = await social.delivery.send_parts(ctx, [("first", 1), ("second", 2)])
+    assert await social.delivery.send_parts(ctx, [("first", 1), ("second", 2)]) == queued
+    repeated = await social.delivery.send_parts(ctx, [("<think>private</think>first", 1), ("second", 2)])
+    assert repeated == queued
+    with pytest.raises(PermissionError, match="^an earlier send is awaiting delivery$"):
+        await social.delivery.send_parts(ctx, [("first", 1), ("second", 1)])
+    assert len(social.store.deliveries.turn_actions(A.session_key, ctx.turn_id)) == 2
+
+
+def test_social_send_parts_schema_accepts_strings_or_objects(social):
+    tool = SocialSendTool(social)
+    assert tool.parameters["properties"]["parts"]["items"] == {"anyOf": [
+        {"type": "string", "minLength": 1, "maxLength": 4000},
+        {"type": "object", "properties": {
+            "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "reply_to": {"type": "integer", "minimum": 1}},
+         "required": ["text"], "additionalProperties": False},
+    ]}
+    assert tool.validate_params({"parts": ["哈哈哈", {"text": "不过说真的", "reply_to": 2}]}) == []
+
+
 async def test_burst_sends_paced_parts_with_individual_receipts_and_no_replay(social):
     sender = AsyncMock(side_effect=[501, 502, 503])
     social.set_sender(sender)
     ctx = context(social)
-    queued = await social.delivery.send_parts(ctx, ["first", "second", "third"], None)
+    queued = await social.delivery.send_parts(ctx, [("first", None), ("second", None), ("third", None)])
     assert [row["status"] for row in queued] == ["queued"] * 3
     await social.run_due()
     assert sender.await_count == 1
@@ -626,7 +686,7 @@ async def test_burst_sends_paced_parts_with_individual_receipts_and_no_replay(so
         clock(social).advance(2)
         await social.run_due()
     assert [call.args[1] for call in sender.await_args_list] == ["first", "second", "third"]
-    repeated = await social.delivery.send_parts(ctx, ["first", "second", "third"], None)
+    repeated = await social.delivery.send_parts(ctx, [("first", None), ("second", None), ("third", None)])
     assert [row["action_id"] for row in repeated] == [row["action_id"] for row in queued]
     assert [row["message_id"] for row in repeated] == [501, 502, 503]
     await social.run_due()
@@ -638,11 +698,11 @@ async def test_partial_burst_failure_never_replays_the_confirmed_part(social, er
     sender = AsyncMock(side_effect=[501, error])
     social.set_sender(sender)
     ctx = context(social)
-    await social.delivery.send_parts(ctx, ["first", "second", "third"], None)
+    await social.delivery.send_parts(ctx, [("first", None), ("second", None), ("third", None)])
     await social.run_due()
     clock(social).advance(2)
     await social.run_due()
-    rows = await social.delivery.send_parts(ctx, ["first", "second", "third"], None)
+    rows = await social.delivery.send_parts(ctx, [("first", None), ("second", None), ("third", None)])
     assert [row["status"] for row in rows] == ["sent", status, "failed"]
     clock(social).advance(10)
     await social.run_due()
@@ -652,7 +712,7 @@ async def test_partial_burst_failure_never_replays_the_confirmed_part(social, er
 async def test_rate_limited_burst_cannot_send_later_parts_first(social):
     sender = AsyncMock(side_effect=[SocialRateLimitError(5), 501, 502])
     social.set_sender(sender)
-    await social.delivery.send_parts(context(social), ["first", "second"], None)
+    await social.delivery.send_parts(context(social), [("first", None), ("second", None)])
     await social.run_due()
     clock(social).advance(3)
     await social.run_due()
@@ -669,7 +729,7 @@ async def test_rate_limited_burst_cannot_send_later_parts_first(social):
 async def test_invalid_burst_is_rejected_before_enqueue(social, texts):
     social.set_sender(AsyncMock(return_value=501))
     with pytest.raises(ValueError):
-        await social.delivery.send_parts(context(social), texts, None)
+        await social.delivery.send_parts(context(social), [(text, None) for text in texts])
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
 
 
@@ -677,7 +737,7 @@ async def test_burst_cannot_reserve_more_than_remaining_budget(social):
     social.config.max_sends_per_hour = 1
     social.set_sender(AsyncMock(return_value=501))
     with pytest.raises(PermissionError, match="hourly send budget exhausted"):
-        await social.delivery.send_parts(context(social), ["one", "two"], None)
+        await social.delivery.send_parts(context(social), [("one", None), ("two", None)])
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
 
 

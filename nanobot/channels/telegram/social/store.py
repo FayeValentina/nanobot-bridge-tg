@@ -313,17 +313,17 @@ class SocialStore:
                 self.judge.shorten_pending(key, quiet, result["total_due"])
             return result
 
-    def enqueue_parts(self, key: str, version: str, turn: str, texts: list[str],
-                      reply_to: int | None, *, followup_id: str | None = None) -> list[sqlite3.Row]:
+    def enqueue_parts(self, key: str, version: str, turn: str, parts: list[tuple[str, int | None]],
+                      *, followup_id: str | None = None) -> list[sqlite3.Row]:
         group = uuid4().hex
         now = self.now()
         with transaction(self.db):
             expires = self.wakes.turn_expires(turn)
             if expires is None:
                 raise PermissionError("parts require an active authorized turn")
-            for index, text in enumerate(texts):
+            for index, (text, reply_to) in enumerate(parts):
                 action = uuid4().hex
-                self.deliveries.insert_part(action, key, version, text, now, now, expires, reply_to if index == 0 else None, turn, group, index)
+                self.deliveries.insert_part(action, key, version, text, now, now, expires, reply_to, turn, group, index)
                 if followup_id is not None:
                     self.followups.reserve(key, followup_id, turn, action)
         return self.deliveries.group_parts(group)

@@ -229,7 +229,7 @@ async def test_two_paced_groups_count_once_each_and_second_group_finishes(social
     social.set_sender(sender)
     for index in range(2):
         ctx = context(social, turn=f"group-{index}")
-        rows = await social.delivery.send_parts(ctx, [f"开头 {index}", f"问题 {index}"], None, followup_id=item["id"])
+        rows = await social.delivery.send_parts(ctx, [(f"开头 {index}", None), (f"问题 {index}", None)], followup_id=item["id"])
         assert {row["status"] for row in rows} == {"queued"}
         await social.run_due()
         clock(social).advance(3)
@@ -247,7 +247,7 @@ async def test_queued_parts_recheck_live_intention_before_sending(social, change
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
     ctx = context(social)
-    await social.delivery.send_parts(ctx, ["准备提问", "后续问题"], None, followup_id=item["id"])
+    await social.delivery.send_parts(ctx, [("准备提问", None), ("后续问题", None)], followup_id=item["id"])
     if change == "delete":
         social.memory.apply(A.session_key, "delete", MemoryRequest(action="delete", memory_id=item["id"]))
     elif change == "edit":
@@ -278,7 +278,7 @@ async def test_cannot_queue_unlinked_parts_when_followup_is_invalid(social):
     edit(social, item["id"], followup_state="dropped")
     social.set_sender(AsyncMock(return_value=501))
     with pytest.raises(PermissionError):
-        await social.delivery.send_parts(context(social), ["第一条", "第二条"], None, followup_id=item["id"])
+        await social.delivery.send_parts(context(social), [("第一条", None), ("第二条", None)], followup_id=item["id"])
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
 
 

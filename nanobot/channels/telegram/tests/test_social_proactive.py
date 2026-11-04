@@ -526,7 +526,7 @@ async def test_quiet_beginning_cancels_unattempted_proactive_parts(social):
     social.set_sender(sender)
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
-    await social.delivery.send_parts(ctx, ["第一条", "第二条"], None)
+    await social.delivery.send_parts(ctx, [("第一条", None), ("第二条", None)])
     await tick(social)
     sender.assert_not_awaited()
     assert {row[0] for row in social.store.db.execute("SELECT status FROM actions")} == {"failed"}
@@ -550,7 +550,7 @@ async def test_wait_after_queuing_parts_keeps_existing_delivery_without_new_wake
     social.set_sender(sender)
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
-    await social.delivery.send_parts(ctx, ["第一条", "第二条"], None)
+    await social.delivery.send_parts(ctx, [("第一条", None), ("第二条", None)])
     social.waiting.wait(ctx, 300)
     social.store.wakes.finish(ctx.turn_id, "completed")
     await social.run_due()

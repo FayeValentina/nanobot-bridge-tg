@@ -410,7 +410,7 @@ async def test_paced_group_records_confirmed_context_after_last_child(dialogue):
     dialogue.config.send_cooldown_seconds = 2
     dialogue.configure(dialogue.config)
     dialogue.set_sender(AsyncMock(side_effect=[800, 801, 802]))
-    await dialogue.delivery.send_parts(ctx, ["第一条", "第二条", "几点出发？"], None)
+    await dialogue.delivery.send_parts(ctx, [("第一条", None), ("第二条", None), ("几点出发？", None)])
     await dialogue.run_due()
     for _ in range(2):
         clock(dialogue).advance(2)
