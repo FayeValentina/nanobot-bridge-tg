@@ -249,7 +249,6 @@ async def test_long_quote_fits_small_snapshot_without_losing_current_message(soc
 
 async def test_album_items_keep_identity_and_share_one_wake(social):
     social.config.coalesce_seconds = 1
-    social.config.scopes[0].wake_on_messages = True
     tg = channel(social)
     loader_for(tg)
     for seq in (1, 2):

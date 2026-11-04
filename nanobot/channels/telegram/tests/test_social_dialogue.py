@@ -32,8 +32,6 @@ __all__ = ["social"]
 
 @pytest.fixture
 def dialogue(social):
-    social.config.dynamic_wait.enabled = True
-    social.config.reply_attention.enabled = True
     social.config.sleep_observation.enabled = True
     social.config.cooldown_seconds = 0
     social.config.send_cooldown_seconds = 0
@@ -631,9 +629,8 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
 
 
 @pytest.mark.parametrize("section", [
-    {"dynamicWait": {"quietSeconds": 4, "unfinishedSeconds": 1}},
+    {"dynamicWait": {"quietSeconds": 4, "maxSeconds": 1}},
     {"dynamicWait": {"maxSeconds": float("nan")}},
-    {"replyAttention": {"checkSeconds": 300, "windowSeconds": 30}},
     {"sleepObservation": {"windowSeconds": 0}},
 ])
 def test_dialogue_configuration_rejects_invalid_windows(section):
@@ -645,6 +642,6 @@ def test_dialogue_config_round_trips_in_public_manifest():
     from nanobot.channels.telegram.manifest import SETUP_SPEC
     default = SETUP_SPEC.fields["social"].default
     config = TelegramSocialConfig.model_validate(default)
-    assert not config.dynamic_wait.enabled and not config.reply_attention.enabled and not config.sleep_observation.enabled
-    config.dynamic_wait.enabled = True
+    assert default == {"enabled": False, "scopes": []}
+    assert not config.sleep_observation.enabled
     assert TelegramSocialConfig.model_validate(config.model_dump(by_alias=True)) == config

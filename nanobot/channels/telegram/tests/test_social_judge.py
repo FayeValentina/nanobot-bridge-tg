@@ -66,7 +66,7 @@ def test_judge_defaults_roundtrip_through_existing_json_settings():
     assert config.judge.reasoning_effort == "low"
     body = config.model_dump(by_alias=True)
     assert TelegramSocialConfig.model_validate(body) == config
-    assert SETUP_SPEC.fields["social"].default["judge"] == body["judge"]
+    assert TelegramSocialConfig.model_validate(SETUP_SPEC.fields["social"].default).judge == config.judge
     assert "enabled" not in body["judge"]
 
 
@@ -107,9 +107,8 @@ def test_judge_provider_uses_independent_persistent_oauth(tmp_path):
 def test_public_defaults_do_not_advertise_retired_attention_settings():
     default = SETUP_SPEC.fields["social"].default
     assert "replyAttention" not in default
-    assert "enabled" not in default["dynamicWait"]
-    assert "unfinishedSeconds" not in default["dynamicWait"]
-    assert TelegramSocialConfig.model_validate(default).reply_attention.enabled is False
+    assert default == {"enabled": False, "scopes": []}
+    assert TelegramSocialConfig.model_validate(default).enabled is False
 
 
 def test_v3b_judge_settings_change_preserves_the_active_scope_version_and_wait(tmp_path):

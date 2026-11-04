@@ -115,7 +115,6 @@ class JudgeIntent(BaseModel):
     keywords: tuple[str, ...] = ()
     senders: tuple[str, ...] = ()
     on_question: bool = False
-    on_messages: bool = False
     one_shot: bool = True
     expires_at: float | None = None
 
@@ -247,9 +246,7 @@ class JudgeCoordinator:
     def coalesce_delay(self, scope: ConversationScope) -> float:
         binding = self.bindings.binding(scope)
         assert binding is not None
-        conditions, _ = self.waiting.conditions(scope.session_key)
-        delay = conditions.coalesce_seconds if conditions.coalesce_seconds is not None else binding.coalesce_seconds
-        delay = self.config().coalesce_seconds if delay is None else delay
+        delay = binding.coalesce_seconds if binding.coalesce_seconds is not None else self.config().coalesce_seconds
         wait = self.store.wakes.wait(scope.session_key)
         if wait and wait["purpose"] in {"reply", "messages"}:
             delay = float(wait["quiet_seconds"])
@@ -308,10 +305,9 @@ class JudgeCoordinator:
         return JudgeIntent(
             description=("Background observation before sleep, not a selective wait for questions. " if observing else
                          "An explicit wait is selective; ordinary unrelated messages need not interrupt it. Clear calls remain reachable. ")
-                        + json.dumps({"waiting_for_messages": conditions.on_messages if not observing else False,
-                                      "waiting_for_questions": conditions.on_question if not observing else False}),
+                        + json.dumps({"waiting_for_questions": conditions.on_question if not observing else False}),
             keywords=tuple(conditions.keywords), senders=tuple(conditions.senders), on_question=conditions.on_question,
-            on_messages=conditions.on_messages, one_shot=conditions.one_shot, expires_at=conditions.expires_at)
+            one_shot=conditions.one_shot, expires_at=conditions.expires_at)
 
     async def _run(self, scope: ConversationScope, batch: PendingBatch) -> None:
         key = scope.session_key

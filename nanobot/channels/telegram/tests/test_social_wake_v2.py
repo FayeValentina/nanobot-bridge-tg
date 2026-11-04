@@ -26,7 +26,7 @@ from nanobot.channels.telegram.tests.test_social_scheduler import (
     remove_v4_columns,
     social,
 )
-from nanobot.config.schema import TelegramSocialConfig, TelegramSocialSleepInterruptConfig
+from nanobot.config.schema import TelegramSocialConfig
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
 __all__ = ["social"]
@@ -37,12 +37,6 @@ def v2b(social):
     social.config.coalesce_seconds = 0
     social.config.cooldown_seconds = 0
     social.config.max_requests_per_hour = 120
-    binding = social.config.scopes[0]
-    binding.wake_on_question = True
-    binding.wake_probability = 0.25
-    binding.sleep_interrupts = TelegramSocialSleepInterruptConfig(
-        keywords=True, senders=True, question=True, probability=True, messages=True,
-    )
     social.random_source = Mock(return_value=0.9)
     social.configure(social.config)
     return social
@@ -127,8 +121,7 @@ async def test_infinite_wait_has_no_timer_or_lock_and_direct_address_interrupts(
     assert not v2b.store.scopes.state(A.session_key)["wait_infinite"]
 
 
-async def test_infinite_temporary_wait_expires_back_to_administrator_triggers(v2b):
-    v2b.config.scopes[0].wake_keywords = ["base"]
+async def test_infinite_temporary_wait_expires_back_to_broad_admission(v2b):
     ctx = context(v2b)
     v2b.waiting.set_conditions(ctx, topics=["temporary"], members=[], questions=False, one_shot=True, ttl_seconds=5)
     v2b.waiting.wait(ctx, infinite=True, sleeping=True)
@@ -315,9 +308,6 @@ async def test_tools_accept_infinite_wait_and_new_temporary_conditions(v2b):
 
 
 @pytest.mark.parametrize("section", [
-    {"scopes": [{"chatId": -1001, "roleId": "guest", "wakeProbability": -0.1}]},
-    {"scopes": [{"chatId": -1001, "roleId": "guest", "wakeProbability": float("nan")}]},
-    {"scopes": [{"chatId": -1001, "roleId": "guest", "sleepInterrupts": {"unknown": True}}]},
     {"scopes": [{"chatId": -1001, "roleId": "guest", "coalesceSeconds": 11}]},
     {"maxCoalesceSeconds": 1},
 ])
@@ -326,13 +316,64 @@ def test_invalid_policy_configuration_is_rejected(section):
         TelegramSocialConfig.model_validate(section)
 
 
-def test_new_policy_defaults_preserve_legacy_sleeping_and_sampling():
+def test_policy_defaults_round_trip():
     config = TelegramSocialConfig.model_validate({"scopes": [{"chatId": -1001, "roleId": "guest"}]})
     binding = config.scopes[0]
-    assert not binding.wake_on_question and binding.wake_probability == 0
-    assert not any(binding.sleep_interrupts.model_dump().values())
     assert binding.coalesce_seconds is None
     assert TelegramSocialConfig.model_validate(config.model_dump(by_alias=True)) == config
+
+
+def test_stored_wake_conditions_ignore_retired_keys(v2b):
+    raw = json.dumps({
+        "keywords": ["到家"], "senders": ["456"], "on_question": True,
+        "one_shot": False, "expires_at": v2b.now() + 60,
+        "probability": 0.05, "sleep_interrupts": {"question": True},
+        "coalesce_seconds": 9, "on_messages": True,
+    })
+    v2b.store.wakes.set_wake_config(A.session_key, raw)
+    conditions, dynamic = v2b.waiting.conditions(A.session_key)
+    assert dynamic
+    assert conditions.model_dump() == {
+        "keywords": ["到家"], "senders": ["456"], "on_question": True,
+        "one_shot": False, "expires_at": v2b.now() + 60,
+    }
+    assert v2b.store.scopes.state(A.session_key)["wake_config"] == raw
+
+
+def test_deployed_social_config_validates_after_retired_keys_are_removed():
+    config = TelegramSocialConfig.model_validate({
+        "enabled": True,
+        "scopes": [{
+            "chatId": -1003760551468, "roleId": "groupmate", "allTopics": True,
+            "nicknames": ["肥鱼", "肥魚"],
+            "proactive": {
+                "enabled": True, "minIntervalSeconds": 1800, "maxIntervalSeconds": 5400,
+                "probability": 0.6, "timezone": "Asia/Tokyo", "nightMultiplier": 1.0,
+                "activityEnabled": True, "activityIntervalSeconds": 3600,
+                "activityMaxIterations": 4,
+            },
+            "quietHours": {"enabled": False, "timezone": "Asia/Tokyo"},
+        }],
+        "maxRequestsPerHour": 120, "maxSendsPerHour": 60, "repairUnsentFinal": True,
+        "dynamicWait": {"quietSeconds": 10, "maxSeconds": 30},
+        "sleepObservation": {"enabled": True, "windowSeconds": 300},
+        "coalesceSeconds": 10,
+        "learning": {"catchphrases": ["本大爷", "白饭", "Token", "算力"]},
+    })
+    assert config.enabled
+    assert config.dynamic_wait.quiet_seconds == 10
+    assert config.dynamic_wait.max_seconds == 30
+    assert config.scopes[0].nicknames == ["肥鱼", "肥魚"]
+
+
+def test_wake_probability_must_be_removed_before_deployment():
+    with pytest.raises(ValidationError) as exc:
+        TelegramSocialConfig.model_validate({
+            "scopes": [{"chatId": -1001, "roleId": "guest", "wakeProbability": 0.05}],
+        })
+    assert [(error["loc"], error["type"]) for error in exc.value.errors()] == [
+        (("scopes", 0, "wakeProbability"), "extra_forbidden"),
+    ]
 
 
 async def test_wait_sets_member_condition_and_empty_condition_clears_it(v2b):

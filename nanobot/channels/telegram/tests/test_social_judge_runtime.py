@@ -32,8 +32,7 @@ async def due(runtime, seconds=2):
 
 
 @pytest.mark.parametrize("text,directed", [("肥鱼呢",False),("你猜猜我给你准备了什么",False),("@bot hello",True),("ordinary chatter",False)])
-async def test_every_human_or_directed_batch_wakes_locally_even_with_legacy_probability_zero(social,text,directed):
-    social.config.scopes[0].wake_probability=0
+async def test_every_human_or_directed_batch_wakes_locally(social,text,directed):
     provider=decide(social)
     await social.observe(observed(social,text=text),directed=directed)
     await due(social)
@@ -48,7 +47,6 @@ async def test_every_human_or_directed_batch_wakes_locally_even_with_legacy_prob
 @pytest.mark.parametrize("directed", [False,True])
 async def test_local_admission_bypasses_observe_from_judge(social,directed):
     social.config.scopes[0].nicknames=["肥鱼"]
-    social.config.scopes[0].wake_probability=1
     provider=decide(social,"observe")
     await social.observe(observed(social,text="肥鱼呢"),directed=directed)
     await due(social)
@@ -244,11 +242,7 @@ async def test_pause_cancels_pending_judge_without_an_expired_deadline_spin(soci
 
 
 @pytest.mark.parametrize("mode", ["observing", "active"])
-async def test_standing_preferences_do_not_invent_a_selective_wait(social, mode):
-    binding = social.config.scopes[0]
-    binding.wake_on_question = True
-    binding.wake_keywords = ["旅行"]
-    binding.wake_senders = ["456"]
+async def test_observing_and_active_modes_do_not_invent_a_selective_wait(social, mode):
     provider = decide(social)
     if mode == "active":
         context(social)
@@ -291,9 +285,8 @@ async def test_real_selective_wait_keeps_conditions_deadline_and_one_shot(social
     assert social.store.scopes.state(A.session_key)["wake_config"] == "{}"
 
 
-async def test_expired_temporary_wait_does_not_fall_back_to_question_only_observation(social):
+async def test_expired_temporary_wait_returns_to_broad_observation(social):
     social.config.cooldown_seconds = 0
-    social.config.scopes[0].wake_on_question = True
     ctx = context(social)
     social.waiting.set_conditions(ctx, topics=["到家"], members=[], questions=False, one_shot=True, ttl_seconds=1)
     social.waiting.wait(ctx, infinite=True, purpose="messages")
@@ -308,7 +301,6 @@ async def test_expired_temporary_wait_does_not_fall_back_to_question_only_observ
 
 
 async def test_sleep_observation_is_not_a_selective_question_wait(social):
-    social.config.scopes[0].wake_on_question = True
     social.config.sleep_observation.enabled = True
     ctx = context(social)
     social.waiting.wait(ctx, 30, sleeping=True)
@@ -320,19 +312,13 @@ async def test_sleep_observation_is_not_a_selective_question_wait(social):
     assert social.judging.intent(A.session_key) is None
 
 
-def test_state_omits_standing_preferences_from_temporary_condition(social):
-    social.config.scopes[0].wake_on_question = True
-    social.config.scopes[0].wake_probability = 0.05
-    social.config.reply_attention.enabled = True
+def test_state_has_no_temporary_condition_by_default(social):
     state = social.get_state(context(social))
     assert state["until_condition"] is None
 
 
 @pytest.mark.parametrize("purpose", ["reply", "messages"])
-async def test_general_reply_wait_never_inherits_standing_question_only_preference(social, purpose):
-    social.config.scopes[0].wake_on_question = True
-    social.config.scopes[0].wake_keywords = ["旅行"]
-    social.config.scopes[0].wake_senders = ["456"]
+async def test_general_reply_wait_has_no_selective_condition(social, purpose):
     social.store.observe(observed(social), 500)
     ctx = context(social)
     social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))

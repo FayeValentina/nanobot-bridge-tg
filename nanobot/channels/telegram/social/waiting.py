@@ -15,7 +15,6 @@ from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.social.wake import wait_duration
 from nanobot.config.schema import (
     TelegramSocialConfig,
-    TelegramSocialScopeConfig,
     TelegramSocialWakeConfig,
 )
 
@@ -45,17 +44,6 @@ class SocialWaiting:
             self.store.wakes.set_wake_config(key, "{}")
             return TelegramSocialWakeConfig(), False
         return conditions, raw != "{}"
-
-    def effective(self, key: str, binding: TelegramSocialScopeConfig) -> tuple[TelegramSocialWakeConfig, bool]:
-        conditions, dynamic = self.conditions(key)
-        if not dynamic:
-            conditions = TelegramSocialWakeConfig(
-                keywords=binding.wake_keywords, senders=binding.wake_senders,
-                on_messages=binding.wake_on_messages, on_question=binding.wake_on_question,
-                probability=0, one_shot=False,
-                coalesce_seconds=binding.coalesce_seconds,
-            )
-        return conditions, dynamic
 
     def consume(self, key: str, job: str) -> None:
         """Admission includes a fresh busy-time candidate exposed in the current run."""
@@ -98,7 +86,7 @@ class SocialWaiting:
                 raise ValueError("quiet interval exceeds the operator limit")
             binding = self.bindings.binding(scope)
             assert binding is not None  # validate_context checked the current binding.
-            conditions, dynamic = self.effective(scope.session_key, binding)
+            conditions, dynamic = self.conditions(scope.session_key)
             result = self.store.wait_for_quiet(scope.session_key, ctx.turn_id, purpose=purpose,
                                                quiet=quiet, seconds=seconds, on_timeout=on_timeout,
                                                condition_expires=conditions.expires_at if purpose == "messages" and (dynamic or infinite) else None,
@@ -167,7 +155,7 @@ class SocialWaiting:
         confirmed = self.store.deliveries.confirmed_turn(key, turn)
         if confirmed is None:
             return
-        conditions, dynamic = self.effective(key, binding)
+        conditions, dynamic = self.conditions(key)
         result = self.store.wait_for_quiet(key, turn, purpose="messages", quiet=self.config().dynamic_wait.quiet_seconds,
                                   seconds=min(30, self.config().max_wait_seconds), on_timeout=False, selective=True,
                                   condition_expires=conditions.expires_at if dynamic else None,

@@ -26,7 +26,7 @@ def offline_intermediary(monkeypatch):
                 name.casefold() in message["text"].casefold() for name in data["nicknames"])]
             matches = [message for message in fresh if any(key.casefold() in message["text"].casefold() for key in keys)
                        or message["sender_id"] in senders]
-            if not keys and not senders and (intent or preferences.get("on_messages")):
+            if not keys and not senders and intent:
                 matches = fresh
             selected = selected or matches
             return LLMResponse(content=json.dumps({

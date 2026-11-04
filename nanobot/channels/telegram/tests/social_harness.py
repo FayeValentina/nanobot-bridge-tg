@@ -44,10 +44,10 @@ class SocialHarness:
     """One isolated group, scripted main model, real runtime/store/agent/tools.
 
     Config overrides use TelegramSocialConfig's JSON names. The existing autouse
-    offline_intermediary fixture supplies the judge; wakeOnMessages makes that
-    fake admit ordinary chat. Main-model scripts default to a silent final after
-    their last tool call. model_calls counts provider requests, including tool
-    continuations. All observations are copies taken at external boundaries.
+    offline_intermediary fixture supplies the judge. Main-model scripts default
+    to a silent final after their last tool call. model_calls counts provider
+    requests, including tool continuations. All observations are copies taken at
+    external boundaries.
     """
 
     def __init__(self, directory: Path, **config: Any) -> None:
@@ -67,8 +67,7 @@ class SocialHarness:
             "dynamicWait": {"quietSeconds": 0.1},
             "judge": {},
             "learning": {"enabled": False},
-            "scopes": [{"chatId": -1001, "threadId": 42, "roleId": "friend",
-                        "wakeOnMessages": True}],
+            "scopes": [{"chatId": -1001, "threadId": 42, "roleId": "friend"}],
             **config,
         })
         self._responses: deque[LLMResponse] = deque()

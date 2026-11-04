@@ -92,17 +92,6 @@ class TelegramSocialQuietHoursConfig(Base):
         return self
 
 
-class TelegramSocialSleepInterruptConfig(Base):
-    """Operator ceiling for ambient conditions allowed to interrupt sleeping."""
-
-    model_config = ConfigDict(extra="forbid")
-    keywords: bool = False
-    senders: bool = False
-    question: bool = False
-    probability: bool = False
-    messages: bool = False
-
-
 class TelegramSocialScopeConfig(Base):
     """Operator-authorized group/topic; observation does not grant administration."""
 
@@ -116,27 +105,20 @@ class TelegramSocialScopeConfig(Base):
     observe_from: list[str] = Field(default_factory=lambda: ["*"])
     paused: bool = False
     nicknames: list[str] = Field(default_factory=list, max_length=20)
-    wake_keywords: list[str] = Field(default_factory=list, max_length=20)
-    wake_senders: list[str] = Field(default_factory=list, max_length=20)
-    wake_on_messages: bool = False
-    wake_on_question: bool = False
-    wake_probability: float = Field(default=0, ge=0, le=1, allow_inf_nan=False)
-    sleep_interrupts: TelegramSocialSleepInterruptConfig = Field(default_factory=TelegramSocialSleepInterruptConfig)
     coalesce_seconds: float | None = Field(default=None, ge=0, le=60, allow_inf_nan=False)
     allow_ambient_wake: bool = True
     proactive: TelegramSocialProactiveConfig = Field(default_factory=TelegramSocialProactiveConfig)
     quiet_hours: TelegramSocialQuietHoursConfig = Field(default_factory=TelegramSocialQuietHoursConfig)
 
-    @field_validator("nicknames", "wake_keywords")
+    @field_validator("nicknames")
     @classmethod
     def validate_wake_words(cls, values: list[str]) -> list[str]:
         if any(not value.strip() or len(value) > 80 for value in values):
             raise ValueError("wake words must contain 1–80 characters")
         return values
 
-    @field_validator("wake_senders")
-    @classmethod
-    def validate_wake_senders(cls, values: list[str]) -> list[str]:
+    @staticmethod
+    def validate_wake_senders(values: list[str]) -> list[str]:
         if any(not value.isascii() or not value.isdigit() for value in values):
             raise ValueError("wakeSenders accepts Telegram user IDs")
         return values
@@ -152,14 +134,10 @@ class TelegramSocialScopeConfig(Base):
 class TelegramSocialWakeConfig(Base):
     """Model-editable attention conditions; contains no authorization or budgets."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
     keywords: list[str] = Field(default_factory=list, max_length=20)
     senders: list[str] = Field(default_factory=list, max_length=20)
-    on_messages: bool = False
     on_question: bool = False
-    probability: float = Field(default=0, ge=0, le=1, allow_inf_nan=False)
-    sleep_interrupts: TelegramSocialSleepInterruptConfig | None = None
-    coalesce_seconds: float | None = Field(default=None, ge=0, le=60, allow_inf_nan=False)
     expires_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     one_shot: bool = True
 
@@ -176,29 +154,13 @@ class TelegramSocialWakeConfig(Base):
 
 class TelegramSocialDynamicWaitConfig(Base):
     model_config = ConfigDict(extra="forbid")
-    enabled: bool = False
     quiet_seconds: float = Field(default=1.5, ge=0.1, le=60, allow_inf_nan=False)
-    unfinished_seconds: float = Field(default=4, ge=0.1, le=20, allow_inf_nan=False)
     max_seconds: float = Field(default=12, ge=1, le=60, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_window(self) -> TelegramSocialDynamicWaitConfig:
-        if not self.quiet_seconds <= self.unfinished_seconds <= self.max_seconds:
-            raise ValueError("quietSeconds <= unfinishedSeconds <= maxSeconds is required")
-        return self
-
-
-class TelegramSocialReplyAttentionConfig(Base):
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool = False
-    check_seconds: float = Field(default=30, ge=1, le=300, allow_inf_nan=False)
-    window_seconds: float = Field(default=120, ge=1, le=1800, allow_inf_nan=False)
-    question_window_seconds: float = Field(default=300, ge=1, le=1800, allow_inf_nan=False)
-
-    @model_validator(mode="after")
-    def validate_window(self) -> TelegramSocialReplyAttentionConfig:
-        if not self.check_seconds <= self.window_seconds <= self.question_window_seconds:
-            raise ValueError("checkSeconds <= windowSeconds <= questionWindowSeconds is required")
+        if not self.quiet_seconds <= self.max_seconds:
+            raise ValueError("quietSeconds <= maxSeconds is required")
         return self
 
 
@@ -302,7 +264,6 @@ class TelegramSocialConfig(Base):
     coalesce_seconds: float = Field(default=1.5, ge=0, le=60)
     max_coalesce_seconds: float = Field(default=10, ge=0, le=60, allow_inf_nan=False)
     dynamic_wait: TelegramSocialDynamicWaitConfig = Field(default_factory=TelegramSocialDynamicWaitConfig)
-    reply_attention: TelegramSocialReplyAttentionConfig = Field(default_factory=TelegramSocialReplyAttentionConfig)
     sleep_observation: TelegramSocialSleepObservationConfig = Field(default_factory=TelegramSocialSleepObservationConfig)
     judge: TelegramSocialJudgeConfig = Field(default_factory=TelegramSocialJudgeConfig)
     cooldown_seconds: float = Field(default=10, ge=0, le=300)
@@ -320,13 +281,11 @@ class TelegramSocialConfig(Base):
         keys = [(scope.chat_id, scope.thread_id) for scope in self.scopes]
         if len(set(keys)) != len(keys):
             raise ValueError("duplicate social group/topic authorization")
-        limit = min(self.max_coalesce_seconds, self.dynamic_wait.max_seconds) if self.dynamic_wait.enabled else self.max_coalesce_seconds
+        limit = self.max_coalesce_seconds
         if self.coalesce_seconds > self.max_coalesce_seconds or any(
             scope.coalesce_seconds is not None and scope.coalesce_seconds > limit for scope in self.scopes
         ):
             raise ValueError("coalesceSeconds exceeds the operator coalescing limit")
-        if self.dynamic_wait.enabled and self.dynamic_wait.unfinished_seconds > self.max_coalesce_seconds:
-            raise ValueError("unfinishedSeconds exceeds maxCoalesceSeconds")
         return self
 
 

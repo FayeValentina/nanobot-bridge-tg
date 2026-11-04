@@ -146,18 +146,10 @@ async def test_short_window_coalesces_direct_addresses_and_includes_plain_messag
     assert social.store.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
 
 
-@pytest.mark.parametrize("kind,text,sender,reason", [
-    ("nicknames", "hello guest", "123", "nickname"),
-    ("wake_keywords", "Python is fun", "123", "keyword"),
-    ("wake_senders", "hello", "456", "sender"),
-    ("wake_on_messages", "ordinary chat", "123", "message"),
-])
-async def test_operator_trigger_conditions(social, kind, text, sender, reason):
-    binding = social.config.scopes[0]
-    setattr(binding, kind, {"nicknames": ["Guest"], "wake_keywords": ["python"],
-                           "wake_senders": ["456"], "wake_on_messages": True}[kind])
+async def test_operator_nicknames_preserve_broad_conversation_admission(social):
+    social.config.scopes[0].nicknames = ["Guest"]
     social.configure(social.config)
-    msg = replace(observed(social, text=text), sender_id=sender)
+    msg = observed(social, text="hello guest")
     await social.observe(msg, directed=False)
     clock(social).advance(2)
     await social.run_due()
@@ -166,8 +158,7 @@ async def test_operator_trigger_conditions(social, kind, text, sender, reason):
     assert view["admission"]["by"] == "conversation"
 
 
-async def test_directed_trigger_upgrades_keyword_without_another_job(social):
-    social.config.scopes[0].wake_keywords = ["topic"]
+async def test_directed_message_upgrades_conversation_without_another_job(social):
     await social.observe(observed(social, text="topic"), directed=False)
     await social.observe(observed(social, 2), directed=True)
     rows = social.store.db.execute("SELECT * FROM wakes").fetchall()
@@ -182,9 +173,7 @@ async def test_mixed_human_bot_batch_wakes_once_without_idle_model_loops(social)
     from nanobot.channels.telegram.tests.test_social_judge import decide
 
     provider = decide(social, "observe")
-    social.config.scopes[0].wake_on_messages = True
     await social.observe(replace(observed(social), is_bot=True), directed=False)
-    social.config.scopes[0].wake_on_messages = False
     await social.observe(observed(social, 2), directed=False)
     for _ in range(3):
         clock(social).advance(60)
@@ -214,7 +203,6 @@ async def test_wait_tool_ends_agent_turn_without_an_extra_model_request(tmp_path
 
 
 async def test_sleep_with_selective_wait_ignores_ambient_but_direct_address_interrupts(social):
-    social.config.scopes[0].wake_on_messages = True
     ctx = context(social)
     social.waiting.set_conditions(ctx, topics=[], members=["456"], questions=False, one_shot=True, ttl_seconds=3600)
     social.waiting.wait(ctx, 300, sleeping=True)
@@ -366,7 +354,6 @@ async def test_busy_trigger_read_by_the_current_model_does_not_run_another_turn(
 
 
 async def test_sleep_admits_unseen_human_conversation_without_selective_wait(social):
-    social.config.scopes[0].wake_on_messages = True
     ctx = context(social)
     await social.observe(observed(social), directed=False)
     social.waiting.wait(ctx, 300, sleeping=True)
@@ -875,7 +862,7 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
 
 @pytest.mark.parametrize("values", [
     {"coalesceSeconds": -1}, {"cooldownSeconds": -1}, {"maxWaitSeconds": 86401},
-    {"scopes": [{"chatId": -1001, "roleId": "guest", "wakeKeywords": [""]}]},
+    {"scopes": [{"chatId": -1001, "roleId": "guest", "nicknames": [""]}]},
 ])
 def test_new_configuration_fields_reject_invalid_values(values):
     with pytest.raises(ValidationError):
