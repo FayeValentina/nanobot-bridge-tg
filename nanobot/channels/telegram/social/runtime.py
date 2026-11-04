@@ -57,8 +57,8 @@ from nanobot.config.schema import (
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionPolicy
 
-SOCIAL_TOOLS = frozenset({"social_activity", "social_jargon", "social_expression", "social_get_state", "social_read_messages", "social_mark_read", "social_send",
-                          "social_wait", "social_set_wake", "social_get_media", "social_sticker", "social_memory"})
+SOCIAL_TOOLS = frozenset({"social_send", "social_wait", "social_state", "social_media", "social_sticker",
+                          "social_memory", "social_jargon", "social_expression", "social_activity"})
 
 
 class TelegramSocialRuntime:
@@ -305,42 +305,22 @@ class TelegramSocialRuntime:
         scope = self.bindings.validate_context(ctx)
         binding = self.binding(scope)
         assert binding is not None  # validate_context checked the current operator binding.
-        conditions, _ = self.waiting.conditions(scope.session_key)
+        conditions, dynamic = self.waiting.conditions(scope.session_key)
         state = self.store.scopes.state(scope.session_key)
         requests = self.store.wakes.request_usage(scope.session_key, self.now() - 3600)
         sends = self.store.deliveries.attempt_count(scope.session_key, self.now() - 3600)
         last_send = self.store.deliveries.last_send(scope.session_key)
-        intent = self.judging.intent(scope.session_key)
+        stopped = self.store.proactive_state.stopped(scope.session_key)
         return {"role_id": binding.role_id, "role_file": str(self.bindings.role_file(binding)),
-                "tool_permissions": "shared_with_normal_chat",
-                "read_through": state["read_through"], "seen_through": state["seen_through"],
+                "read_through": state["read_through"],
                 "latest_seq": state["next_seq"] - 1, "mode": state["mode"],
-                "wake_at": state["wake_at"], "wake_config": conditions.model_dump(),
-                "wait_infinite": state["wait_infinite"],
-                "judge": {"model": self.config.judge.model, "assessed_through": self.store.judge.through(scope.session_key),
-                          "semantic_authority": "intermediary",
-                          "intent": intent.model_dump() if intent else None,
-                          "participation": {"keywords": binding.wake_keywords, "senders": binding.wake_senders,
-                                            "on_messages": binding.wake_on_messages, "on_question": binding.wake_on_question}},
-                "base_wake": {"sleep_interrupts": binding.sleep_interrupts.model_dump(exclude={"probability"}),
-                              "coalesce_seconds": binding.coalesce_seconds,
-                              "max_coalesce_seconds": self.config.max_coalesce_seconds},
+                "wake_at": state["wake_at"], "wait_infinite": state["wait_infinite"],
+                "until_condition": {"members": conditions.senders, "topics": conditions.keywords,
+                                    "questions": conditions.on_question, "one_shot": conditions.one_shot,
+                                    "expires_at": conditions.expires_at} if dynamic else None,
                 "dialogue": self.store.wakes.dialogue_status(scope.session_key),
-                "dialogue_config": {"dynamic_wait": self.config.dynamic_wait.model_dump(exclude={"enabled", "unfinished_seconds"}),
-                                    "sleep_observation": self.config.sleep_observation.model_dump()},
-                "proactive": {**binding.proactive.model_dump(by_alias=True), **self.proactive.status(scope.session_key)},
-                "activities": self.store.activities.context(scope.session_key),
-                "followups": self.store.followups.status(scope.session_key),
-                "learning": {**self.store.learning.status(scope.session_key),
-                             "stage": "contextual_expression",
-                             "selector_enabled": self.config.learning.enabled and self.selector.provider is not None,
-                             "selector_model": self.selector.model,
-                             "selector_timeout_seconds": self.config.learning.selection_timeout_seconds,
-                             "extractor_enabled": self.config.learning.enabled and self.expressions.provider is not None,
-                             "jargon_extractor_enabled": self.config.learning.enabled and self.jargon.provider is not None,
-                             "provider_status": "configured" if self.expressions.provider is not None else "unavailable"},
-                "quiet_hours": {**binding.quiet_hours.model_dump(by_alias=True), "active": is_quiet(binding, self.now())},
-                "max_sends_per_hour": self.config.max_sends_per_hour,
+                "proactive_paused": bool(stopped["stopped"]) if stopped else False,
+                "quiet_hours_active": is_quiet(binding, self.now()),
                 "remaining_wakes": max(0, self.config.max_requests_per_hour - int(requests[0])),
                 "remaining_send_attempts": max(0, self.config.max_sends_per_hour - int(sends)),
                 "send_ready_at": (last_send + self.config.send_cooldown_seconds) if last_send is not None else None}
@@ -348,11 +328,6 @@ class TelegramSocialRuntime:
     def read_messages(self, ctx: RequestContext) -> str:
         scope = self.bindings.validate_context(ctx)
         return snapshot_text(self.store, self.config, scope, ctx.turn_id)
-
-    def mark_read(self, ctx: RequestContext, through: int) -> int:
-        scope = self.bindings.validate_context(ctx)
-        assert ctx.turn_id is not None
-        return self.store.mark_read(scope.session_key, ctx.turn_id, through)
 
     def hook_factory(self, turn: AgentTurnHookContext) -> AgentHook | None:
         if turn.session_key is None or not self.store.scopes.owns(turn.session_key):

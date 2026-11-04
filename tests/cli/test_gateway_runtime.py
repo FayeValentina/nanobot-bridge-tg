@@ -80,7 +80,7 @@ def test_social_wiring_registers_all_social_tools(tmp_path, monkeypatch) -> None
 
     assert isinstance(social, SocialWiring)
     try:
-        assert len(tools) == 12
+        assert len(tools) == 9
         assert tools.tool_names == sorted(SOCIAL_TOOLS)
     finally:
         social.close()

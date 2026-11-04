@@ -9,13 +9,14 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from nanobot.agent.tools.context import RequestContext
+from nanobot.agent.tools.context import RequestContext, request_context
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.manifest import SETUP_SPEC
 from nanobot.channels.telegram.runtime import TelegramConfig
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.memory import MemoryRequest
-from nanobot.channels.telegram.social.models import ConversationScope, ProactiveCandidate
+from nanobot.channels.telegram.social.models import ConversationScope, ProactiveCandidate, SendPart
 from nanobot.channels.telegram.social.proactive import is_quiet
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
@@ -152,7 +153,7 @@ async def test_stop_proactive_contact_survives_sleep_clear_and_restart(social):
     enable(social)
     ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                          turn_id="ordinary", metadata={"message_thread_id": A.thread_id})
-    social.waiting.set_wake(ctx, keywords=[], senders=[], on_messages=False, proactive_paused=True)
+    social.waiting.set_proactive(ctx, True)
     social.store.wakes.set_wake_config(A.session_key, "{}")
     social.store.db.execute("UPDATE scopes SET mode='sleeping' WHERE key=?", (A.session_key,))
     social.store.db.commit()
@@ -163,7 +164,7 @@ async def test_stop_proactive_contact_survives_sleep_clear_and_restart(social):
     restored.proactive.random_value = lambda: 0
     try:
         assert restored.proactive.status(A.session_key)["stopped"] == 1
-        restored.waiting.set_wake(ctx, keywords=[], senders=[], on_messages=False, proactive_paused=False)
+        restored.waiting.set_proactive(ctx, False)
         await tick(restored)
         assert view(restored.bus.inbound.get_nowait())["wake_reason"] == "proactive"
     finally:
@@ -526,7 +527,7 @@ async def test_quiet_beginning_cancels_unattempted_proactive_parts(social):
     social.set_sender(sender)
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
-    await social.delivery.send_parts(ctx, [("第一条", None), ("第二条", None)])
+    await social.delivery.send_parts(ctx, [SendPart("第一条", None, None), SendPart("第二条", None, None)])
     await tick(social)
     sender.assert_not_awaited()
     assert {row[0] for row in social.store.db.execute("SELECT status FROM actions")} == {"failed"}
@@ -540,7 +541,7 @@ async def test_acknowledging_unread_before_reply_does_not_invalidate_claimed_tur
     await social.observe(observed(social), directed=False)
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
-    social.mark_read(ctx, 1)
+    social.store.mark_read(A.session_key, ctx.turn_id, 1)
     assert (await social.delivery.send(ctx, "参与这段聊天", None))["status"] == "sent"
 
 
@@ -550,7 +551,7 @@ async def test_wait_after_queuing_parts_keeps_existing_delivery_without_new_wake
     social.set_sender(sender)
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
-    await social.delivery.send_parts(ctx, [("第一条", None), ("第二条", None)])
+    await social.delivery.send_parts(ctx, [SendPart("第一条", None, None), SendPart("第二条", None, None)])
     social.waiting.wait(ctx, 300)
     social.store.wakes.finish(ctx.turn_id, "completed")
     await social.run_due()
@@ -735,5 +736,26 @@ async def test_group_wide_opportunities_use_discovered_topic_bindings_after_rest
         restored.configure(config)
         await restored.run_due()
         assert restored.store.db.execute("SELECT status FROM wakes WHERE id=?", (job,)).fetchone()[0] == "cancelled"
+    finally:
+        restored.close()
+
+
+async def test_state_can_persist_proactive_pause_when_ambient_wake_is_disabled(social):
+    social.config.scopes[0].allow_ambient_wake = False
+    social.configure(social.config)
+    ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
+                         turn_id="pause-proactive", metadata={"message_thread_id": A.thread_id})
+    with request_context(ctx):
+        result = json.loads(await SOCIAL_TOOL_CLASSES["social_state"](social).execute(
+            action="set_proactive", paused=True,
+        ))
+        state = json.loads(await SOCIAL_TOOL_CLASSES["social_state"](social).execute(action="get"))
+    assert result == {"proactive_paused": True} and state["proactive_paused"]
+    assert social.store.proactive_state.stopped(A.session_key)["stopped"] == 1
+    social.close()
+    restored = TelegramSocialRuntime(social.config, social.root, social.bus, now=social.now)
+    try:
+        assert restored.store.proactive_state.stopped(A.session_key)["stopped"] == 1
+        assert restored.get_state(ctx)["proactive_paused"]
     finally:
         restored.close()

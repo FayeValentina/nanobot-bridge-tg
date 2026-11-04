@@ -83,7 +83,7 @@ class SocialExposureHook(AgentHook):
         if ctx is None or not isinstance(params, dict):
             return
         values = cast(dict[str, Any], params)
-        if tool_call.name == "social_send" or (tool_call.name == "social_sticker" and values.get("action") == "send"):
+        if tool_call.name == "social_send":
             self._publication_attempted = True
         elif tool_call.name == "message":
             channel = values.get("channel") or ctx.channel

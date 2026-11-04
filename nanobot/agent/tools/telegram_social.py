@@ -12,7 +12,7 @@ from nanobot.channels.telegram.social.activity import ActivityRequest
 from nanobot.channels.telegram.social.expressions import ExpressionEdit
 from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.memory import MemoryRequest
-from nanobot.config.schema import TelegramSocialSleepInterruptConfig
+from nanobot.channels.telegram.social.models import SendPart
 
 if TYPE_CHECKING:
     from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
@@ -53,7 +53,7 @@ class _SocialTool(Tool):
 
 class SocialActivityTool(_SocialTool):
     tool_name = "social_activity"
-    tool_description = "A private notebook for what you are exploring, playing with or curious about. list shows current/recent activities. start only needs title; goal, motivation and next_step are optional thoughts, not commitments. Starting something new sets the previous interest aside. progress saves a short checkpoint; pause/resume/complete/block/abandon can switch or leave an interest whenever you want. Existing entries need activity_id and expected_revision. No deliverable, verification, progress quota or public report is required. artifacts are optional real paths or source references. These notes do not publish; share interesting experiences separately with normal sending tools."
+    tool_description = "Private notebook for what you explore or play with in free time. list shows activities; start needs only a title (goal, motivation, next_step optional). progress saves a checkpoint; pause/resume/complete/block/abandon switch or leave an interest. Existing entries need activity_id and expected_revision. Nothing here is published and no deliverable is required."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -65,7 +65,7 @@ class SocialActivityTool(_SocialTool):
 
 class SocialJargonTool(_SocialTool):
     tool_name = "social_jargon"
-    tool_description = "Silently query/submit/explain/correct/review current-scope jargon. States: candidate (uncertain), understand_only (meaning only; do NOT actively reuse), usable (may use when relevant), disabled (do not use). Query/submission never requires a public question. submit requires human message_ids and a short term; research=true only for a genuinely unclear new public meme. explain quotes an explicit human explanation; correct may use origin=operator with reason for an explicit operator correction. Existing writes require expected_revision. review queues one bounded background recheck, never a foreground web/model call. Preserve local/public meanings separately; do not invent meanings or promote private nicknames to usable."
+    tool_description = "Look up and maintain this group's jargon silently: list/get/submit/explain/correct/disable/set_status/review. States: candidate (uncertain), understand_only (understand, never reuse), usable, disabled. submit needs human message_ids and a short term; explain quotes a human explanation verbatim; writes need expected_revision. review queues a background recheck."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -87,84 +87,75 @@ class SocialExpressionTool(_SocialTool):
         return self.runtime.expression_action(ctx, ExpressionEdit.model_validate(kwargs))
 
 
-class SocialGetStateTool(_SocialTool):
-    tool_name = "social_get_state"
-    tool_description = "Read the current role_id, role_file path inside this runtime, group/topic watermarks and behavior limits."
+class SocialStateTool(_SocialTool):
+    tool_name = "social_state"
+    tool_description = "action=get: role_id, role_file, mode, waiting state, proactive_paused and remaining budgets. action=read: bounded unread or recent messages of this group/topic. action=set_proactive with paused=true/false: stop or resume your own proactive contact when a member asks; replies to members are unaffected."
 
     @property
     def parameters(self) -> dict[str, Any]:
-        return {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+        return {"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["get", "read", "set_proactive"]},
+                "paused": {"type": "boolean"},
+            }, "required": ["action"], "additionalProperties": False}
 
     async def run(self, ctx: RequestContext, **kwargs: Any) -> object:
-        return self.runtime.get_state(ctx)
-
-
-class SocialReadMessagesTool(_SocialTool):
-    tool_name = "social_read_messages"
-    tool_description = "Read bounded unread/recent messages in the current group/topic."
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
-
-    async def run(self, ctx: RequestContext, **kwargs: Any) -> object:
-        return self.runtime.read_messages(ctx)
-
-
-class SocialMarkReadTool(_SocialTool):
-    tool_name = "social_mark_read"
-    tool_description = "Acknowledge continuously displayed messages through a seq from this turn."
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {"type": "object", "properties": {"through": {"type": "integer", "minimum": 0}}, "required": ["through"], "additionalProperties": False}
-
-    async def run(self, ctx: RequestContext, **kwargs: Any) -> object:
-        return {"read_through": self.runtime.mark_read(ctx, kwargs["through"])}
+        if kwargs["action"] == "get":
+            return self.runtime.get_state(ctx)
+        if kwargs["action"] == "read":
+            return self.runtime.read_messages(ctx)
+        if "paused" not in kwargs:
+            raise ValueError("set_proactive requires paused")
+        return self.runtime.waiting.set_proactive(ctx, kwargs["paused"])
 
 
 class SocialSendTool(_SocialTool):
     tool_name = "social_send"
-    tool_description = "Publish here using exactly one of text or parts. For one message, pass text only. For 2–3 paced messages, pass parts as the COMPLETE ordered list, including the first message, and omit text. Each part must add distinct content; do not repeat or rephrase the first part. Each has its own receipt. reply_to must be observed here; with parts, top-level reply_to quotes only the first part, and any part may instead carry its own reply_to. For a proactive question/share about a saved matter, pass its stable followup_id; at most two confirmed attempts, parts count once. Omit for ordinary answers."
+    tool_description = "Publish in this group/topic. Pass exactly one of text (one message), sticker_id (one collected static sticker) or parts (the complete ordered list of 2–3 messages, including the first; each a string, {text, reply_to} or {sticker_id, reply_to}). reply_to quotes an observed message. Pass followup_id only for a proactive follow-up on a saved matter. Each message gets its own receipt."
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {"type": "object", "properties": {
                 "followup_id": {"type": "string", "minLength": 1, "maxLength": 64},
-                "text": {"type": "string", "minLength": 1, "maxLength": 4000,
-                         "description": "One complete message. Omit when using parts."},
+                "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "sticker_id": {"type": "string", "minLength": 1, "maxLength": 256},
                 "reply_to": {"type": "integer", "minimum": 1},
                 "parts": {"type": "array", "items": {"anyOf": [
                               {"type": "string", "minLength": 1, "maxLength": 4000},
                               {"type": "object", "properties": {
                                   "text": {"type": "string", "minLength": 1, "maxLength": 4000},
                                   "reply_to": {"type": "integer", "minimum": 1}},
-                               "required": ["text"], "additionalProperties": False}]},
-                          "minItems": 2, "maxItems": 3,
-                          "description": "Complete ordered list of 2–3 distinct messages, including the first. Omit text. Each item is a string, or {text, reply_to} to quote an observed message for that part only; quote only where a person naturally would."},
+                               "required": ["text"], "additionalProperties": False},
+                              {"type": "object", "properties": {
+                                  "sticker_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                                  "reply_to": {"type": "integer", "minimum": 1}},
+                               "required": ["sticker_id"], "additionalProperties": False}]},
+                          "minItems": 2, "maxItems": 3},
             }, "required": [], "additionalProperties": False,
-                "oneOf": [{"required": ["text"]}, {"required": ["parts"]}]}
+                "oneOf": [{"required": ["text"]}, {"required": ["sticker_id"]}, {"required": ["parts"]}]}
 
     def validate_params(self, params: dict[str, Any]) -> list[str]:
         errors = super().validate_params(params)
-        if not errors and ("text" in params) == ("parts" in params):
+        if not errors and sum(key in params for key in ("text", "sticker_id", "parts")) != 1:
             errors.append(self._send_shape_error())
         return errors
 
     @staticmethod
     def _send_shape_error() -> str:
-        return "Provide exactly one of text or parts: text for one message, or parts=[first, second, ...] for the complete 2–3 message sequence. Never supply both; no messages were queued."
+        return "Provide exactly one of text, sticker_id or parts: text for one message, sticker_id for one sticker, or parts=[first, second, ...] for the complete 2–3 message sequence. No messages were queued."
 
     async def run(self, ctx: RequestContext, **kwargs: Any) -> object:
-        if ("text" in kwargs) == ("parts" in kwargs):
+        if sum(key in kwargs for key in ("text", "sticker_id", "parts")) != 1:
             raise ValueError(self._send_shape_error())
         if "parts" in kwargs:
-            parts: list[tuple[str, int | None]] = [
-                (part, None) if isinstance(part, str) else (part["text"], part.get("reply_to"))
+            parts = [
+                SendPart(part, None, None) if isinstance(part, str)
+                else SendPart(part.get("text"), part.get("sticker_id"), part.get("reply_to"))
                 for part in kwargs["parts"]]
-            if parts and parts[0][1] is None:
-                parts[0] = (parts[0][0], kwargs.get("reply_to"))
+            if parts and parts[0].reply_to is None:
+                parts[0] = parts[0]._replace(reply_to=kwargs.get("reply_to"))
             result = {"actions": await self.runtime.delivery.send_parts(ctx, parts, followup_id=kwargs.get("followup_id"))}
+        elif "sticker_id" in kwargs:
+            result = await self.runtime.delivery.send_sticker(ctx, kwargs["sticker_id"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))
         else:
             result = await self.runtime.delivery.send(ctx, kwargs["text"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))
         if kwargs.get("followup_id"):
@@ -174,7 +165,7 @@ class SocialSendTool(_SocialTool):
 
 class SocialWaitTool(_SocialTool):
     tool_name = "social_wait"
-    tool_description = "Wait without holding a turn lock. Choose exactly one: seconds, until (ISO timestamp with offset/Z), or infinite=true. Infinite waits have no timeout wake. purpose=reply requires a finite limit and may return immediately if already quiet; messages waits for context-relevant new content then quiet. Deferred waits must be last. An intermediary assesses new messages, including clear calls during sleep."
+    tool_description = "End this turn and wait. Choose one duration: seconds (total), until (ISO time with offset/Z) or infinite=true. purpose=messages waits for new content, then quiet; purpose=reply waits for quiet on an unfinished request and may return at once. sleeping=true sleeps. on_timeout=true wakes once if nothing arrives. until_condition says who or what you are waiting for."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -186,46 +177,33 @@ class SocialWaitTool(_SocialTool):
                 "quiet_seconds": {"type": "number", "minimum": 0.1, "maximum": 60},
                 "infinite": {"type": "boolean"},
                 "until": {"type": "string", "minLength": 20, "maxLength": 64},
+                "until_condition": {"type": "object", "properties": {
+                    "members": {"type": "array", "maxItems": 20, "items": {"type": "string", "pattern": "^[0-9]+$"}},
+                    "topics": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 80}},
+                    "questions": {"type": "boolean"},
+                    "one_shot": {"type": "boolean"},
+                    "ttl_seconds": {"type": "number", "minimum": 1, "maximum": 86400},
+                }, "additionalProperties": False},
             }, "required": [], "additionalProperties": False}
 
     async def run(self, ctx: RequestContext, **kwargs: Any) -> object:
-        return self.runtime.waiting.wait(ctx, kwargs.get("seconds"), sleeping=kwargs.get("sleeping", False),
+        conditions = None
+        if "until_condition" in kwargs:
+            condition = kwargs["until_condition"]
+            conditions = self.runtime.waiting.set_conditions(ctx, members=condition.get("members", []),
+                topics=condition.get("topics", []), questions=condition.get("questions", False),
+                one_shot=condition.get("one_shot", True), ttl_seconds=condition.get("ttl_seconds", 3600))
+        result = self.runtime.waiting.wait(ctx, kwargs.get("seconds"), sleeping=kwargs.get("sleeping", False),
                                    on_timeout=kwargs.get("on_timeout", False), purpose=kwargs.get("purpose"),
                                    quiet_seconds=kwargs.get("quiet_seconds"), infinite=kwargs.get("infinite", False),
                                    until=kwargs.get("until"))
+        if conditions is not None:
+            result["until_condition"] = conditions
+        return result
 
 
-class SocialSetWakeTool(_SocialTool):
-    tool_name = "social_set_wake"
-    tool_description = "Describe temporary semantic waiting intent for the intermediary using keywords, members, messages or questions. These are context, not local matching gates. A clear new call may interrupt a different wait without fulfilling it. Default one-shot, TTL 3600s; omit all conditions to clear. Infinite waiting does not extend TTL. Set proactive_paused=true when asked to stop proactive contact; false resumes on explicit request. This separate preference persists without TTL and does not clear waiting intent."
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {"type": "object", "properties": {
-                "proactive_paused": {"type": "boolean"},
-                "keywords": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 80}, "maxItems": 20},
-                "senders": {"type": "array", "items": {"type": "string", "pattern": "^[0-9]+$"}, "maxItems": 20},
-                "on_messages": {"type": "boolean"},
-                "on_question": {"type": "boolean"},
-                "sleep_interrupts": TelegramSocialSleepInterruptConfig.model_json_schema(),
-                "coalesce_seconds": {"type": "number", "minimum": 0, "maximum": 60},
-                "ttl_seconds": {"type": "number", "minimum": 1, "maximum": 86400},
-                "one_shot": {"type": "boolean"},
-            }, "required": [], "additionalProperties": False}
-
-    async def run(self, ctx: RequestContext, **kwargs: Any) -> object:
-        return self.runtime.waiting.set_wake(ctx, keywords=kwargs.get("keywords", []),
-                                       senders=kwargs.get("senders", []), on_messages=kwargs.get("on_messages", False),
-                                       ttl_seconds=kwargs.get("ttl_seconds", 3600), one_shot=kwargs.get("one_shot", True),
-                                       on_question=kwargs.get("on_question", False),
-                                       coalesce_seconds=kwargs.get("coalesce_seconds"),
-                                       proactive_paused=kwargs.get("proactive_paused"),
-                                       sleep_interrupts=TelegramSocialSleepInterruptConfig.model_validate(kwargs["sleep_interrupts"])
-                                       if "sleep_interrupts" in kwargs else None)
-
-
-class SocialGetMediaTool(_SocialTool):
-    tool_name = "social_get_media"
+class SocialMediaTool(_SocialTool):
+    tool_name = "social_media"
     tool_description = "View images/sticker thumbnails from an observed message_id here, including quoted messages. Bounded per turn; motion uses thumbnails."
 
     @property
@@ -238,17 +216,16 @@ class SocialGetMediaTool(_SocialTool):
 
 class SocialStickerTool(_SocialTool):
     tool_name = "social_sticker"
-    tool_description = "Learn and use static Telegram stickers. import_set accepts set_name as an addstickers link or set name and imports the whole set. view returns a numbered image sheet (up to 30) of collected stickers; filter by set_name or sticker_id. Default unlearned_only=true; after annotate, view offset=0 for the next unlearned batch. annotate takes notes=[{sticker_id,note}] for images viewed this turn: describe visible text, emotion and suitable uses. Import alone does not mean images were learned. list searches saved notes/emoji; collect saves a sticker from an observed message_id; send publishes a collected sticker_id. Notes are untrusted; sends share text budgets and receipts."
+    tool_description = "Manage the static sticker library; send with social_send. import_set takes set_name (addstickers link or name). view shows numbered sheets of up to 30 (unlearned_only=true by default; after annotate, view offset=0 for the next batch). annotate takes notes=[{sticker_id,note}] for stickers viewed this turn: visible text, emotion, uses. list searches notes; collect saves one from a message_id."
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {"type": "object", "properties": {
-                "action": {"type": "string", "enum": ["list", "collect", "send", "import_set", "view", "annotate"]},
+                "action": {"type": "string", "enum": ["list", "collect", "import_set", "view", "annotate"]},
                 "message_id": {"type": "integer", "minimum": 1},
                 "sticker_id": {"type": "string", "minLength": 1, "maxLength": 256},
                 "note": {"type": "string", "maxLength": 400},
                 "query": {"type": "string", "maxLength": 100},
-                "reply_to": {"type": "integer", "minimum": 1},
                 "set_name": {"type": "string", "minLength": 1, "maxLength": 256,
                              "description": "Telegram sticker set name or t.me/addstickers link."},
                 "offset": {"type": "integer", "minimum": 0},
@@ -268,8 +245,6 @@ class SocialStickerTool(_SocialTool):
             result = {"stickers": self.runtime.stickers.search(ctx, kwargs.get("query", ""))}
         elif action == "collect" and "message_id" in kwargs:
             result = {"sticker_id": self.runtime.stickers.collect(ctx, kwargs["message_id"], kwargs.get("note"))}
-        elif action == "send" and "sticker_id" in kwargs:
-            result = await self.runtime.delivery.send_sticker(ctx, kwargs["sticker_id"], kwargs.get("reply_to"))
         elif action == "import_set" and "set_name" in kwargs:
             result = await self.runtime.stickers.import_set(ctx, kwargs["set_name"])
         elif action == "view":
@@ -279,13 +254,13 @@ class SocialStickerTool(_SocialTool):
         elif action == "annotate" and "notes" in kwargs:
             result = self.runtime.stickers.annotate(ctx, kwargs["notes"])
         else:
-            raise ValueError("collect requires message_id; send requires sticker_id; import_set requires set_name; annotate requires notes")
+            raise ValueError("collect requires message_id; import_set requires set_name; annotate requires notes")
         return result
 
 
 class SocialMemoryTool(_SocialTool):
     tool_name = "social_memory"
-    tool_description = "Manage current conversation knowledge and unfinished matters: list/record/confirm/correct/delete/clear/followup. Member facts require displayed message_ids; member_ids use evidence sender IDs. An own intention may be recorded as topic/pending with origin=self, content and pending_question or pending_thought plus motivation, without invented evidence. action=followup updates these intentions on the SAME memory_id, followup_at, or followup_state=responded/completed/dropped and state_reason. Rewording never resets attempts. list returns live state, provenance and remaining_attempts. TTL and index-only deletion still apply; ordinary tool permissions are unchanged."
+    tool_description = "Manage conversation knowledge and unfinished matters: list/record/confirm/correct/delete/clear/followup. Member facts need message_ids displayed this turn; member_ids come from their senders. Own intentions use origin=self with content, pending_question or pending_thought, and motivation. followup edits the SAME memory_id (followup_at, followup_state, state_reason). list shows remaining_attempts."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -299,13 +274,10 @@ SOCIAL_TOOL_CLASSES: dict[str, type[_SocialTool]] = {cls.tool_name: cls for cls 
     SocialActivityTool,
     SocialJargonTool,
     SocialExpressionTool,
-    SocialGetStateTool,
-    SocialReadMessagesTool,
-    SocialMarkReadTool,
+    SocialStateTool,
     SocialSendTool,
     SocialWaitTool,
-    SocialSetWakeTool,
-    SocialGetMediaTool,
+    SocialMediaTool,
     SocialStickerTool,
     SocialMemoryTool,
 )}

@@ -414,7 +414,7 @@ async def test_real_agent_receives_image_tool_result_without_public_leak(tmp_pat
     loader_for(tg)
     await tg._observe_social(update_with_media())
     loop = agent(tmp_path, social, [
-        LLMResponse(content=None, tool_calls=[ToolCallRequest(id="image", name="social_get_media", arguments={"message_id": 1})]),
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(id="image", name="social_media", arguments={"message_id": 1})]),
         LLMResponse(content="internal result"),
     ])
     await social.observe(message(seq=2, text="@bot look"), directed=True)
@@ -435,8 +435,8 @@ async def test_real_agent_cannot_reset_image_budget_between_tool_rounds(tmp_path
     loader_for(tg)
     await tg._observe_social(update_with_media())
     loop = agent(tmp_path, social, [
-        LLMResponse(content=None, tool_calls=[ToolCallRequest(id="first", name="social_get_media", arguments={"message_id": 1})]),
-        LLMResponse(content=None, tool_calls=[ToolCallRequest(id="second", name="social_get_media", arguments={"message_id": 1})]),
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(id="first", name="social_media", arguments={"message_id": 1})]),
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(id="second", name="social_media", arguments={"message_id": 1})]),
         LLMResponse(content="internal"),
     ])
     await social.observe(message(seq=2, text="@bot look"), directed=True)
@@ -452,11 +452,11 @@ async def test_real_agent_cannot_reset_image_budget_between_tool_rounds(tmp_path
 
 
 async def test_tools_reject_arbitrary_file_ids_targets_and_missing_inputs(social):
-    tool = SOCIAL_TOOL_CLASSES["social_sticker"](social)
-    assert tool.validate_params({"action": "send", "file_id": "arbitrary", "chat_id": -99})
-    assert SOCIAL_TOOL_CLASSES["social_get_media"](social).validate_params({"message_id": 1, "path": "/tmp/private"})
+    tool = SOCIAL_TOOL_CLASSES["social_send"](social)
+    assert tool.validate_params({"sticker_id": "unknown", "file_id": "arbitrary", "chat_id": -99})
+    assert SOCIAL_TOOL_CLASSES["social_media"](social).validate_params({"message_id": 1, "path": "/tmp/private"})
     with request_context(context(social)):
-        result = await tool.execute(action="send")
+        result = await tool.execute()
     assert result.is_error
 
 

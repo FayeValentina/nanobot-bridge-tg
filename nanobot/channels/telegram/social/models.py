@@ -1,9 +1,15 @@
 """Typed records at the Telegram social boundary (no Telegram SDK dependency)."""
 
 from dataclasses import dataclass
-from typing import Literal, TypedDict
+from typing import Literal, NamedTuple, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class SendPart(NamedTuple):
+    text: str | None
+    sticker_id: str | None
+    reply_to: int | None
 
 
 class MediaReference(BaseModel):

@@ -18,7 +18,7 @@ from telegram.ext import ApplicationHandlerStop
 from nanobot.agent.context import ContextBuilder, TranscriptInput
 from nanobot.agent.context_governance import ContextCompactionState, ContextGovernor
 from nanobot.agent.loop import AgentLoop
-from nanobot.agent.tools.context import RequestContext
+from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import InboundMessage, OutboundMessage
@@ -74,7 +74,10 @@ def message(scope=A, *, seq=1, text="member text", **kwargs):
 
 
 def test_social_tool_classes_match_runtime_tools():
-    assert set(SOCIAL_TOOL_CLASSES) == SOCIAL_TOOLS
+    expected = {"social_send", "social_wait", "social_state", "social_media", "social_sticker",
+                "social_memory", "social_jargon", "social_expression", "social_activity"}
+    assert set(SOCIAL_TOOL_CLASSES) == SOCIAL_TOOLS == expected
+    assert all(len(cls.tool_description) <= 400 for cls in SOCIAL_TOOL_CLASSES.values())
 
 
 def agent(tmp_path, social, responses, *, tools_config=None):
@@ -255,7 +258,6 @@ async def test_groups_keep_roles_and_history_with_ordinary_profile_and_tools(tmp
 async def test_tool_send_is_scope_checked_confirmed_and_final_is_silent(tmp_path, social):
     loop = agent(tmp_path, social, [
         LLMResponse(content=None, tool_calls=[
-            ToolCallRequest(id="read", name="social_mark_read", arguments={"through": 1}),
             ToolCallRequest(id="send", name="social_send", arguments={"text": "public hello", "reply_to": 1}),
         ]),
         LLMResponse(content=""),
@@ -298,7 +300,7 @@ async def test_all_internal_endings_are_quiet(tmp_path, social, kind):
         responses = [RuntimeError("provider broke")]
     elif kind == "budget":
         responses = [LLMResponse(content=None, tool_calls=[
-            ToolCallRequest(id="state", name="social_get_state", arguments={}),
+            ToolCallRequest(id="state", name="social_state", arguments={"action": "get"}),
         ])]
     loop = agent(tmp_path, social, responses)
     loop.max_iterations = 1
@@ -320,7 +322,7 @@ async def test_private_chat_keeps_personal_profile_and_normal_reply(tmp_path, so
 @pytest.mark.parametrize("scope,role_id", [(A, "a"), (B, "b")])
 async def test_persona_source_is_available_in_scoped_state_tool(tmp_path, social, scope, role_id):
     loop = agent(tmp_path, social, [
-        LLMResponse(content=None, tool_calls=[ToolCallRequest(id="state", name="social_get_state", arguments={})]),
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(id="state", name="social_state", arguments={"action": "get"})]),
         LLMResponse(content="internal"),
     ])
     await loop._dispatch(await wake(social, scope, text="Where is your personality configuration file?"))
@@ -329,8 +331,7 @@ async def test_persona_source_is_available_in_scoped_state_tool(tmp_path, social
     state = json.loads(result["content"].split("\n\nLive group memory index", 1)[0])
     assert state["role_id"] == role_id
     assert state["role_file"] == str((social.roles / f"{role_id}.md").resolve())
-    assert state["tool_permissions"] == "shared_with_normal_chat"
-    assert "social_get_state shows its real role_id and role_file" in request["messages"][0]["content"]
+    assert "social_state shows its real role_id and role_file" in request["messages"][0]["content"]
     names = {tool["function"]["name"] for tool in request["tools"]}
     assert names == set(loop.tools.tool_names)
     assert "PRIVATE USER" in str(request["messages"])
@@ -493,12 +494,12 @@ async def test_snapshot_ack_never_clears_new_arrivals_or_another_group(social):
     ctx = context(social)
     view = social.store.view(A.session_key, count=2, chars=4000, turn_id=ctx.turn_id)
     with pytest.raises(ValueError):
-        social.mark_read(ctx, 2)
+        social.store.mark_read(A.session_key, ctx.turn_id, 2)
     social.store.note_seen(A.session_key, ctx.turn_id, encode_view(view))
     social.store.observe(message(A, seq=3), 100)
-    assert social.mark_read(ctx, 2) == 2
+    assert social.store.mark_read(A.session_key, ctx.turn_id, 2) == 2
     with pytest.raises(ValueError):
-        social.mark_read(ctx, 3)
+        social.store.mark_read(A.session_key, ctx.turn_id, 3)
     assert social.store.scopes.state(B.session_key)["read_through"] == 0
     other = replace(ctx, chat_id=str(B.chat_id))
     with pytest.raises(PermissionError):
@@ -511,7 +512,7 @@ async def test_unseen_truncated_snapshot_does_not_grant_read_ack(social):
     view = social.store.view(A.session_key, count=2, chars=4000, turn_id=ctx.turn_id)
     social.store.note_seen(A.session_key, ctx.turn_id, encode_view(view)[:30])
     with pytest.raises(ValueError):
-        social.mark_read(ctx, 1)
+        social.store.mark_read(A.session_key, ctx.turn_id, 1)
 
 
 async def test_reencoded_snapshot_grants_read_ack(social):
@@ -519,7 +520,7 @@ async def test_reencoded_snapshot_grants_read_ack(social):
     ctx = context(social)
     view = social.store.view(A.session_key, count=2, chars=4000, turn_id=ctx.turn_id)
     social.store.note_seen(A.session_key, ctx.turn_id, json.dumps(view, ensure_ascii=False))
-    assert social.mark_read(ctx, 1) == 1
+    assert social.store.mark_read(A.session_key, ctx.turn_id, 1) == 1
 
 
 async def test_duplicates_edits_and_media_markers_do_not_produce_extra_wakes(social):
@@ -878,3 +879,31 @@ async def test_v5_material_sources_at_telegram_boundary(social, variant, expecte
     assert social.store.scopes.state(A.session_key)["seen_through"] == social.store.scopes.state(A.session_key)["read_through"] == 0
     # All sources still reach ordinary observation; source filtering adds no bot admission gate.
     assert social.store.scopes.state(A.session_key)["next_seq"] == 2
+
+
+async def test_social_state_get_has_only_public_state_fields(social):
+    ctx = context(social)
+    tool = SOCIAL_TOOL_CLASSES["social_state"](social)
+    with request_context(ctx):
+        state = json.loads(await tool.execute(action="get"))
+    assert set(state) == {
+        "role_id", "role_file", "mode", "read_through", "latest_seq", "wake_at", "wait_infinite",
+        "until_condition", "dialogue", "proactive_paused", "quiet_hours_active", "remaining_wakes",
+        "remaining_send_attempts", "send_ready_at",
+    }
+    assert state["until_condition"] is None and state["proactive_paused"] is False
+    assert state["quiet_hours_active"] is False
+    social.waiting.set_conditions(ctx, members=["456"], topics=["到家"], questions=True,
+                                  one_shot=False, ttl_seconds=30)
+    with request_context(ctx):
+        updated = json.loads(await tool.execute(action="get"))
+    assert updated["until_condition"] == {
+        "members": ["456"], "topics": ["到家"], "questions": True, "one_shot": False,
+        "expires_at": social.waiting.conditions(A.session_key)[0].expires_at,
+    }
+
+
+async def test_social_state_set_proactive_requires_paused(social):
+    with request_context(context(social)):
+        result = await SOCIAL_TOOL_CLASSES["social_state"](social).execute(action="set_proactive")
+    assert result.is_error and result == "set_proactive requires paused"

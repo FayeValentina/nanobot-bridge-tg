@@ -240,7 +240,7 @@ async def test_end_to_end_sticker_without_search_receipt_and_transient_prompt(tm
         calls.append(deepcopy(kwargs))
         assert len(social.selector.cache) == 1
         if len(calls)==1:
-            return LLMResponse(content=None,tool_calls=[ToolCallRequest(id='sticker',name='social_sticker',arguments={'action':'send','sticker_id':'s-124'})])
+            return LLMResponse(content=None,tool_calls=[ToolCallRequest(id='sticker',name='social_send',arguments={'sticker_id':'s-124'})])
         return LLMResponse(content='')
     loop.provider.chat_stream_with_retry=AsyncMock(side_effect=model)
     await loop._dispatch(await wake(social,text='蓝票这回领先了哈哈'))

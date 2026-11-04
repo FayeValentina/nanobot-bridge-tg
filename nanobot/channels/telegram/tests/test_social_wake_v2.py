@@ -130,7 +130,7 @@ async def test_infinite_wait_has_no_timer_or_lock_and_direct_address_interrupts(
 async def test_infinite_temporary_wait_expires_back_to_administrator_triggers(v2b):
     v2b.config.scopes[0].wake_keywords = ["base"]
     ctx = context(v2b)
-    v2b.waiting.set_wake(ctx, keywords=["temporary"], senders=[], on_messages=False, ttl_seconds=5)
+    v2b.waiting.set_conditions(ctx, topics=["temporary"], members=[], questions=False, one_shot=True, ttl_seconds=5)
     v2b.waiting.wait(ctx, infinite=True, sleeping=True)
     finish(v2b, ctx)
     assert v2b.store.wakes.next_due() == v2b.now() + 5
@@ -145,7 +145,7 @@ async def test_infinite_temporary_wait_expires_back_to_administrator_triggers(v2
 
 async def test_infinite_messages_ttl_clears_both_wait_intent_and_infinite_flag(v2b):
     ctx = expose(v2b)
-    v2b.waiting.set_wake(ctx, keywords=["temporary"], senders=[], on_messages=False, ttl_seconds=5)
+    v2b.waiting.set_conditions(ctx, topics=["temporary"], members=[], questions=False, one_shot=True, ttl_seconds=5)
     v2b.waiting.wait(ctx, infinite=True, purpose="messages")
     finish(v2b, ctx)
     clock(v2b).advance(5)
@@ -249,7 +249,7 @@ async def test_new_wait_modes_and_sampling_recover_without_redrawing(v2b):
 
 def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
     ctx = expose(v2b)
-    v2b.mark_read(ctx, 1)
+    v2b.store.mark_read(A.session_key, ctx.turn_id, 1)
     v2b.waiting.wait(ctx, 60, purpose="messages", quiet_seconds=3)
     finish(v2b, ctx)
     root = v2b.root
@@ -292,17 +292,14 @@ def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
         upgraded.close()
 
 
-async def test_scope_coalescing_and_model_override_obey_operator_ceiling(v2b):
+async def test_scope_coalescing_obeys_operator_setting(v2b):
     v2b.config.scopes[0].coalesce_seconds = 3
     v2b.configure(v2b.config)
     ctx = context(v2b)
-    with pytest.raises(ValueError, match="operator limit"):
-        v2b.waiting.set_wake(ctx, keywords=["go"], senders=[], on_messages=False, coalesce_seconds=11)
-    v2b.waiting.set_wake(ctx, keywords=["go"], senders=[], on_messages=False, coalesce_seconds=2)
     finish(v2b, ctx)
     await v2b.observe(event(v2b, text="go"), directed=False)
     assert v2b.bus.inbound.empty()
-    clock(v2b).advance(2)
+    clock(v2b).advance(3)
     await v2b.run_due()
     assert v2b.bus.inbound.qsize() == 1
 
@@ -310,11 +307,10 @@ async def test_scope_coalescing_and_model_override_obey_operator_ceiling(v2b):
 async def test_tools_accept_infinite_wait_and_new_temporary_conditions(v2b):
     ctx = context(v2b)
     with request_context(ctx):
-        wake = json.loads(await SOCIAL_TOOL_CLASSES["social_set_wake"](v2b).execute(
-            on_question=True, sleep_interrupts={"question": True}, coalesce_seconds=1,
+        wait = json.loads(await SOCIAL_TOOL_CLASSES["social_wait"](v2b).execute(
+            infinite=True, sleeping=True, until_condition={"questions": True},
         ))
-        assert wake["probability"] == 0 and wake["on_question"]
-        wait = json.loads(await SOCIAL_TOOL_CLASSES["social_wait"](v2b).execute(infinite=True, sleeping=True))
+        assert wait["until_condition"]["questions"]
         assert wait["infinite"] and wait["wake_at"] is None
 
 
@@ -337,3 +333,28 @@ def test_new_policy_defaults_preserve_legacy_sleeping_and_sampling():
     assert not any(binding.sleep_interrupts.model_dump().values())
     assert binding.coalesce_seconds is None
     assert TelegramSocialConfig.model_validate(config.model_dump(by_alias=True)) == config
+
+
+async def test_wait_sets_member_condition_and_empty_condition_clears_it(v2b):
+    ctx = context(v2b)
+    tool = SOCIAL_TOOL_CLASSES["social_wait"](v2b)
+    with request_context(ctx):
+        result = json.loads(await tool.execute(
+            seconds=30, purpose="messages", until_condition={"members": ["456"]},
+        ))
+    assert result["deferred"]
+    assert result["until_condition"] == {
+        "members": ["456"], "topics": [], "questions": False, "one_shot": True,
+        "expires_at": v2b.now() + 3600,
+    }
+    conditions, dynamic = v2b.waiting.conditions(A.session_key)
+    assert dynamic and conditions.senders == ["456"]
+    wait = v2b.store.wakes.dialogue_status(A.session_key)["wait"]
+    assert wait["purpose"] == "messages" and wait["total_due"] == v2b.now() + 30
+    finish(v2b, ctx)
+    next_ctx = context(v2b, turn="clear-condition")
+    with request_context(next_ctx):
+        cleared = json.loads(await tool.execute(infinite=True, until_condition={}))
+    assert cleared["until_condition"] == {"cleared": True}
+    assert v2b.store.scopes.state(A.session_key)["wake_config"] == "{}"
+    assert cleared["infinite"]

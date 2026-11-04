@@ -7,6 +7,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
+from typing import cast
 
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.events import DeliveryReceipt
@@ -18,6 +19,7 @@ from nanobot.channels.telegram.social.models import (
     DeliveryResult,
     MediaReference,
     ObservedMessage,
+    SendPart,
     SocialDeliveryUnknownError,
     SocialRateLimitError,
 )
@@ -55,12 +57,17 @@ class SocialDelivery:
     def followup_status(self, followup_id: str) -> dict[str, object]:
         return self.store.followups.describe(followup_id).model_dump()
 
-    async def send_sticker(self, ctx: RequestContext, sticker_id: str, reply_to: int | None) -> DeliveryResult:
-        scope = self.bindings.validate_context(ctx)
+    def _static_sticker(self, scope: ConversationScope, sticker_id: str) -> MediaReference:
         ref = self.store.stickers.get(scope.session_key, sticker_id)
         if ref.animated or ref.video or ref.kind != "sticker":
             raise ValueError("only static stickers can be sent in this release")
-        return await self.send(ctx, f"[sticker:{ref.unique_id}]", reply_to, sticker=ref)
+        return ref
+
+    async def send_sticker(self, ctx: RequestContext, sticker_id: str, reply_to: int | None,
+                           *, followup_id: str | None = None) -> DeliveryResult:
+        scope = self.bindings.validate_context(ctx)
+        ref = self._static_sticker(scope, sticker_id)
+        return await self.send(ctx, f"[sticker:{ref.unique_id}]", reply_to, sticker=ref, followup_id=followup_id)
 
     def _collect_new_messages(self, scope: ConversationScope, turn: str | None) -> None:
         """Before a new send, show member messages that arrived after this turn's latest exposed snapshot.
@@ -157,19 +164,25 @@ class SocialDelivery:
             result["message_id"] = int(message_ids[0])
         return result
 
-    async def send_parts(self, ctx: RequestContext, parts: list[tuple[str, int | None]],
+    async def send_parts(self, ctx: RequestContext, parts: list[SendPart],
                          *, followup_id: str | None = None) -> list[DeliveryResult]:
         scope = self.bindings.validate_context(ctx)
         if not 2 <= len(parts) <= 3:
             raise ValueError("a burst must contain two or three short parts")
-        parts = [(self._public_text(text), reply_to) for text, reply_to in parts]
-        texts = [text for text, _ in parts]
+        resolved: list[tuple[str, int | None, MediaReference | None]] = []
+        for part in parts:
+            ref = self._static_sticker(scope, part.sticker_id) if part.sticker_id is not None else None
+            # The tool schema constructs each SendPart with exactly one of text/sticker_id.
+            content = f"[sticker:{ref.unique_id}]" if ref else self._public_text(cast(str, part.text))
+            resolved.append((content, part.reply_to, ref))
+        texts = [content for content, _, _ in resolved]
         if len(set(texts)) != len(texts):
             raise ValueError("duplicate parts are not allowed")
-        for _, reply_to in parts:
+        for _, reply_to, _ in resolved:
             if reply_to is not None and not self.store.messages.has_message(scope.session_key, reply_to):
                 raise PermissionError("reply target was not observed in this group/topic")
-        if self.sender is None:
+        if (any(media is None for _, _, media in resolved) and self.sender is None
+                or any(media is not None for _, _, media in resolved) and self.sticker_sender is None):
             raise RuntimeError("Telegram sender is unavailable")
         assert ctx.turn_id is not None
         lock = self.send_lock(scope)
@@ -179,11 +192,11 @@ class SocialDelivery:
             # Repeated identical calls return each child's receipt, including partial failures.
             for group in self.store.deliveries.turn_groups(scope.session_key, version, ctx.turn_id):
                 rows = self.store.deliveries.group_parts(group[0])
-                if [(str(row["content"]), row["reply_to"]) for row in rows] == parts:
+                if [(str(row["content"]), row["reply_to"]) for row in rows] == [(content, reply_to) for content, reply_to, _ in resolved]:
                     return [self._action_result(row) for row in rows]
             self._collect_new_messages(scope, ctx.turn_id)
             self._check_send_allowed(scope, ctx.turn_id, version, texts, len(texts))
-            rows = self.store.enqueue_parts(scope.session_key, version, ctx.turn_id, parts,
+            rows = self.store.enqueue_parts(scope.session_key, version, ctx.turn_id, resolved,
                                             followup_id=followup_id)
             self.notify()
             return [self._action_result(row) for row in rows]

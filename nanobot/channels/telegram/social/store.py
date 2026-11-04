@@ -304,7 +304,7 @@ class SocialStore:
                 condition_expires=condition_expires, selective=selective, sleep_until=sleep_until, max_delay=max_delay)
             return result
 
-    def enqueue_parts(self, key: str, version: str, turn: str, parts: list[tuple[str, int | None]],
+    def enqueue_parts(self, key: str, version: str, turn: str, parts: list[tuple[str, int | None, MediaReference | None]],
                       *, followup_id: str | None = None) -> list[sqlite3.Row]:
         group = uuid4().hex
         now = self.now()
@@ -312,9 +312,10 @@ class SocialStore:
             expires = self.wakes.turn_expires(turn)
             if expires is None:
                 raise PermissionError("parts require an active authorized turn")
-            for index, (text, reply_to) in enumerate(parts):
+            for index, (text, reply_to, media) in enumerate(parts):
                 action = uuid4().hex
-                self.deliveries.insert_part(action, key, version, text, now, now, expires, reply_to, turn, group, index)
+                self.deliveries.insert_part(action, key, version, text, now, now, expires, reply_to, turn, group, index,
+                                            kind="sticker" if media else "text", media_ref=media.model_dump_json() if media else None)
                 if followup_id is not None:
                     self.followups.reserve(key, followup_id, turn, action)
         return self.deliveries.group_parts(group)

@@ -5,7 +5,7 @@ import base64
 import io
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from PIL import Image
@@ -107,7 +107,7 @@ async def test_view_annotate_search_and_send_through_tool(social):
         assert json.loads(next_batch[1]["text"])["stickers"][0]["sticker_id"] == "sticker-2"
         found = json.loads(await tool.execute(action="list", query="接梗"))["stickers"]
         assert len(found) == 2
-        receipt = json.loads(await tool.execute(action="send", sticker_id=found[0]["sticker_id"]))
+        receipt = json.loads(await SOCIAL_TOOL_CLASSES["social_send"](social).execute(sticker_id=found[0]["sticker_id"]))
         assert receipt["status"] == "sent"
     tg._app.bot.send_sticker.assert_awaited_once()
 
@@ -166,7 +166,8 @@ async def test_real_agent_learns_native_sheet_and_sends_in_same_turn(tmp_path, s
         call("import", action="import_set", set_name="https://t.me/addstickers/LLM_Moe"),
         call("view", action="view", set_name="LLM_Moe"),
         call("annotate", action="annotate", notes=[{"sticker_id": "sticker-0", "note": "得意接梗"}]),
-        call("send", action="send", sticker_id="sticker-0"),
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(
+            id="send", name="social_send", arguments={"sticker_id": "sticker-0"})]),
         LLMResponse(content=""),
     ])
     # Keep this native-sheet contract test clear of an unrelated archive call.
@@ -182,3 +183,39 @@ async def test_real_agent_learns_native_sheet_and_sends_in_same_turn(tmp_path, s
                and isinstance(m["content"], list) for block in m["content"])
     assert social.store.stickers.search(A.session_key, "接梗")[0]["uses"] == 1
     tg._app.bot.send_sticker.assert_awaited_once()
+
+
+async def test_mixed_sticker_text_parts_keep_kinds_order_receipts_usage_and_budget(social):
+    ctx = context(social)
+    social.stickers.loader = AsyncMock(return_value=pack(1))
+    await social.stickers.import_set(ctx, "LLM_Moe")
+    senders = Mock()
+    senders.attach_mock(AsyncMock(return_value=501), "sticker")
+    senders.attach_mock(AsyncMock(return_value=502), "text")
+    social.delivery.sticker_sender = senders.sticker
+    social.set_sender(senders.text)
+    tool = SOCIAL_TOOL_CLASSES["social_send"](social)
+    parts = [{"sticker_id": "sticker-0"}, "短句"]
+    assert tool.validate_params({"parts": parts}) == []
+    with request_context(ctx):
+        queued = json.loads(await tool.execute(parts=parts))
+        repeated = json.loads(await tool.execute(parts=parts))
+    assert repeated == queued
+    rows = social.store.deliveries.group_parts(
+        social.store.deliveries.get(queued["actions"][0]["action_id"])["group_id"],
+    )
+    assert [(row["kind"], row["content"]) for row in rows] == [
+        ("sticker", "[sticker:sticker-0]"), ("text", "短句"),
+    ]
+    assert json.loads(rows[0]["media_ref"])["file_id"] == "file-0" and rows[1]["media_ref"] is None
+    assert [row["status"] for row in rows] == ["queued", "queued"]
+    await social.run_due()
+    assert senders.mock_calls == [call.sticker(A, "file-0", None), call.text(A, "短句", None)]
+    with request_context(ctx):
+        sent = json.loads(await tool.execute(parts=parts))
+        assert json.loads(await tool.execute(parts=parts)) == sent
+    assert [row["action_id"] for row in sent["actions"]] == [row["action_id"] for row in queued["actions"]]
+    assert [row["status"] for row in sent["actions"]] == ["sent", "sent"]
+    assert social.store.stickers.search(A.session_key, "")[0]["uses"] == 1
+    assert social.store.deliveries.attempt_count(A.session_key, social.now() - 3600) == 2
+    assert social.get_state(ctx)["remaining_send_attempts"] == social.config.max_sends_per_hour - 2

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
+from nanobot.channels.telegram.social.models import SendPart
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge import decide
@@ -169,7 +170,7 @@ async def test_messages_arriving_between_model_input_and_wait_tool_are_not_lost(
 
 async def test_selective_messages_wait_ignores_unmatched_chatter(dialogue):
     ctx = expose(dialogue)
-    dialogue.waiting.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False)
+    dialogue.waiting.set_conditions(ctx, topics=["出发"], members=[], questions=False, one_shot=True, ttl_seconds=3600)
     dialogue.waiting.wait(ctx, 60, purpose="messages")
     finish(dialogue, ctx)
     await dialogue.observe(observed(dialogue, 2, text="无关聊天"), directed=False)
@@ -248,7 +249,7 @@ async def test_messages_timeout_cannot_rearm_without_new_human_content(dialogue)
 @pytest.mark.parametrize("admission_delay", [0, 10])
 async def test_selective_wait_ttl_limits_continuation_even_after_queueing(dialogue, admission_delay):
     ctx = expose(dialogue)
-    dialogue.waiting.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False, ttl_seconds=5)
+    dialogue.waiting.set_conditions(ctx, topics=["出发"], members=[], questions=False, one_shot=True, ttl_seconds=5)
     dialogue.waiting.wait(ctx, 60, purpose="messages", quiet_seconds=1)
     finish(dialogue, ctx)
     await dialogue.observe(observed(dialogue, 2, text="出发"), directed=False)
@@ -312,7 +313,7 @@ async def test_attention_preserves_selective_conditions_and_topic_scope(dialogue
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
     await dialogue.delivery.send(ctx, "你什么时候出发？", None)
-    dialogue.waiting.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False)
+    dialogue.waiting.set_conditions(ctx, topics=["出发"], members=[], questions=False, one_shot=True, ttl_seconds=3600)
     finish(dialogue, ctx)
     await dialogue.observe(observed(dialogue, 2, text="下午三点"), directed=False)
     await dialogue.observe(observed(dialogue, 3, scope=B, text="下午三点"), directed=False)
@@ -405,7 +406,7 @@ async def test_paced_group_records_confirmed_context_after_last_child(dialogue):
     dialogue.config.send_cooldown_seconds = 2
     dialogue.configure(dialogue.config)
     dialogue.set_sender(AsyncMock(side_effect=[800, 801, 802]))
-    await dialogue.delivery.send_parts(ctx, [("第一条", None), ("第二条", None), ("几点出发？", None)])
+    await dialogue.delivery.send_parts(ctx, [SendPart("第一条", None, None), SendPart("第二条", None, None), SendPart("几点出发？", None, None)])
     await dialogue.run_due()
     for _ in range(2):
         clock(dialogue).advance(2)
@@ -416,7 +417,7 @@ async def test_paced_group_records_confirmed_context_after_last_child(dialogue):
 
 async def test_sleep_observation_transfers_to_sleep_locally_and_mark_read_stays_pure(dialogue):
     ctx = expose(dialogue)
-    assert dialogue.mark_read(ctx, 1) == 1
+    assert dialogue.store.mark_read(A.session_key, ctx.turn_id, 1) == 1
     result = dialogue.waiting.wait(ctx, 600, sleeping=True)
     assert result["purpose"] == "observe" and result["deferred"]
     finish(dialogue, ctx)

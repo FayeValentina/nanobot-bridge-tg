@@ -266,7 +266,7 @@ async def test_standing_preferences_do_not_invent_a_selective_wait(social, mode)
 async def test_real_selective_wait_keeps_conditions_deadline_and_one_shot(social, seconds, infinite):
     social.config.cooldown_seconds = 0
     ctx = context(social)
-    social.waiting.set_wake(ctx, keywords=["到家"], senders=["456"], on_messages=False, ttl_seconds=60)
+    social.waiting.set_conditions(ctx, topics=["到家"], members=["456"], questions=False, one_shot=True, ttl_seconds=60)
     social.waiting.wait(ctx, seconds, purpose="messages", infinite=infinite)
     finish(social, ctx)
     provider = decide(social, "observe")
@@ -295,7 +295,7 @@ async def test_expired_temporary_wait_does_not_fall_back_to_question_only_observ
     social.config.cooldown_seconds = 0
     social.config.scopes[0].wake_on_question = True
     ctx = context(social)
-    social.waiting.set_wake(ctx, keywords=["到家"], senders=[], on_messages=False, ttl_seconds=1)
+    social.waiting.set_conditions(ctx, topics=["到家"], members=[], questions=False, one_shot=True, ttl_seconds=1)
     social.waiting.wait(ctx, infinite=True, purpose="messages")
     finish(social, ctx)
     clock(social).advance(2)
@@ -320,16 +320,12 @@ async def test_sleep_observation_is_not_a_selective_question_wait(social):
     assert social.judging.intent(A.session_key) is None
 
 
-def test_state_distinguishes_retired_configuration_and_effective_preferences(social):
+def test_state_omits_standing_preferences_from_temporary_condition(social):
     social.config.scopes[0].wake_on_question = True
     social.config.scopes[0].wake_probability = 0.05
     social.config.reply_attention.enabled = True
     state = social.get_state(context(social))
-    assert state["judge"]["intent"] is None
-    assert state["judge"]["participation"]["on_question"]
-    assert "probability" not in state["base_wake"]
-    assert "reply_attention" not in state["dialogue_config"]
-    assert "unfinished_seconds" not in state["dialogue_config"]["dynamic_wait"]
+    assert state["until_condition"] is None
 
 
 @pytest.mark.parametrize("purpose", ["reply", "messages"])
@@ -373,7 +369,7 @@ async def test_directed_bypasses_selective_wait_without_consuming_it(social, is_
     social.config.cooldown_seconds = 0
     provider = decide(social, "observe")
     ctx = context(social)
-    social.waiting.set_wake(ctx, keywords=[], senders=["456"], on_messages=False)
+    social.waiting.set_conditions(ctx, topics=[], members=["456"], questions=False, one_shot=True, ttl_seconds=3600)
     finish(social, ctx)
     original = social.store.scopes.state(A.session_key)["wake_config"]
     await social.observe(observed(social, is_bot=is_bot), directed=True)
@@ -394,7 +390,7 @@ async def test_directed_bypasses_selective_wait_without_consuming_it(social, is_
 async def test_selective_sender_wait_uses_judge_for_nondirected_human(social):
     provider = decide(social, "observe")
     ctx = context(social)
-    social.waiting.set_wake(ctx, keywords=[], senders=["456"], on_messages=False)
+    social.waiting.set_conditions(ctx, topics=[], members=["456"], questions=False, one_shot=True, ttl_seconds=3600)
     finish(social, ctx)
     await social.observe(observed(social), directed=False)
     await due(social)
@@ -418,11 +414,11 @@ async def test_only_bot_batches_need_semantic_admission(social, include_human):
         assert sent_snapshot(provider).new[-1].is_bot
 
 
-async def test_on_messages_alone_does_not_require_judge(social):
+async def test_cleared_conditions_do_not_require_judge(social):
     social.config.cooldown_seconds = 0
     provider = decide(social, "observe")
     ctx = context(social)
-    social.waiting.set_wake(ctx, keywords=[], senders=[], on_messages=True)
+    social.waiting.set_conditions(ctx, topics=[], members=[], questions=False, one_shot=True, ttl_seconds=3600)
     finish(social, ctx)
     await social.observe(observed(social), directed=False)
     await due(social)

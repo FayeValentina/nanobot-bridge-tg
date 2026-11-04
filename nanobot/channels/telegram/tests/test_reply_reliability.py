@@ -78,7 +78,7 @@ async def test_explicit_silence_never_gets_a_delivery_check(tmp_path, social):
 
 async def test_conditional_wait_filters_numbers_and_consumes_keyword_once(social):
     ctx = context(social)
-    social.waiting.set_wake(ctx, keywords=["5", "五"], senders=[], on_messages=False)
+    social.waiting.set_conditions(ctx, topics=["5", "五"], members=[], questions=False, one_shot=True, ttl_seconds=3600)
     social.waiting.wait(ctx, 3600)
     social.store.wakes.finish(ctx.turn_id, "completed")
     for i, text in enumerate(["1", "2", "unrelated"], 1):
@@ -102,7 +102,7 @@ async def test_conditional_wait_filters_numbers_and_consumes_keyword_once(social
 
 async def test_conditional_wait_direct_mention_interrupts_without_consuming_condition(social):
     ctx = context(social)
-    social.waiting.set_wake(ctx, keywords=["5"], senders=[], on_messages=False)
+    social.waiting.set_conditions(ctx, topics=["5"], members=[], questions=False, one_shot=True, ttl_seconds=3600)
     social.waiting.wait(ctx, 3600)
     social.store.wakes.finish(ctx.turn_id, "completed")
     await social.observe(observed(social, text="@bot help"), directed=True)
@@ -114,7 +114,7 @@ async def test_conditional_wait_direct_mention_interrupts_without_consuming_cond
 
 async def test_condition_deadline_survives_restart_and_expiry_clears_it(social):
     ctx = context(social)
-    social.waiting.set_wake(ctx, keywords=["5"], senders=[], on_messages=False, ttl_seconds=5, one_shot=False)
+    social.waiting.set_conditions(ctx, topics=["5"], members=[], questions=False, one_shot=False, ttl_seconds=5)
     social.waiting.wait(ctx, 100)
     social.store.wakes.finish(ctx.turn_id, "completed")
     root, config, bus, now = social.root, social.config, social.bus, social.now
@@ -312,7 +312,7 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
 
 async def test_queued_keyword_cannot_outlive_condition_ttl(social):
     ctx = context(social)
-    social.waiting.set_wake(ctx, keywords=["5"], senders=[], on_messages=False, ttl_seconds=3)
+    social.waiting.set_conditions(ctx, topics=["5"], members=[], questions=False, one_shot=True, ttl_seconds=3)
     social.waiting.wait(ctx, 100)
     social.store.wakes.finish(ctx.turn_id, "completed")
     await social.observe(observed(social, text="5"), directed=False)
@@ -359,6 +359,9 @@ async def test_interrupted_ordinary_send_is_not_reawakened_after_restart(social)
 
 @pytest.mark.parametrize("payload", [
     {},
+    {"text": "短句", "sticker_id": "sticker-0"},
+    {"sticker_id": "sticker-0", "parts": ["第一条", "第二条"]},
+    {"text": "短句", "sticker_id": "sticker-0", "parts": ["第一条", "第二条"]},
     {"text": "上午去海边。", "parts": ["上午去海边。", "下午逛市区。"]},
     {"text": "上午去海边。\n午前回城。", "parts": ["上午去海边——午前回城。", "下午逛市区。"]},
 ])
@@ -370,7 +373,7 @@ async def test_ambiguous_social_send_is_rejected_before_any_queue_or_budget(soci
     assert any("exactly one" in error for error in tool.validate_params(payload))
     with request_context(ctx):
         result = await tool.execute(**payload)
-    assert result.is_error and "no messages were queued" in result
+    assert result.is_error and "No messages were queued" in result
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
     assert social.store.db.execute("SELECT COUNT(*) FROM send_attempts").fetchone()[0] == 0
     sender.assert_not_awaited()
@@ -384,7 +387,7 @@ async def test_parts_is_the_complete_sequence_and_repeated_call_reuses_receipts(
     tool = SOCIAL_TOOL_CLASSES["social_send"](social)
     ctx = context(social)
     assert tool.validate_params({"parts": texts}) == []
-    assert tool.parameters["oneOf"] == [{"required": ["text"]}, {"required": ["parts"]}]
+    assert tool.parameters["oneOf"] == [{"required": ["text"]}, {"required": ["sticker_id"]}, {"required": ["parts"]}]
     with request_context(ctx):
         first = json.loads(await tool.execute(parts=texts))
         repeated = json.loads(await tool.execute(parts=texts))

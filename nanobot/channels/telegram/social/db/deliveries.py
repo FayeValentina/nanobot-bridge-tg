@@ -83,8 +83,8 @@ class Deliveries:
     def failed_parts(self, action: str) -> list[sqlite3.Row]:
         return self.db.execute("SELECT id FROM actions WHERE group_id=(SELECT group_id FROM actions WHERE id=?) AND status='failed'", (action,)).fetchall()
 
-    def insert_part(self, action: str, key: str, version: str, text: str, created: float, due: float, expires: float, reply_to: int | None, turn: str, group: str, ordinal: int) -> None:
-        self.db.execute("INSERT INTO actions(id,scope,version,content,status,created,due,expires,reply_to,attempts,turn_id,group_id,ordinal) VALUES(?,?,?,?,'queued',?,?,?,?,0,?,?,?)", (action, key, version, text, created, due, expires, reply_to, turn, group, ordinal))
+    def insert_part(self, action: str, key: str, version: str, text: str, created: float, due: float, expires: float, reply_to: int | None, turn: str, group: str, ordinal: int, kind: str, media_ref: str | None) -> None:
+        self.db.execute("INSERT INTO actions(id,scope,version,content,status,created,due,expires,reply_to,attempts,turn_id,group_id,ordinal,kind,media_ref) VALUES(?,?,?,?,'queued',?,?,?,?,0,?,?,?,?,?)", (action, key, version, text, created, due, expires, reply_to, turn, group, ordinal, kind, media_ref))
 
     def group_parts(self, group: str) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM actions WHERE group_id=? ORDER BY ordinal", (group,)).fetchall()

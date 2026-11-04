@@ -1,4 +1,4 @@
-"""wait / sleep / set_wake semantics and model-configured wake conditions."""
+"""wait / sleep / conditions semantics and model-configured wake conditions."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from nanobot.channels.telegram.social.wake import wait_duration
 from nanobot.config.schema import (
     TelegramSocialConfig,
     TelegramSocialScopeConfig,
-    TelegramSocialSleepInterruptConfig,
     TelegramSocialWakeConfig,
 )
 
@@ -25,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class SocialWaiting:
-    """wait / sleep / set_wake semantics and model-configured wake conditions."""
+    """wait / sleep / conditions semantics and model-configured wake conditions."""
 
     def __init__(self, store: SocialStore, bindings: ScopeBindings, proactive: SocialProactive,
                  windows: PendingWindows,
@@ -132,46 +131,32 @@ class SocialWaiting:
         return {"mode": "sleeping" if sleeping else "waiting", "wake_at": self.now() + seconds if seconds is not None else None,
                 "on_timeout": on_timeout, "infinite": infinite}
 
-    def set_wake(self, ctx: RequestContext, *, keywords: list[str], senders: list[str],
-                 on_messages: bool, ttl_seconds: float = 3600, one_shot: bool = True,
-                 on_question: bool = False,
-                 sleep_interrupts: TelegramSocialSleepInterruptConfig | None = None,
-                 coalesce_seconds: float | None = None,
-                 proactive_paused: bool | None = None) -> dict[str, Any]:
+    def set_conditions(self, ctx: RequestContext, *, members: list[str], topics: list[str],
+                       questions: bool, one_shot: bool, ttl_seconds: float) -> dict[str, Any]:
         scope = self.bindings.validate_context(ctx)
         binding = self.bindings.binding(scope)
         if binding is None or not binding.allow_ambient_wake:
             raise PermissionError("operator disabled model-configured wake conditions")
         if not math.isfinite(ttl_seconds) or not 1 <= ttl_seconds <= self.config().max_wait_seconds:
             raise ValueError("wake conditions TTL exceeds the operator limit")
-        if coalesce_seconds is not None:
-            limit = min(self.config().max_coalesce_seconds, self.config().dynamic_wait.max_seconds) if self.config().dynamic_wait.enabled else self.config().max_coalesce_seconds
-            if not math.isfinite(coalesce_seconds) or not 0 <= coalesce_seconds <= limit:
-                raise ValueError("coalescing interval exceeds the operator limit")
-        if sleep_interrupts is not None and any(
-            getattr(sleep_interrupts, name) and not getattr(binding.sleep_interrupts, name)
-            for name in TelegramSocialSleepInterruptConfig.model_fields
-        ):
-            raise PermissionError("sleep interruption exceeds the operator policy")
-        if proactive_paused is not None:
-            with transaction(self.store.db):
-                self.store.proactive_state.set_stopped(int(proactive_paused), scope.session_key)
-            if proactive_paused:
-                self.proactive.cancel_invalid({item.session_key: current for item in self.store.scopes.all()
-                                               if (current := self.bindings.binding(item)) is not None})
-            self.notify()
-            if not keywords and not senders and not on_messages and not on_question:
-                return {"proactive_paused": proactive_paused}
-        if not keywords and not senders and not on_messages and not on_question:
+        if not topics and not members and not questions:
             self.store.wakes.set_wake_config(scope.session_key, "{}")
             return {"cleared": True}
-        conditions = TelegramSocialWakeConfig(keywords=keywords, senders=senders, on_messages=on_messages,
-                                              on_question=on_question,
-                                              sleep_interrupts=sleep_interrupts, coalesce_seconds=coalesce_seconds,
+        conditions = TelegramSocialWakeConfig(keywords=topics, senders=members, on_question=questions,
                                               expires_at=self.now() + ttl_seconds, one_shot=one_shot)
-        result = conditions.model_dump()
         self.store.wakes.set_wake_config(scope.session_key, conditions.model_dump_json())
-        return result
+        return {"members": members, "topics": topics, "questions": questions,
+                "one_shot": one_shot, "expires_at": conditions.expires_at}
+
+    def set_proactive(self, ctx: RequestContext, paused: bool) -> dict[str, bool]:
+        scope = self.bindings.validate_context(ctx)
+        with transaction(self.store.db):
+            self.store.proactive_state.set_stopped(int(paused), scope.session_key)
+        if paused:
+            self.proactive.cancel_invalid({item.session_key: current for item in self.store.scopes.all()
+                                           if (current := self.bindings.binding(item)) is not None})
+        self.notify()
+        return {"proactive_paused": paused}
 
     def keep_reply_intent(self, scope: ConversationScope, turn: str) -> None:
         """Use the existing local wait; a missing reply never calls a model."""

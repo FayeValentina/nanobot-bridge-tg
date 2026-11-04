@@ -77,7 +77,7 @@ async def test_send_rechecks_mid_turn_messages_and_replies_once(make_harness):
                          ids=["timeout", "exception"])
 async def test_judge_failure_falls_back_to_main_model(make_harness, error):
     chat = make_harness()
-    chat.script_model(chat.tool("social_set_wake", senders=["456"], on_messages=False))
+    chat.script_model(chat.tool("social_wait", infinite=True, until_condition={"members": ["456"]}))
     await chat.member_says("等小王", directed=True)
     await chat.tick()
     calls = chat.model_calls()
@@ -93,10 +93,10 @@ async def test_judge_failure_falls_back_to_main_model(make_harness, error):
 
 async def test_selective_wait_ignores_others_then_wakes_for_selected_sender(make_harness):
     chat = make_harness()
-    chat.script_model(chat.tool("social_set_wake", senders=["456"], on_messages=False))
+    chat.script_model(chat.tool("social_wait", infinite=True, until_condition={"members": ["456"]}))
     await chat.member_says("等小王回来", directed=True)
     await chat.tick()
-    assert "error" not in chat.last_tool_result("social_set_wake")
+    assert "error" not in chat.last_tool_result("social_wait")
     calls = chat.model_calls()
     wakes = len(chat.wakes())
     await chat.member_says("我去倒杯水", sender="789")
@@ -112,7 +112,7 @@ async def test_selective_wait_ignores_others_then_wakes_for_selected_sender(make
 
 async def test_direct_mention_interrupts_selective_wait(make_harness):
     chat = make_harness()
-    chat.script_model(chat.tool("social_set_wake", senders=["456"], on_messages=False))
+    chat.script_model(chat.tool("social_wait", infinite=True, until_condition={"members": ["456"]}))
     await chat.member_says("等小王", directed=True)
     await chat.tick()
     calls = chat.model_calls()
@@ -265,10 +265,9 @@ async def test_role_edit_applies_new_persona_on_next_turn(make_harness):
 
 async def test_role_edit_keeps_earlier_group_history_in_context(make_harness):
     chat = make_harness(snapshotMessages=2)
-    chat.script_model(chat.tool("social_mark_read", through=1))
     await chat.member_says("上次群聊约定的暗号是青瓷")
     await chat.tick()
-    assert "error" not in chat.last_tool_result("social_mark_read")
+    assert chat._runtime.store.scopes.state(chat._scope.session_key)["read_through"] >= 1
     # Move the old message outside the fresh snapshot; only conversation history
     # can retain it. Prove that history is present before editing the role.
     await chat.member_says("今天的话题一")
@@ -284,10 +283,9 @@ async def test_role_edit_keeps_earlier_group_history_in_context(make_harness):
 
 async def test_unrelated_config_change_keeps_waiting_and_history(make_harness):
     chat = make_harness(snapshotMessages=2)
-    chat.script_model(chat.tool("social_mark_read", through=1))
     await chat.member_says("配置修改前的暗号是青瓷")
     await chat.tick()
-    assert "error" not in chat.last_tool_result("social_mark_read")
+    assert chat._runtime.store.scopes.state(chat._scope.session_key)["read_through"] >= 1
     await chat.member_says("今天的话题一")
     await chat.member_says("今天的话题二")
     await chat.tick()
@@ -353,10 +351,10 @@ async def test_sticker_pack_can_be_viewed_annotated_searched_and_sent(make_harne
     found = chat.last_tool_result("social_sticker")["stickers"]
     assert len(found) == 1
     sticker = found[0]["sticker_id"]
-    chat.script_model(chat.tool("social_sticker", action="send", sticker_id=sticker))
+    chat.script_model(chat.tool("social_send", sticker_id=sticker))
     await chat.member_says("打个招呼吧")
     await chat.tick()
-    assert chat.last_tool_result("social_sticker")["status"] == "sent"
+    assert chat.last_tool_result("social_send")["status"] == "sent"
     assert [(item["kind"], item["sticker"]) for item in chat.sent()] == [
         ("sticker", "scenario-sticker-file"),
     ]

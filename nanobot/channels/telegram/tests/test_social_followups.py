@@ -15,9 +15,10 @@ from nanobot.agent.context_governance import ContextCompactionState, ContextGove
 from nanobot.agent.hook import AgentHookContext, AgentTurnHookContext
 from nanobot.agent.tools.context import RequestContext, ToolContext, request_context
 from nanobot.agent.tools.message import MessageTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.memory import MemoryRequest
-from nanobot.channels.telegram.social.models import SocialDeliveryUnknownError
+from nanobot.channels.telegram.social.models import SendPart, SocialDeliveryUnknownError
 from nanobot.channels.telegram.social.runtime import SOCIAL_PROTOCOL, TelegramSocialRuntime
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge import decide
@@ -160,7 +161,7 @@ async def test_two_confirmed_attempts_survive_rewording_and_restart(social):
     await social.delivery.send(ordinary("attempt-two"), "最喜欢哪段旅程？", None, followup_id=item["id"])
     info = social.store.followups.describe(item["id"])
     assert info.confirmed_attempts == 2 and info.followup_state == "dropped"
-    trace = social.get_state(ordinary("inspect"))["followups"][0]
+    trace = social.store.followups.status(A.session_key)[0]
     assert trace["state_reason"] == "attempt_limit"
     assert {attempt["turn_id"] for attempt in trace["attempts"]} == {"attempt-one", "attempt-two"}
     assert not social.store.followups.has_pending_thought(A.session_key)
@@ -229,7 +230,7 @@ async def test_two_paced_groups_count_once_each_and_second_group_finishes(social
     social.set_sender(sender)
     for index in range(2):
         ctx = context(social, turn=f"group-{index}")
-        rows = await social.delivery.send_parts(ctx, [(f"开头 {index}", None), (f"问题 {index}", None)], followup_id=item["id"])
+        rows = await social.delivery.send_parts(ctx, [SendPart(f"开头 {index}", None, None), SendPart(f"问题 {index}", None, None)], followup_id=item["id"])
         assert {row["status"] for row in rows} == {"queued"}
         await social.run_due()
         clock(social).advance(3)
@@ -247,7 +248,7 @@ async def test_queued_parts_recheck_live_intention_before_sending(social, change
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
     ctx = context(social)
-    await social.delivery.send_parts(ctx, [("准备提问", None), ("后续问题", None)], followup_id=item["id"])
+    await social.delivery.send_parts(ctx, [SendPart("准备提问", None, None), SendPart("后续问题", None, None)], followup_id=item["id"])
     if change == "delete":
         social.memory.apply(A.session_key, "delete", MemoryRequest(action="delete", memory_id=item["id"]))
     elif change == "edit":
@@ -278,7 +279,7 @@ async def test_cannot_queue_unlinked_parts_when_followup_is_invalid(social):
     edit(social, item["id"], followup_state="dropped")
     social.set_sender(AsyncMock(return_value=501))
     with pytest.raises(PermissionError):
-        await social.delivery.send_parts(context(social), [("第一条", None), ("第二条", None)], followup_id=item["id"])
+        await social.delivery.send_parts(context(social), [SendPart("第一条", None, None), SendPart("第二条", None, None)], followup_id=item["id"])
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
 
 
@@ -475,7 +476,7 @@ async def test_future_intention_is_not_weighted_or_sent_early(social):
 async def test_stop_contact_prevents_linked_proactive_send_but_allows_normal_answer(social):
     item = own(social)
     social.set_sender(AsyncMock(return_value=501))
-    social.waiting.set_wake(ordinary(), keywords=[], senders=[], on_messages=False, proactive_paused=True)
+    social.waiting.set_proactive(ordinary(), True)
     with pytest.raises(PermissionError, match="stopped"):
         await social.delivery.send(ordinary("proactive"), "追问近况", None, followup_id=item["id"])
     assert (await social.delivery.send(ordinary("answer"), "回答你的新问题", None))["status"] == "sent"
@@ -540,3 +541,23 @@ CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id)
         assert "message_id" not in {row[1] for row in restored.db.execute("PRAGMA table_info(actions)")}
     finally:
         restored.close()
+
+
+async def test_social_send_sticker_reserves_and_confirms_followup(social):
+    from nanobot.channels.telegram.tests.test_social_media import reference
+
+    item = own(social)
+    sticker = reference(kind="sticker", unique_id="thanks", file_id="thanks-file")
+    social.store.stickers.collect(A.session_key, sticker, "谢谢", social.config.sticker_limit)
+    sender = AsyncMock(return_value=501)
+    social.delivery.sticker_sender = sender
+    ctx = ordinary("sticker-followup")
+    with request_context(ctx):
+        result = json.loads(await SOCIAL_TOOL_CLASSES["social_send"](social).execute(
+            sticker_id="thanks", followup_id=item["id"],
+        ))
+    assert result["status"] == "sent" and result["followup"]["remaining_attempts"] == 1
+    sender.assert_awaited_once_with(A, "thanks-file", None)
+    row = social.store.db.execute("SELECT a.memory_id,a.turn_id,s.delivery_id FROM followup_sends s JOIN followup_attempts a ON a.id=s.attempt_id").fetchone()
+    assert tuple(row) == (item["id"], "sticker-followup", result["action_id"])
+    assert social.store.followups.describe(item["id"]).confirmed_attempts == 1
