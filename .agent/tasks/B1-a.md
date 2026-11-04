@@ -40,7 +40,7 @@ owner 决定：**发送前检查新消息（本任务）**，同时把合并窗�
    - `send_parts`
    `begin_message`（普通 message 工具）**不调用**。
 
-4. 协议：`nanobot/channels/telegram/social/bindings.py` 的 SOCIAL_PROTOCOL 中 “New messages\ncan arrive during your turn.” 这句（跨第 34–35 行，`can arrive during your turn.` 之后）
+4. 协议：`nanobot/channels/telegram/social/bindings.py` 的 SOCIAL_PROTOCOL 中 “New messages can arrive during your turn.” 这句（跨第 34–35 行，`can arrive during your turn.` 之后）
    紧接着追加一句原文（同一行内，空格分隔，不改换行结构以外的内容）：`If social_send reports new messages, reply once to the whole exchange instead of answering each message separately.`
    其他协议文本不动。
 
