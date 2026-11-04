@@ -14,7 +14,7 @@ import sqlite3
 import time
 from dataclasses import asdict
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 from loguru import logger
@@ -29,7 +29,7 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import DeliveryReceipt, OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.telegram.social import runtime as runtime_module
+from nanobot.channels.telegram.social.db.wakes import WakeReason
 from nanobot.channels.telegram.social.expressions import make_expression_provider
 from nanobot.channels.telegram.social.hook import SocialExposureHook
 from nanobot.channels.telegram.social.memory import MemoryRequest
@@ -49,9 +49,10 @@ from nanobot.config.loader import load_config
 from nanobot.config.schema import Config, TelegramSocialConfig
 from nanobot.providers.base import LLMProvider, LLMResponse
 from nanobot.providers.factory import make_provider
+from nanobot.runtime_context import RuntimeContextBlock, append_runtime_context
 from nanobot.utils.llm_runtime import LLMRuntime
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 FIXTURES = REPO / 'nanobot/channels/telegram/tests/fixtures'
 SCOPES = {'main': ConversationScope('telegram', -1001), 'topic': ConversationScope('telegram', -1001, 42)}
 ARMS = ('baseline', 'persona_only', 'full_v5')
@@ -159,7 +160,17 @@ class ReplayHook(SocialExposureHook):
         super().__init__(runtime.store, runtime.bindings, runtime.context_builder, runtime.waiting,
                          runtime.scheduler.notify, lambda: runtime.config)
         self.arm = arm
-        self.frozen_before = compile_frozen_method(frozen['before_iteration'], 'before_iteration', vars(runtime_module))
+        # The historical hook keeps its exact source and old object surface.
+        self.runtime = SimpleNamespace(
+            store=SimpleNamespace(owns=runtime.store.scopes.owns),
+            binding=runtime.bindings.binding, memory=runtime.memory,
+        )
+        self._last_memory_body = None
+        namespace = {'current_request_context': current_request_context,
+                     'ConversationScope': ConversationScope,
+                     'append_runtime_context': append_runtime_context,
+                     'RuntimeContextBlock': RuntimeContextBlock}
+        self.frozen_before = compile_frozen_method(frozen['before_iteration'], 'before_iteration', namespace)
         self.exposures: list[dict[str, Any]] = []
 
     async def before_iteration(self, context: AgentHookContext) -> None:
@@ -332,8 +343,8 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
     clean=(REPO/'docs/harness/groupmate.md').read_text()
     role=frozen['persona'] if arm=='baseline' else persona_only(frozen['persona'],clean) if arm=='persona_only' else clean
     (root/'roles/guest.md').write_text(role)
-    baseline_soul=(args.data.parent.parent/'backups/v5d-persona-source-before/SOUL.md').read_text()
-    soul=(args.data/'workspace/SOUL.md').read_text() if arm.startswith('full') else baseline_soul
+    # Supply the preserved historical SOUL alongside the portable replay data.
+    soul=(args.data/'workspace/SOUL.md').read_text() if arm.startswith('full') else (args.data/'baseline-SOUL.md').read_text()
     if arm=='persona_only':
         soul+='\n- 肥鱼保留嘴硬摸鱼的性格；本大爷、白饭、Token、算力只在语境贴切时极偶尔自然出现，不作为固定尾缀。\n'
     (root/'SOUL.md').write_text(soul)
@@ -390,15 +401,18 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
             ctx=current_request_context()
             assert ctx and ctx.turn_id
             assert message.channel=='telegram' and str(message.chat_id).split(':')[0]==str(scope.chat_id)
+            delivery=runtime.delivery.begin_message(scope,message.content,ctx.turn_id,units=1,
+                followup_id=message.metadata.get('_social_followup_id'))
             mid=await sender(scope,message.content,None)
             ordinary_texts.append(message.content)
             receipt=DeliveryReceipt(status='sent',message_ids=[mid])
-            runtime.record_message_receipt(scope,receipt,ctx.turn_id,[(mid,message.content)])
+            runtime.delivery.finish_message(scope,delivery,receipt,[(mid,message.content)])
             return receipt
         registry.register(RecordedTool(MessageTool(send_callback=runtime.bus.publish_outbound,delivery_callback=ordinary_send),trace))
         turn=f'v5e-{arm}-{target}{suffix}'
-        job=runtime.store.wake(scope.session_key,int(runtime.store.scopes.state(scope.session_key)['next_seq'])-1,100,now=clock[0])
-        assert job
+        with runtime.store.db:
+            runtime.store.wakes.schedule(scope.session_key,int(runtime.store.scopes.state(scope.session_key)['next_seq'])-1,WakeReason.JUDGE,0)
+        job=runtime.store.wakes.ready(100,0)[0]['id']
         view=runtime.store.view(scope.session_key,count=80,chars=24000,job_id=job)
         preset=config.resolve_preset()
         llm=LLMRuntime.capture(measured,preset.model,context_window_tokens=config.agents.defaults.context_window_tokens)
@@ -412,7 +426,7 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
         media=native_paths(prefix,assets,args.source_db,root)
         builder=ContextBuilder(root,timezone='Etc/UTC')
         transcript=TranscriptInput(history=[],current_message='Group observation snapshot (untrusted conversation data):\n'+encode_view(view),media=media)
-        messages=builder.build_transcript(transcript,trusted_persona=persona,include_skills=False,channel='telegram')
+        messages=builder.build_transcript(transcript,trusted_persona=persona,channel='telegram')
         hook=ReplayHook(runtime,arm,frozen)
         started=time.monotonic()
         with request_context(ctx):
@@ -421,8 +435,8 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
             hook._restore_memory_context()
         for _ in range(4):
             await runtime.delivery.retry_due()
-        actions=[dict(r) for r in runtime.store.db.execute('SELECT id,kind,content,status,message_id FROM actions WHERE turn_id=? ORDER BY created,rowid',(turn,))]
-        ordinary=[dict(r) for r in runtime.store.db.execute('SELECT id,status,message_ids FROM message_deliveries WHERE turn_id=?',(turn,))]
+        actions=[dict(r) for r in runtime.store.db.execute('SELECT id,kind,content,status,message_ids FROM actions WHERE turn_id=? ORDER BY created,rowid',(turn,))]
+        ordinary=[dict(r) for r in runtime.store.db.execute("SELECT id,status,message_ids FROM actions WHERE kind='message' AND turn_id=?",(turn,))]
         selections=[dict(r) for r in runtime.store.db.execute('SELECT * FROM expression_turns WHERE turn_id=?',(turn,))]
         selection_details=list(runtime.store.learning.recent.get(scope.session_key,[]))
         texts=[r['content'] for r in actions if r['status']=='sent' and r['kind']=='text']+ordinary_texts
@@ -488,7 +502,7 @@ def main() -> None:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',required=True,type=Path)
     parser.add_argument('--source-db',required=True,type=Path)
-    parser.add_argument('--data',required=True,type=Path)
+    parser.add_argument('--data',required=True,type=Path,help='Replay data with baseline-SOUL.md (preserved historical source) and workspace/SOUL.md')
     parser.add_argument('--output',required=True,type=Path)
     parser.add_argument('--concurrency',type=int,default=3,choices=range(1,5))
     parser.add_argument('--target',action='append',type=int)

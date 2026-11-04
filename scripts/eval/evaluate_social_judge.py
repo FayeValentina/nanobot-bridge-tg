@@ -1,6 +1,6 @@
 """Opt-in real-model evaluation, synthetic input and temporary SQLite only.
 
-Run with python -m nanobot.channels.telegram.tests.evaluate_social_judge
+Run with python -m scripts.eval.evaluate_social_judge
 --oauth-dir <independent Bot OAuth directory> --output <report.json>.
 Never starts a Telegram receiver, sends public messages or changes live read state.
 """
@@ -11,12 +11,12 @@ import json
 import tempfile
 import time
 from pathlib import Path
-from uuid import uuid4
 
 from loguru import logger
 
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.db.wakes import WakeReason, WakeStatus
 from nanobot.channels.telegram.social.judge import (
     JUDGE_PROMPT_VERSION,
     JudgeInput,
@@ -78,7 +78,7 @@ async def evaluate(args):
             scope = ConversationScope("telegram", -10001, 53)
             config = TelegramSocialConfig(enabled=True, coalesce_seconds=0, cooldown_seconds=0, judge=settings,
                 scopes=[TelegramSocialScopeConfig(chat_id=scope.chat_id, thread_id=53, role_id="friend",
-                    nicknames=["肥鱼", "肥魚"], wake_on_question=case.get("standing_questions", False))])
+                    nicknames=["肥鱼", "肥魚"])])
             config.sleep_observation.enabled = case.get("observe_sleep", False)
             runtime = TelegramSocialRuntime(config, root, MessageBus(), judge_provider=provider, judge_provider_version=version)
             try:
@@ -86,25 +86,19 @@ async def evaluate(args):
                     runtime.store.observe(ObservedMessage(scope, seq, seq, sender, sender, time.time()-10, text,
                                                           is_self=sender == "bot"), 500)
                 if case.get("wait") or case.get("observe_sleep"):
-                    job = uuid4().hex
-                    now = runtime.now()
                     with runtime.store.db:
-                        runtime.store.db.execute(
-                            "INSERT INTO wakes(id,scope,version,trigger_seq,status,created,expires,due,requested) "
-                            "VALUES(?,?,?,1,'queued',?,?,?,?)",
-                            (job, scope.session_key, runtime.store.scopes.state(scope.session_key)["version"], now, now + 120, now, now),
-                        )
-                        runtime.store.db.execute("INSERT INTO requests VALUES(?,?)", (scope.session_key, now))
+                        runtime.store.wakes.schedule(scope.session_key, len(case["history"]), WakeReason.JUDGE, 0)
+                    job = runtime.store.wakes.ready(config.max_requests_per_hour, 0)[0]['id']
                     ctx = RequestContext(channel="telegram", chat_id=str(scope.chat_id), session_key=scope.session_key,
                         turn_id="setup", metadata={"message_thread_id": 53, "_social_job": job},
                         attributes={"context_version": runtime.store.scopes.state(scope.session_key)["version"]})
                     runtime.waiting.admit_request(ctx)
                     if case.get("wait"):
-                        runtime.waiting.set_wake(ctx, keywords=["到家"], senders=["456"], on_messages=False, ttl_seconds=60)
+                        runtime.waiting.set_conditions(ctx, topics=["到家"], members=["456"], questions=False, one_shot=True, ttl_seconds=60)
                         runtime.waiting.wait(ctx, infinite=True, purpose="messages", quiet_seconds=0.1)
                     else:
                         runtime.waiting.wait(ctx, 30, sleeping=True)
-                    runtime.store.wakes.finish("setup", "completed")
+                    runtime.store.wakes.finish("setup", WakeStatus.COMPLETED)
                 elif case.get("sleeping"):
                     with runtime.store.db:
                         runtime.store.db.execute("UPDATE scopes SET mode='sleeping',wait_infinite=1 WHERE key=?", (scope.session_key,))
@@ -137,7 +131,8 @@ async def evaluate(args):
             finally:
                 runtime.close()
     report = {"model": settings.model, "reasoning_effort": settings.reasoning_effort,
-              "prompt_version": JUDGE_PROMPT_VERSION, "results": results}
+              "prompt_version": JUDGE_PROMPT_VERSION, "cases": str(args.cases),
+              "expectations": "Historical scenario expectations; matches do not establish current behavior or naturalness acceptance.", "results": results}
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2))
     args.output.chmod(0o600)
     if not results or not all(result["matched"] for result in results):
@@ -148,7 +143,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--oauth-dir", required=True)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("fixtures") / "social_judge_v3c.json")
+    parser.add_argument("--cases", type=Path, default=Path(__file__).resolve().parents[2] / "nanobot/channels/telegram/tests/fixtures/social_judge_broad.json")
     parser.add_argument("--case", action="append")
     parser.add_argument("--persona", type=Path, help="Use the reviewed role file in the actual 600-character summary")
     parser.add_argument("--snapshot", type=Path, help="Replay an exported JudgeInput without scheduling/delivery")

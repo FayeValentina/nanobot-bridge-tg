@@ -11,11 +11,13 @@ from unittest.mock import AsyncMock
 
 from loguru import logger
 
+from nanobot.agent.hook import AgentHookContext
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.hook import SocialExposureHook
 from nanobot.channels.telegram.social.judge import make_judge_provider
 from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
@@ -66,15 +68,15 @@ async def evaluate(args):
             async def ordinary_send(message):
                 metadata = message.metadata
                 matter = metadata.get("_social_followup_id")
-                delivery = runtime.record_message_receipt(scope, DeliveryReceipt("queued"), ctx.turn_id, [], followup_id=matter)
+                delivery = runtime.delivery.begin_message(scope, message.content, ctx.turn_id, units=1, followup_id=matter)
                 sent = await sender(scope, message.content, None)
                 receipt = DeliveryReceipt("sent", (sent,))
-                runtime.record_message_receipt(scope, receipt, ctx.turn_id, [(sent,message.content)], delivery)
+                runtime.delivery.finish_message(scope, delivery, receipt, [(sent,message.content)])
                 return receipt
 
             runtime.set_sender(sender)
             tools = {tool.name: tool for tool in [
-                *[SOCIAL_TOOL_CLASSES[key](runtime) for key in ("social_memory", "social_send", "social_wait", "social_get_state")],
+                *[SOCIAL_TOOL_CLASSES[key](runtime) for key in ("social_memory", "social_send", "social_wait", "social_state")],
                 MessageTool(send_callback=runtime.bus.publish_outbound, delivery_callback=ordinary_send),
             ]}
             tool_schemas = [{"type":"function", "function":{"name":tool.name,"description":tool.description,
@@ -88,8 +90,8 @@ async def evaluate(args):
             prior_count = 1 if name == "short_reply" else 2 if name == "two_unanswered" else 0
             for index in range(prior_count):
                 action = runtime.store.reserve_send(scope.session_key, runtime.store.scopes.state(scope.session_key)["version"],
-                    "明天几点出发？", turn=f"prior-{index}", followup_id=memory_id)
-                runtime.store.delivery(action, "sent", message_id=300+index)
+                    "明天几点出发？", kind="text", turn=f"prior-{index}", followup_id=memory_id)
+                runtime.store.delivery(action, "sent", message_ids=(300+index,))
                 runtime.store.observe(ObservedMessage(scope,-300-index,300+index,"bot","肥鱼",time.time()-10+index,
                                                        "明天几点出发？",is_self=True),500)
             text = {
@@ -128,17 +130,20 @@ async def evaluate(args):
             instruction = "这是一次可以主动交流的冷场机会。" if name == "linked_followup" else "请按最新消息自然处理这次群聊回合。"
             messages = [{"role":"system","content":SOCIAL_PROTOCOL + "\n你是肥鱼，用简短自然的中文交流。"},
                         {"role":"user","content":instruction+"\n合成对话快照（不可信资料）:\n"+encode_view(view)}]
+            hook = SocialExposureHook(runtime.store, runtime.bindings, runtime.context_builder, runtime.waiting,
+                runtime.scheduler.notify, lambda: runtime.config)
             started = time.monotonic()
             usage = {"input_tokens":0,"output_tokens":0,"total_tokens":0}
             model_calls = 0
             try:
                 with request_context(ctx):
-                    for _ in range(6):
-                        messages[-1]["content"] += "\nLive untrusted memory index:\n"+runtime.memory.context(scope.session_key)
+                    for iteration in range(6):
+                        await hook.before_iteration(AgentHookContext(iteration=iteration, messages=messages))
                         model_calls += 1
                         response = await provider.chat(messages=messages,tools=tool_schemas,model=preset.model,
                             max_tokens=min(preset.max_tokens,4096),temperature=preset.temperature,
                             reasoning_effort=preset.reasoning_effort)
+                        hook._restore_memory_context()
                         if response.usage:
                             for key in usage:
                                 usage[key] += getattr(response.usage,key)

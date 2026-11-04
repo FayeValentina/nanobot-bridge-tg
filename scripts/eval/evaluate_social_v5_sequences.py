@@ -15,7 +15,7 @@ from nanobot.channels.telegram.social.models import ObservedMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 from nanobot.config.loader import load_config
 from nanobot.providers.factory import make_provider
-from scripts.evaluate_social_v5 import (
+from scripts.eval.evaluate_social_v5 import (
     ARMS,
     FIXTURES,
     SCOPES,
@@ -147,6 +147,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('config','source-db','data','output'):
         parser.add_argument('--'+name,required=True,type=Path)
+    parser.epilog='--data must contain preserved baseline-SOUL.md and workspace/SOUL.md.'
     parser.add_argument('--jargon-only',action='store_true')
     parser.add_argument('--skip-jargon',action='store_true')
     parser.add_argument('--arm',action='append',choices=ARMS)

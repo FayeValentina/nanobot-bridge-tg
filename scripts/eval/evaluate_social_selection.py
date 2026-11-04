@@ -15,6 +15,7 @@ from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.db.wakes import WakeReason
 from nanobot.channels.telegram.social.expressions import make_expression_provider
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
 from nanobot.channels.telegram.social.runtime import SOCIAL_TOOLS, TelegramSocialRuntime
@@ -52,7 +53,7 @@ async def evaluate(config_path: Path, source_db: Path, output: Path) -> None:
         with tempfile.TemporaryDirectory(prefix='v5d-generation-') as directory:
             root=Path(directory)
             (root/'social/roles').mkdir(parents=True)
-            (root/'social/roles/guest.md').write_text((Path(__file__).resolve().parents[1]/'docs/harness/groupmate.md').read_text())
+            (root/'social/roles/guest.md').write_text((Path(__file__).resolve().parents[2]/'docs/harness/groupmate.md').read_text())
             scope=ConversationScope('telegram',-1001,42)
             settings=TelegramSocialConfig.model_validate({'enabled':True,'coalesceSeconds':0,'cooldownSeconds':0,'sendCooldownSeconds':0,
                 'scopes':[{'chatId':scope.chat_id,'threadId':scope.thread_id,'roleId':'guest'}]})
@@ -93,8 +94,9 @@ async def evaluate(config_path: Path, source_db: Path, output: Path) -> None:
                 # Enter at the existing post-V3 wake boundary; this probe tests D,
                 # without running another real receiver or changing V3 admission.
                 runtime.store.observe(ObservedMessage(scope,1,1,'member','群友',runtime.now(),text,learning_text=text),500)
-                job=runtime.store.wake(scope.session_key,1,100,now=runtime.now())
-                assert job
+                with runtime.store.db:
+                    runtime.store.wakes.schedule(scope.session_key,1,WakeReason.JUDGE,0)
+                job=runtime.store.wakes.ready(100,0)[0]['id']
                 await runtime._publish_wake(scope,job,1)
                 incoming=await asyncio.wait_for(bus.consume_inbound(),2)
                 await asyncio.wait_for(loop._dispatch(incoming),90)

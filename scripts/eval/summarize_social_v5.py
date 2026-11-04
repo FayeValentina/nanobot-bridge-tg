@@ -7,7 +7,7 @@ import math
 from collections import Counter
 from pathlib import Path
 
-from scripts.evaluate_social_v5 import ARMS, FIXTURES, QUESTIONS, RELATED, read_json, save
+from scripts.eval.evaluate_social_v5 import ARMS, FIXTURES, QUESTIONS, RELATED, read_json, save
 
 ARMS4=(*ARMS,'full_v5_t05')
 LABELS={'baseline':'Baseline','persona_only':'仅改人设','full_v5':'Full V5 0.1','full_v5_t05':'Full V5 0.5'}
@@ -74,7 +74,7 @@ def cell(value):
     return str(value).replace('|','\\|').replace('\n','<br>')
 
 
-def summarize(root: Path, document: Path):
+def summarize(root: Path, document: Path, output: Path):
     raw=read_json(root/'replay.json')
     rows=raw['results']
     assert len(rows)==72
@@ -98,7 +98,7 @@ def summarize(root: Path, document: Path):
         'jargon_control':[dict(s,turns=[compact(r) for r in s['turns']]) for s in jargon],
         'faults':[compact(r) for r in read_json(root/'fault-probes.json')]}
     save(root/'summary.json',report)
-    save(FIXTURES/'social_v5e_actual_replay.json',report)
+    save(output,report)
     lines=['# V5-E：实际对话验收与发布','',
         '2026-11-01。已完成固定真实回放、消融、连续对话、成本和故障核验。**质量结论为部分通过，不能据此宣称 V5 自然度已全面完成。** 本批发布验证过的语境/纠错/人设偏好和水位保护修正；具体发布结果在文末补记。',
         '', '## 实验契约与防泄漏','',
@@ -211,8 +211,9 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input',required=True,type=Path)
     parser.add_argument('--document',required=True,type=Path)
+    parser.add_argument('--output',required=True,type=Path)
     args=parser.parse_args()
-    summarize(args.input,args.document)
+    summarize(args.input,args.document,args.output)
 
 
 if __name__=='__main__':

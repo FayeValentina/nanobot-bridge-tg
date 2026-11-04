@@ -35,7 +35,7 @@ async def evaluate(args):
         runtime = TelegramSocialRuntime(TelegramSocialConfig(enabled=True, send_cooldown_seconds=0,
             scopes=[TelegramSocialScopeConfig(chat_id=scope.chat_id, thread_id=scope.thread_id, role_id="friend")]),
             root, MessageBus())
-        runtime.roles.joinpath("friend.md").write_text(Path("docs/harness/groupmate.md").read_text())
+        runtime.roles.joinpath("friend.md").write_text((Path(__file__).resolve().parents[2] / "docs/harness/groupmate.md").read_text())
         runtime.sync_scope(scope)
         publications = []
 
@@ -101,7 +101,7 @@ async def evaluate(args):
                 exported = [dict(row) for row in runtime.store.db.execute("SELECT id,media_ref,note FROM stickers")]
                 (args.output / "learned-stickers.json").write_text(json.dumps(exported, ensure_ascii=False, indent=2) + "\n")
                 print(json.dumps({key: value for key, value in report.items() if key not in {"tools", "publications"}}, ensure_ascii=False), flush=True)
-                assert report["available"] == 120 and report["learned_after_request"] == 120
+                assert report["learned_after_request"] == report["available"]
                 assert report["confirmed_sticker_sends"] >= 1
             finally:
                 runtime.close()
@@ -116,6 +116,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--pack", default="https://t.me/addstickers/LLM_Moe")
+    parser.add_argument("--pack", required=True)
     logger.remove()
     asyncio.run(evaluate(parser.parse_args()))

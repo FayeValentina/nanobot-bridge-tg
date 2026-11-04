@@ -62,7 +62,7 @@ def freeze(database: Path, scopes: dict[str, str], humans: set[str], peer_bots: 
                     for original, replacement in replacements.items():
                         text = text.replace(original, replacement)
                     sender_aliases.setdefault(sender, f"participant-{len(sender_aliases)+1}")
-                    action = db.execute("SELECT turn_id,status FROM actions WHERE scope=? AND message_id=? AND status='sent'", (scope, message_id)).fetchone()
+                    action = db.execute("SELECT turn_id,status FROM actions WHERE scope=? AND EXISTS (SELECT 1 FROM json_each(actions.message_ids) WHERE value=?) AND status='sent'", (scope, message_id)).fetchone()
                     turn = None
                     if action and action["turn_id"]:
                         raw_turn = str(action["turn_id"])

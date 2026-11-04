@@ -48,8 +48,7 @@ async def evaluate(config_path: Path, output: Path) -> None:
                 else:
                     view = runtime.store.view(scope.session_key,count=30,chars=12000,turn_id='turn')
                     runtime.store.note_seen(scope.session_key,'turn',encode_view(view))
-                    assert runtime.memory.jargon
-                    runtime.jargon.jargon.apply(scope.session_key,'turn',JargonRequest(action='submit',term=term,message_ids=[1],research=True),runtime.memory.jargon)
+                    runtime.jargon.jargon.apply(scope.session_key,'turn',JargonRequest(action='submit',term=term,message_ids=[1],research=True))
                     runtime.jargon.prepare_reviews([scope.session_key])
                     batch = runtime.store.db.execute("SELECT id FROM learning_batches WHERE kind='jargon'").fetchone()[0]
                 assert batch
@@ -71,9 +70,8 @@ async def evaluate(config_path: Path, output: Path) -> None:
                         runtime.store.observe(ObservedMessage(scope,2,2,'human','Member',clock[0],corrected_text,learning_text=corrected_text),100)
                         view = runtime.store.view(scope.session_key,count=30,chars=12000,turn_id='correction')
                         runtime.store.note_seen(scope.session_key,'correction',encode_view(view))
-                        assert runtime.memory.jargon
                         corrected = runtime.jargon.jargon.apply(scope.session_key,'correction',JargonRequest(action='explain',entry_id=str(old['id']),expected_revision=int(str(old['revision'])),term=term,
-                            message_ids=[2],local_meaning='临时加场',explanation_quote=corrected_text),runtime.memory.jargon)['jargon']
+                            message_ids=[2],local_meaning='临时加场',explanation_quote=corrected_text))['jargon']
                         clock[0]+=301
                         runtime.store.observe(ObservedMessage(scope,101,1,'human','Member',clock[0],text,learning_text=text,is_edit=True),100)
                         new_batch=runtime.store.learning.prepare(scope.session_key,'jargon')

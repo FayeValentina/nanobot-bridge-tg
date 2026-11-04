@@ -26,7 +26,7 @@ from nanobot.config.schema import TelegramSocialConfig
 
 
 async def replay(config_path: Path, output: Path) -> None:
-    corpus_path = Path(__file__).resolve().parents[1] / "nanobot/channels/telegram/tests/fixtures/social_v5_baseline.json"
+    corpus_path = Path(__file__).resolve().parents[2] / "nanobot/channels/telegram/tests/fixtures/social_v5_baseline.json"
     corpus = json.loads(corpus_path.read_text())
     config = load_config(config_path)
     settings = config.channels.model_dump(by_alias=True).get("telegram", {}).get("social", {}).get("learning", {})
@@ -91,7 +91,7 @@ async def replay(config_path: Path, output: Path) -> None:
                         assert runtime.expressions.library.commit(batch, ExtractionResult(expressions=[candidate]), runtime.expressions.library.generation(scope.session_key)) == []
                         checks["similar_no_revival" if variant else "disable_no_revival"] += 1
             assert runtime.bus.inbound_size == runtime.bus.outbound_size == 0
-            report = {"model": model, "corpus": str(corpus_path.relative_to(Path(__file__).resolve().parents[1])),
+            report = {"model": model, "corpus": str(corpus_path.relative_to(Path(__file__).resolve().parents[2])),
                 "mode": "actual_provider_offline_historical_extraction", "sent_messages": 0,
                 "reviewed_human_messages": sum(bool(msg["learnable"]) for _, msg in rows), "checks": checks, "results": results}
             # Exclude frozen SELF/context copies from the report; the input fixture is authoritative.

@@ -7,7 +7,7 @@ import pytest
 from nanobot.channels.telegram.social.expressions import ExpressionLearner
 from nanobot.channels.telegram.social.jargon_learning import JargonLearner
 from nanobot.providers.base import LLMProvider
-from scripts.evaluate_social_v5 import (
+from scripts.eval.evaluate_social_v5 import (
     FIXTURES,
     REPO,
     persona_only,
@@ -56,7 +56,7 @@ async def test_training_replays_every_human_at_source_time_without_consuming_hol
         worker.store.learning.finish(batch,success=True)
     monkeypatch.setattr(ExpressionLearner,'process',empty_success)
     monkeypatch.setattr(JargonLearner,'process',empty_success)
-    monkeypatch.setattr('scripts.evaluate_social_v5.make_expression_provider',lambda *_:(AsyncMock(spec=LLMProvider),'test'))
+    monkeypatch.setattr('scripts.eval.evaluate_social_v5.make_expression_provider',lambda *_:(AsyncMock(spec=LLMProvider),'test'))
     report=await train(Config(),corpus,{'messages':{},'stickers':{}},tmp_path/'unused.sqlite3',tmp_path)
     assert len(report['batches'])==4
     assert sorted(b['source_count'] for b in report['batches'])==[3,3,7,7]
@@ -71,7 +71,7 @@ def test_release_rebind_resets_judge_cursor_and_preserves_active_proactive_deadl
     from nanobot.channels.telegram.social.models import ObservedMessage
     from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
     from nanobot.config.schema import Config
-    from scripts.evaluate_social_v5 import SCOPES, settings
+    from scripts.eval.evaluate_social_v5 import SCOPES, settings
 
     (tmp_path/'roles').mkdir()
     (tmp_path/'roles/guest.md').write_text('Guest')

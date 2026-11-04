@@ -154,8 +154,8 @@ def seed_intention(runtime: TelegramSocialRuntime, *, thought: bool = False) -> 
 
 def seed_attempt(runtime: TelegramSocialRuntime, memory_id: str, index: int) -> None:
     action = runtime.store.reserve_send(SCOPE.session_key, runtime.store.scopes.state(SCOPE.session_key)["version"],
-        "明天几点出发、和谁一起去郊游？", turn=f"prior-{index}", followup_id=memory_id)
-    runtime.store.delivery(action, "sent", message_id=300+index)
+        "明天几点出发、和谁一起去郊游？", kind="text", turn=f"prior-{index}", followup_id=memory_id)
+    runtime.store.delivery(action, "sent", message_ids=(300+index,))
     seed_message(runtime, "明天几点出发、和谁一起去郊游？", own=True)
 
 
@@ -165,7 +165,6 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
     settings = TelegramSocialConfig.model_validate(json.loads(args.config.read_text())["channels"]["telegram"]["social"]).judge
     if settings.oauth_storage_dir is None and settings.provider == "openai_codex":
         settings.oauth_storage_dir = str(args.config.parent / "telegram-social/oauth")
-    settings.min_interval_seconds = 0
     judge, judge_version = make_judge_provider(config, settings)
     clock = Clock()
     with tempfile.TemporaryDirectory(prefix="social-v4c-") as directory:
@@ -249,17 +248,17 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
 
             runtime.set_sender(sender)
             registry = ToolRegistry()
-            for key in ("social_memory", "social_send", "social_wait", "social_set_wake", "social_get_state", "social_read_messages", "social_mark_read"):
+            for key in ("social_memory", "social_send", "social_wait", "social_state"):
                 registry.register(SOCIAL_TOOL_CLASSES[key](runtime))
 
             async def ordinary_send(message: OutboundMessage) -> DeliveryReceipt:
                 ctx = registry_context[0]
                 assert ctx is not None
                 matter = message.metadata.get("_social_followup_id")
-                delivery = runtime.record_message_receipt(SCOPE, DeliveryReceipt("queued"), ctx.turn_id, [], followup_id=matter)
+                delivery = runtime.delivery.begin_message(SCOPE, message.content, ctx.turn_id, units=1, followup_id=matter)
                 sent = await sender(SCOPE, message.content, None)
                 receipt = DeliveryReceipt("sent", (sent,))
-                runtime.record_message_receipt(SCOPE, receipt, ctx.turn_id, [(sent, message.content)], delivery)
+                runtime.delivery.finish_message(SCOPE, delivery, receipt, [(sent, message.content)])
                 return receipt
 
             registry_context: list[RequestContext | None] = [None]
@@ -374,8 +373,8 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                 "has_question_mark": question, "turns": turns, "followup": followup,
                 "no_reply_calls": no_reply_calls, "web": web_trace, "admissions": admissions,
                 "main_calls": provider.calls[initial_calls:], "proactive": runtime.proactive.status(SCOPE.session_key),
-                "actions": [dict(row) for row in runtime.store.db.execute("SELECT status,message_id,group_id FROM actions WHERE message_id>=500")],
-                "ordinary_deliveries": [dict(row) for row in runtime.store.db.execute("SELECT status,message_ids FROM message_deliveries")]}
+                "actions": [dict(row) for row in runtime.store.db.execute("SELECT status,message_ids,group_id FROM actions WHERE EXISTS (SELECT 1 FROM json_each(actions.message_ids) WHERE value>=500)")],
+                "ordinary_deliveries": [dict(row) for row in runtime.store.db.execute("SELECT status,message_ids FROM actions WHERE kind='message'")]}
             return result
         finally:
             runtime.close()
