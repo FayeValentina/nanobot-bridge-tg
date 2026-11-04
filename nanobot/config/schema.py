@@ -177,7 +177,7 @@ class TelegramSocialWakeConfig(Base):
 class TelegramSocialDynamicWaitConfig(Base):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
-    quiet_seconds: float = Field(default=1.5, ge=0.1, le=10, allow_inf_nan=False)
+    quiet_seconds: float = Field(default=1.5, ge=0.1, le=60, allow_inf_nan=False)
     unfinished_seconds: float = Field(default=4, ge=0.1, le=20, allow_inf_nan=False)
     max_seconds: float = Field(default=12, ge=1, le=60, allow_inf_nan=False)
 
@@ -308,7 +308,7 @@ class TelegramSocialConfig(Base):
     max_requests_per_hour: int = Field(default=12, ge=1, le=120)
     max_sends_per_hour: int = Field(default=6, ge=1, le=60)
     max_text_chars: int = Field(default=2000, ge=1, le=4000)
-    coalesce_seconds: float = Field(default=1.5, ge=0, le=10)
+    coalesce_seconds: float = Field(default=1.5, ge=0, le=60)
     max_coalesce_seconds: float = Field(default=10, ge=0, le=60, allow_inf_nan=False)
     dynamic_wait: TelegramSocialDynamicWaitConfig = Field(default_factory=TelegramSocialDynamicWaitConfig)
     reply_attention: TelegramSocialReplyAttentionConfig = Field(default_factory=TelegramSocialReplyAttentionConfig)
