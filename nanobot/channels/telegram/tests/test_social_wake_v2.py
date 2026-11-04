@@ -10,9 +10,7 @@ from pydantic import ValidationError
 
 from nanobot.agent.tools.context import request_context
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
-from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_dialogue import admit, expose, take
 from nanobot.channels.telegram.tests.test_social_runtime import (
     A,
@@ -23,7 +21,6 @@ from nanobot.channels.telegram.tests.test_social_scheduler import (
     context,
     finish,
     observed,
-    remove_v4_columns,
     social,
 )
 from nanobot.config.schema import TelegramSocialConfig
@@ -238,51 +235,6 @@ async def test_new_wait_modes_and_sampling_recover_without_redrawing(v2b):
         assert restored.store.scopes.state(A.session_key)["mode"] == "paused"
     finally:
         restored.close()
-
-
-def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
-    ctx = expose(v2b)
-    v2b.store.mark_read(A.session_key, ctx.turn_id, 1)
-    v2b.waiting.wait(ctx, 60, purpose="messages", quiet_seconds=3)
-    finish(v2b, ctx)
-    root = v2b.root
-    db = v2b.store.db
-    db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
-    db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
-    db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
-    remove_v4_columns(db)
-    db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-    db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-    db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-    db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
-    db.executescript("""
-        CREATE TABLE dialogue_waits_v7 (
-            scope TEXT PRIMARY KEY REFERENCES scopes(key), purpose TEXT NOT NULL,
-            started REAL NOT NULL, quiet_seconds REAL NOT NULL, quiet_due REAL,
-            total_due REAL NOT NULL, after_seq INTEGER NOT NULL, source_seq INTEGER NOT NULL,
-            on_timeout INTEGER NOT NULL, sleep_seconds REAL, condition_expires REAL
-        );
-        INSERT INTO dialogue_waits_v7 SELECT scope,purpose,started,quiet_seconds,quiet_due,total_due,
-            after_seq,source_seq,on_timeout,sleep_seconds,condition_expires FROM dialogue_waits;
-        DROP TABLE dialogue_waits;
-        ALTER TABLE dialogue_waits_v7 RENAME TO dialogue_waits;
-        PRAGMA user_version=7;
-    """)
-    db.commit()
-    v2b.close()
-    upgraded = SocialStore(root, now=v2b.now)
-    try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-        state = upgraded.scopes.state(A.session_key)
-        assert state["mode"] == "waiting" and not state["wait_infinite"]
-        assert state["read_through"] == state["seen_through"] == 1
-        wait = upgraded.wakes.dialogue_status(A.session_key)["wait"]
-        assert wait["purpose"] == "messages" and wait["total_due"] == v2b.now() + 60
-        assert wait["quiet_seconds"] == 3 and wait["sleep_until"] is None
-        assert upgraded.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
-    finally:
-        upgraded.close()
 
 
 async def test_scope_coalescing_obeys_operator_setting(v2b):

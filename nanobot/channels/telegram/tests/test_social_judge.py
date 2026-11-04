@@ -8,18 +8,13 @@ import pytest
 from pydantic import ValidationError
 
 from nanobot.channels.telegram.manifest import SETUP_SPEC
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
-from nanobot.channels.telegram.social.expressions import ExpressionLibrary
-from nanobot.channels.telegram.social.jargon import JargonLibrary
 from nanobot.channels.telegram.social.judge import (
     JudgeInput,
     JudgeMessage,
     SocialJudge,
     make_judge_provider,
 )
-from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
-from nanobot.channels.telegram.social.store import SocialStore
-from nanobot.channels.telegram.tests.test_social_scheduler import remove_v4_columns
+from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.config.schema import (
     Config,
     InlineFallbackConfig,
@@ -183,33 +178,6 @@ async def test_cancelled_request_is_recorded(case, monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await judge.assess(data)
     assert len(records) == 1 and records[0].finish_reason == "cancelled"
-
-
-def test_schema_eight_upgrade_preserves_main_data(tmp_path):
-    store = SocialStore(tmp_path)
-    store.learning.attach_libraries(ExpressionLibrary(store), JargonLibrary(store))
-    store.bind(A, "version1")
-    for seq in range(1, 4):
-        store.observe(ObservedMessage(A, seq, seq+10, "1", "Alice", 990.+seq, "text"), 500)
-    remove_v4_columns(store.db)
-    with store.db:
-        for table in ("judge_attempts", "judge_batches", "judge_state"):
-            store.db.execute(f"DROP TABLE {table}")
-        store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-        store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-        store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-        store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
-        store.db.execute("PRAGMA user_version=8")
-    store.close()
-    upgraded = SocialStore(tmp_path)
-    try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-        assert upgraded.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 3
-        assert upgraded.scopes.state(A.session_key)["read_through"] == 0
-        assert upgraded.judge.through(A.session_key) == 3
-    finally:
-        upgraded.close()
 
 
 async def test_model_payload_omits_internal_identity_and_revisions(case):

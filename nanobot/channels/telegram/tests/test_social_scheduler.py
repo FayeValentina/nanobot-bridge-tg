@@ -15,7 +15,7 @@ from telegram.error import RetryAfter
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.telegram_social import SocialSendTool
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
+from nanobot.channels.telegram.social.db.schema import BASELINE_DDL, SCHEMA_VERSION
 from nanobot.channels.telegram.social.models import (
     SendPart,
     SocialDeliveryUnknownError,
@@ -37,42 +37,6 @@ class Clock:
 
     def advance(self, seconds):
         self.value += seconds
-
-
-def remove_v4_columns(db):
-    """Build an actual pre-V4 fixture before replaying its migrations."""
-    db.executescript("""
-ALTER TABLE wakes DROP COLUMN admission;
-ALTER TABLE judge_state ADD COLUMN pending_first REAL;
-ALTER TABLE judge_state ADD COLUMN pending_last REAL;
-ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN pending_due REAL;
-ALTER TABLE judge_state ADD COLUMN pending_max REAL;
-ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
-ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
-CREATE TABLE judge_batches (
-    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
-    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
-    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
-    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
-    condition_config TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
-    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
-    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
-    """)
-    remove_v4b_tables(db)
-    db.execute("ALTER TABLE scopes DROP COLUMN last_member_at")
-    columns = {row[1] for row in db.execute("PRAGMA table_info(proactive_state)")}
-    for column in ("opportunity_seq", "probability", "sample", "selected", "metrics", "tracked_since", "stopped"):
-        if column in columns:
-            db.execute(f"ALTER TABLE proactive_state DROP COLUMN {column}")
-
-
-def remove_v4b_tables(db):
-    for table in ("followup_sends", "followup_attempts", "memory_followups"):
-        db.execute(f"DROP TABLE {table}")
 
 
 @pytest.fixture
@@ -831,35 +795,6 @@ async def test_worker_starts_once_and_can_be_stopped_without_leaking_timers(soci
     assert task.done() and social.scheduler.task is None
 
 
-def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path):
-    root = tmp_path / "v1"
-    root.mkdir()
-    db = sqlite3.connect(root / "social.sqlite3")
-    db.executescript("""
-        CREATE TABLE scopes(key TEXT PRIMARY KEY,channel TEXT,chat_id INTEGER,thread_id INTEGER,
-            version TEXT,next_seq INTEGER,read_through INTEGER,seen_through INTEGER);
-        CREATE TABLE wakes(id TEXT PRIMARY KEY,scope TEXT,version TEXT,trigger_seq INTEGER,status TEXT,
-            created REAL,expires REAL,turn_id TEXT);
-        CREATE TABLE actions(id TEXT PRIMARY KEY,scope TEXT,version TEXT,content TEXT,status TEXT,
-            created REAL,message_id INTEGER,error TEXT);
-        CREATE TABLE messages(scope TEXT,seq INTEGER,update_id INTEGER,message_id INTEGER,
-            sender_id TEXT,display_name TEXT,at REAL,text TEXT,reply_to INTEGER,media TEXT,is_self INTEGER);
-        INSERT INTO scopes VALUES('telegram:-1001:topic:42','telegram',-1001,42,'v1',7,4,5);
-        INSERT INTO actions VALUES('old','telegram:-1001:topic:42','v1','hello','sent',1,501,NULL);
-        PRAGMA user_version=1;
-    """)
-    db.close()
-    store = SocialStore(root)
-    try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        state = store.scopes.state(A.session_key)
-        assert (state["next_seq"], state["read_through"], state["seen_through"]) == (7, 4, 5)
-        assert state["mode"] == "observing"
-        assert store.db.execute("SELECT content,message_ids FROM actions").fetchone()[:] == ("hello", "[501]")
-    finally:
-        store.close()
-
-
 @pytest.mark.parametrize("values", [
     {"coalesceSeconds": -1}, {"cooldownSeconds": -1}, {"maxWaitSeconds": 86401},
     {"scopes": [{"chatId": -1001, "roleId": "guest", "nicknames": [""]}]},
@@ -867,3 +802,48 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
 def test_new_configuration_fields_reject_invalid_values(values):
     with pytest.raises(ValidationError):
         TelegramSocialConfig.model_validate(values)
+
+
+def test_empty_database_initializes_v22_baseline_tables_and_indexes(tmp_path):
+    with sqlite3.connect(":memory:") as expected:
+        expected.executescript(BASELINE_DDL)
+        objects = set(expected.execute(
+            "SELECT type,name FROM sqlite_master "
+            "WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%'"
+        ))
+    store = SocialStore(tmp_path)
+    try:
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 22
+        assert {tuple(row) for row in store.db.execute(
+            "SELECT type,name FROM sqlite_master "
+            "WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%'"
+        )} == objects
+    finally:
+        store.close()
+
+
+def test_reopening_v22_database_preserves_sqlite_master(tmp_path):
+    store = SocialStore(tmp_path)
+    before = [tuple(row) for row in store.db.execute("SELECT * FROM sqlite_master ORDER BY type,name")]
+    store.close()
+    reopened = SocialStore(tmp_path)
+    try:
+        assert [tuple(row) for row in reopened.db.execute(
+            "SELECT * FROM sqlite_master ORDER BY type,name"
+        )] == before
+    finally:
+        reopened.close()
+
+
+def test_schema_v21_is_rejected_with_upgrade_release(tmp_path):
+    with sqlite3.connect(tmp_path / "social.sqlite3") as db:
+        db.execute("PRAGMA user_version=21")
+    with pytest.raises(ValueError, match="unsupported social schema version: 21;.*961ea247"):
+        SocialStore(tmp_path)
+
+
+def test_schema_zero_with_existing_table_is_rejected(tmp_path):
+    with sqlite3.connect(tmp_path / "social.sqlite3") as db:
+        db.execute("CREATE TABLE existing (id INTEGER)")
+    with pytest.raises(ValueError, match="unsupported social schema version: 0"):
+        SocialStore(tmp_path)

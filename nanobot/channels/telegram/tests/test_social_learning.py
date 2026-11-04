@@ -9,7 +9,6 @@ from loguru import logger
 from pydantic import ValidationError
 
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.expressions import ExpressionLibrary
 from nanobot.channels.telegram.social.jargon import JargonLibrary, JargonRequest
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
@@ -242,61 +241,6 @@ async def test_runtime_collects_when_main_silent_and_learning_config_preserves_v
         runtime.close()
 
 
-def test_upgrade_schema_thirteen_preserves_all_existing_source_values(store, tmp_path):
-    observe(store)
-    before = {table: [tuple(row) for row in store.db.execute(f"SELECT * FROM {table}")]
-              for table in ("messages", "scopes", "judge_state", "memories", "memory_evidence", "stickers")}
-    # Reconstruct the actual old layout, rather than merely changing user_version.
-    with store.db:
-        store.db.execute("ALTER TABLE messages DROP COLUMN learning_source")
-        store.db.execute("ALTER TABLE messages DROP COLUMN learning_text")
-        tables = [row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                  if row[0].startswith(("learning_", "expression", "jargon"))]
-        for table in sorted(tables, key=lambda name: name in {"expressions", "jargon", "expression_turns"}):
-            store.db.execute(f"DROP TABLE {table}")
-        store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-        store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-        store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-        store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
-        store.db.executescript("""
-ALTER TABLE wakes DROP COLUMN admission;
-ALTER TABLE judge_state ADD COLUMN pending_first REAL;
-ALTER TABLE judge_state ADD COLUMN pending_last REAL;
-ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN pending_due REAL;
-ALTER TABLE judge_state ADD COLUMN pending_max REAL;
-ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
-ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
-CREATE TABLE judge_batches (
-    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
-    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
-    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
-    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
-    condition_config TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
-    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
-    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
-        """)
-        store.db.execute("PRAGMA user_version=13")
-    store.close()
-    restored = SocialStore(tmp_path, now=lambda: 1000.)
-    try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        for table, values in before.items():
-            actual = [tuple(row) for row in restored.db.execute(f"SELECT * FROM {table}")]
-            if table == "messages":
-                assert [row[:-2] for row in actual] == [row[:-2] for row in values]
-                assert actual[0][-2:] == ("unknown", "")
-            else:
-                assert actual == values
-        assert restored.db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
-    finally:
-        restored.close()
-
-
 def test_real_chat_fixture_has_disjoint_sources_and_no_self_templates():
     fixture = json.loads((Path(__file__).parent / "fixtures" / "social_v5_baseline.json").read_text())
     extraction = {(item["scope"], message["message_id"]) for item in fixture["extraction"] for message in item["messages"]}
@@ -425,49 +369,3 @@ async def test_worker_error_detail_is_redacted_and_cleared_on_success(tmp_path, 
         assert runtime.store.learning.status(A.session_key)["batches"][0]["error_detail"] is None
     finally:
         runtime.close()
-
-
-@pytest.mark.parametrize("column_exists", [False, True])
-def test_upgrade_seventeen_retains_learning_batches_and_adds_nullable_detail(store, tmp_path, column_exists):
-    batches(store)
-    columns = [row[1] for row in store.db.execute("PRAGMA table_info(learning_batches)") if row[1] != "error_detail"]
-    before = [tuple(row) for row in store.db.execute(f"SELECT {','.join(columns)} FROM learning_batches ORDER BY id")]
-    with store.db:
-        if not column_exists:
-            store.db.execute("ALTER TABLE learning_batches DROP COLUMN error_detail")
-        store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-        store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-        store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-        store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
-        store.db.executescript("""
-ALTER TABLE wakes DROP COLUMN admission;
-ALTER TABLE judge_state ADD COLUMN pending_first REAL;
-ALTER TABLE judge_state ADD COLUMN pending_last REAL;
-ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN pending_due REAL;
-ALTER TABLE judge_state ADD COLUMN pending_max REAL;
-ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
-ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
-CREATE TABLE judge_batches (
-    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
-    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
-    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
-    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
-    condition_config TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
-    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
-    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
-        """)
-        store.db.execute("PRAGMA user_version=17")
-    store.close()
-    restored = SocialStore(tmp_path, now=lambda: 1000.)
-    try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert [tuple(row) for row in restored.db.execute(f"SELECT {','.join(columns)} FROM learning_batches ORDER BY id")] == before
-        assert [row[0] for row in restored.db.execute("SELECT error_detail FROM learning_batches")] == [None, None]
-        assert restored.db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
-    finally:
-        restored.close()

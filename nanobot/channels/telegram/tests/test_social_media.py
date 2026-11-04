@@ -18,9 +18,6 @@ from telegram.error import BadRequest, RetryAfter, TimedOut
 
 from nanobot.agent.tools.context import request_context
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
-from nanobot.channels.telegram.social.expressions import ExpressionLibrary
-from nanobot.channels.telegram.social.jargon import JargonLibrary
 from nanobot.channels.telegram.social.media import SocialMediaCache
 from nanobot.channels.telegram.social.models import MediaReference
 from nanobot.channels.telegram.social.store import SocialStore
@@ -34,7 +31,6 @@ from nanobot.channels.telegram.tests.test_social_runtime import (
     social,
     telegram_update,
 )
-from nanobot.channels.telegram.tests.test_social_scheduler import remove_v4_columns
 from nanobot.config.schema import TelegramSocialConfig
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
@@ -491,48 +487,6 @@ def test_cache_rejects_symlink_and_oversized_pixel_payload(tmp_path):
     with pytest.raises(ValueError, match="pixel"):
         cache.prepare(A, reference(), picture((40, 40)), TelegramSocialConfig(media_max_pixels=1024))
     assert not list(cache.root.iterdir())
-
-
-def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
-    root = tmp_path / "v2"
-    store = SocialStore(root)
-    store.learning.attach_libraries(ExpressionLibrary(store), JargonLibrary(store))
-    store.bind(A, "version")
-    store.observe(message(text="old photo", media=("photo",)), 100)
-    action = store.reserve_send(A.session_key, "version", "old text", kind="text")
-    store.delivery(action, "sent", message_ids=(501,))
-    # Recreate the actual schema-2 shape, retaining existing data.
-    for table in ("proactive_state", "memory_evidence", "memories", "memory_suppressions", "memory_resets"):
-        store.db.execute(f"DROP TABLE {table}")
-    store.db.execute("ALTER TABLE wakes DROP COLUMN proactive_source")
-    store.db.execute("DROP TABLE stickers")
-    for column in ("media_refs", "reply_context", "album_id"):
-        store.db.execute(f"ALTER TABLE messages DROP COLUMN {column}")
-    for column in ("kind", "media_ref"):
-        store.db.execute(f"ALTER TABLE actions DROP COLUMN {column}")
-    store.db.execute("UPDATE scopes SET read_through=1,seen_through=1")
-    store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-    store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-    store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-    for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
-        store.db.execute(f"DROP TABLE {table}")
-    store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
-    store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
-    store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
-    remove_v4_columns(store.db)
-    store.db.execute("PRAGMA user_version=2")
-    store.db.commit()
-    store.close()
-    reopened = SocialStore(root)
-    try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert reopened.scopes.state(A.session_key)["read_through"] == 1
-        row = reopened.db.execute("SELECT content,status,message_ids,kind FROM actions").fetchone()
-        assert tuple(row) == ("old text", "sent", "[501]", "text")
-        assert reopened.messages.media_for_message(A.session_key, 1) == []
-        assert reopened.db.execute("SELECT text FROM messages").fetchone()[0] == "old photo"
-    finally:
-        reopened.close()
 
 
 @pytest.mark.parametrize("values", [{"mediaMaxBytes": 0}, {"mediaMaxPixels": 1}, {"mediaMaxImagesPerTurn": 9}, {"stickerLimit": 0}])

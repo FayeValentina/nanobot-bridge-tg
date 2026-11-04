@@ -1,7 +1,6 @@
 """V4-A idle opportunities, quiet hours and single-queue recovery acceptance."""
 
 import json
-import sqlite3
 from dataclasses import replace
 from datetime import datetime
 from unittest.mock import AsyncMock
@@ -14,18 +13,15 @@ from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.manifest import SETUP_SPEC
 from nanobot.channels.telegram.runtime import TelegramConfig
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import ConversationScope, ProactiveCandidate, SendPart
 from nanobot.channels.telegram.social.proactive import is_quiet
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
-from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge import decide
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
 from nanobot.channels.telegram.tests.test_social_scheduler import (
     clock,
     observed,
-    remove_v4_columns,
     social,
 )
 from nanobot.config.schema import (
@@ -36,47 +32,6 @@ from nanobot.config.schema import (
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
 __all__ = ["social"]
-
-
-@pytest.mark.parametrize("fail", [False, True])
-def test_schema_eleven_upgrade_preserves_source_values_and_rolls_back(social, monkeypatch, fail):
-    social.store.observe(observed(social), 500, fresh=True)
-    db = social.store.db
-    remove_v4_columns(db)
-    db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-    db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-    db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-    db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
-    db.execute("PRAGMA user_version=11")
-    db.commit()
-    messages = [tuple(row) for row in db.execute("SELECT * FROM messages")]
-    scopes = [tuple(row) for row in db.execute("SELECT * FROM scopes")]
-    social.close()
-    if fail:
-        connect = sqlite3.connect
-
-        class InterruptedMigration(sqlite3.Connection):
-            def execute(self, sql, parameters=()):
-                if "ADD COLUMN sample" in sql:
-                    raise sqlite3.OperationalError("synthetic migration failure")
-                return super().execute(sql, parameters)
-
-        monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: connect(*args, **kwargs, factory=InterruptedMigration))
-        with pytest.raises(sqlite3.OperationalError, match="synthetic"):
-            SocialStore(social.root, now=social.now)
-        monkeypatch.setattr(sqlite3, "connect", connect)
-        with connect(social.root / "social.sqlite3") as original:
-            assert original.execute("PRAGMA user_version").fetchone()[0] == 11
-            assert "last_member_at" not in {row[1] for row in original.execute("PRAGMA table_info(scopes)")}
-            assert [tuple(row) for row in original.execute("SELECT * FROM scopes")] == scopes
-    restored = SocialStore(social.root, now=social.now)
-    try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert [tuple(row) for row in restored.db.execute("SELECT * FROM messages")] == messages
-        assert [tuple(row)[:-1] for row in restored.db.execute("SELECT * FROM scopes")] == scopes
-        assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
-    finally:
-        restored.close()
 
 
 @pytest.mark.parametrize("sample,interval", [(0, 1800), (1, 5400), (0.5, 3600)])
@@ -677,37 +632,6 @@ def test_scope_config_and_settings_json_contract_round_trip():
 def test_invalid_scheduling_fields_are_rejected_at_config_boundary(section):
     with pytest.raises(ValidationError):
         TelegramSocialConfig.model_validate({"scopes": [{"chatId": -1001, "roleId": "guest", **section}]})
-
-
-def test_schema_four_upgrade_preserves_memory_watermarks_and_history(tmp_path):
-    root = tmp_path / "upgrade"
-    store = SocialStore(root)
-    store.bind(A, "v4")
-    store.db.execute("INSERT INTO memories VALUES('id',?,'topic','remember me','[]','confirmed','direct',1,1,1,NULL)", (A.session_key,))
-    store.db.execute("UPDATE scopes SET next_seq=7,read_through=4,seen_through=5 WHERE key=?", (A.session_key,))
-    store.db.execute("DROP TABLE proactive_state")
-    store.db.execute("ALTER TABLE wakes DROP COLUMN proactive_source")
-    store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-    store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-    store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-    for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
-        store.db.execute(f"DROP TABLE {table}")
-    store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
-    store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
-    store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
-    remove_v4_columns(store.db)
-    store.db.execute("PRAGMA user_version=4")
-    store.db.commit()
-    store.close()
-    upgraded = SocialStore(root)
-    try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert upgraded.db.execute("SELECT content FROM memories WHERE id='id'").fetchone()[0] == "remember me"
-        assert upgraded.scopes.state(A.session_key)["read_through"] == 4
-        assert upgraded.scopes.state(A.session_key)["seen_through"] == 5
-        assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-    finally:
-        upgraded.close()
 
 
 async def test_group_wide_opportunities_use_discovered_topic_bindings_after_restart(social):

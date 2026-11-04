@@ -1,7 +1,6 @@
 """V4-B intentions, linked receipts and background reply continuity."""
 
 import json
-import sqlite3
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -16,11 +15,9 @@ from nanobot.agent.hook import AgentHookContext, AgentTurnHookContext
 from nanobot.agent.tools.context import RequestContext, ToolContext, request_context
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import SendPart, SocialDeliveryUnknownError
 from nanobot.channels.telegram.social.runtime import SOCIAL_PROTOCOL, TelegramSocialRuntime
-from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_judge import decide
 from nanobot.channels.telegram.tests.test_social_proactive import enable, tick
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, channel
@@ -28,7 +25,6 @@ from nanobot.channels.telegram.tests.test_social_scheduler import (
     clock,
     context,
     observed,
-    remove_v4b_tables,
     social,
 )
 from nanobot.config.schema import ToolsConfig
@@ -375,95 +371,6 @@ async def test_reply_wait_timeout_stays_local_and_other_topics_do_not_share_inte
         await social.delivery.send(ordinary("wrong-scope", B), "跨话题追问", None, followup_id=item["id"])
 
 
-def test_schema_twelve_upgrade_preserves_sources(social):
-    social.store.observe(observed(social), 500)
-    remove_v4b_tables(social.store.db)
-    social.store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-    social.store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-    social.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-    social.store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
-    social.store.db.executescript("""
-ALTER TABLE wakes DROP COLUMN admission;
-ALTER TABLE judge_state ADD COLUMN pending_first REAL;
-ALTER TABLE judge_state ADD COLUMN pending_last REAL;
-ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN pending_due REAL;
-ALTER TABLE judge_state ADD COLUMN pending_max REAL;
-ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
-ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
-CREATE TABLE judge_batches (
-    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
-    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
-    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
-    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
-    condition_config TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
-    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
-    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
-    """)
-    social.store.db.execute("PRAGMA user_version=12")
-    social.store.db.commit()
-    messages = [tuple(row) for row in social.store.db.execute("SELECT * FROM messages")]
-    state = social.store.scopes.state(A.session_key)
-    social.close()
-    restored = SocialStore(social.root, now=social.now)
-    try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert [tuple(row) for row in restored.db.execute("SELECT * FROM messages")] == messages
-        assert restored.scopes.state(A.session_key) == state
-        assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
-    finally:
-        restored.close()
-
-
-def test_schema_twelve_upgrade_failure_rolls_back(social, monkeypatch):
-    remove_v4b_tables(social.store.db)
-    social.store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-    social.store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-    social.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-    social.store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
-    social.store.db.executescript("""
-ALTER TABLE wakes DROP COLUMN admission;
-ALTER TABLE judge_state ADD COLUMN pending_first REAL;
-ALTER TABLE judge_state ADD COLUMN pending_last REAL;
-ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN pending_due REAL;
-ALTER TABLE judge_state ADD COLUMN pending_max REAL;
-ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
-ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
-CREATE TABLE judge_batches (
-    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
-    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
-    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
-    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
-    condition_config TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
-    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
-    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
-    """)
-    social.store.db.execute("PRAGMA user_version=12")
-    social.store.db.commit()
-    social.close()
-    connect = sqlite3.connect
-
-    class InterruptedMigration(sqlite3.Connection):
-        def executescript(self, sql):
-            # A real SQL error after the first CREATE must roll back that table too.
-            return super().executescript(sql.replace("CREATE TABLE followup_attempts", "INVALID CREATE TABLE followup_attempts"))
-
-    monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: connect(*args, **kwargs, factory=InterruptedMigration))
-    with pytest.raises(sqlite3.OperationalError):
-        SocialStore(social.root, now=social.now)
-    monkeypatch.setattr(sqlite3, "connect", connect)
-    with connect(social.root / "social.sqlite3") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
-        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_followups'").fetchone() is None
-
-
 async def test_future_intention_is_not_weighted_or_sent_early(social):
     item = own(social, followup_at=social.now()+3600)
     social.set_sender(AsyncMock(return_value=501))
@@ -482,66 +389,6 @@ async def test_stop_contact_prevents_linked_proactive_send_but_allows_normal_ans
         await social.delivery.send(ordinary("proactive"), "追问近况", None, followup_id=item["id"])
     assert (await social.delivery.send(ordinary("answer"), "回答你的新问题", None))["status"] == "sent"
     assert social.store.followups.describe(item["id"]).confirmed_attempts == 0
-
-
-def test_schema_twenty_merges_delivery_rows_and_preserves_followup_ids(social):
-    item = own(social)
-    version = social.store.scopes.state(A.session_key)["version"]
-    action = social.store.reserve_send(A.session_key, version, "legacy reservation",
-                                      kind="text", turn="legacy-turn", followup_id=item["id"])
-    social.store.delivery(action, "sent", (501,))
-    with social.store.db as db:
-        db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-        db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-        db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-        db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
-        db.execute("INSERT INTO message_deliveries VALUES('legacy-sent',?,'legacy-turn',?,'sent','[601,602]',NULL,NULL)",
-                   (A.session_key, social.now()))
-        db.execute("INSERT INTO message_deliveries VALUES('legacy-queued',?,'pending-turn',?,'queued','[]','pending receipt','old-version')",
-                   (A.session_key, social.now()))
-        db.execute("UPDATE followup_sends SET delivery_id='legacy-sent' WHERE delivery_id=?", (action,))
-        db.executescript("""
-ALTER TABLE wakes DROP COLUMN admission;
-ALTER TABLE judge_state ADD COLUMN pending_first REAL;
-ALTER TABLE judge_state ADD COLUMN pending_last REAL;
-ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN pending_due REAL;
-ALTER TABLE judge_state ADD COLUMN pending_max REAL;
-ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
-ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
-CREATE TABLE judge_batches (
-    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
-    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
-    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
-    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
-    condition_config TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
-    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
-    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
-        """)
-        db.execute("PRAGMA user_version=20")
-    social.close()
-    restored = SocialStore(social.root, now=social.now)
-    try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        rows = {row["id"]: dict(row) for row in restored.db.execute("SELECT * FROM actions")}
-        assert len(rows) == 3
-        assert (rows[action]["kind"], rows[action]["status"], rows[action]["content"], rows[action]["message_ids"]) == ("text", "sent", "legacy reservation", "[501]")
-        sent, queued = rows["legacy-sent"], rows["legacy-queued"]
-        assert (sent["kind"], sent["status"], sent["version"], sent["content"], sent["message_ids"]) == ("message", "sent", version, "", "[601,602]")
-        assert (queued["kind"], queued["status"], queued["version"], queued["message_ids"], queued["error"]) == ("message", "sending", "old-version", "[]", "pending receipt")
-        assert sent["attempts"] == queued["attempts"] == 1
-        assert sent["group_id"] is None and queued["due"] is None
-        assert sent["turn_id"] == "legacy-turn" and queued["turn_id"] == "pending-turn"
-        linked = restored.db.execute("SELECT s.delivery_id,a.memory_id FROM followup_sends s JOIN followup_attempts a ON a.id=s.attempt_id").fetchone()
-        assert tuple(linked) == ("legacy-sent", item["id"])
-        assert restored.deliveries.confirmed_receipt(A.session_key, "legacy-turn", linked["delivery_id"])
-        assert restored.db.execute("SELECT name FROM sqlite_master WHERE name='message_deliveries'").fetchone() is None
-        assert "message_id" not in {row[1] for row in restored.db.execute("PRAGMA table_info(actions)")}
-    finally:
-        restored.close()
 
 
 async def test_social_send_sticker_reserves_and_confirms_followup(social):

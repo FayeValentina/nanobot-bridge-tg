@@ -10,7 +10,6 @@ from pydantic import ValidationError
 
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.events import DeliveryReceipt
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.models import SendPart
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
 from nanobot.channels.telegram.social.store import SocialStore
@@ -21,7 +20,6 @@ from nanobot.channels.telegram.tests.test_social_scheduler import (
     context,
     finish,
     observed,
-    remove_v4_columns,
     social,
 )
 from nanobot.config.schema import TelegramSocialConfig
@@ -600,34 +598,6 @@ async def test_clock_jump_does_not_replay_old_wait_or_spin(dialogue, delta):
     assert dialogue.bus.inbound.empty()
 
 
-def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dialogue):
-    ctx = expose(dialogue)
-    dialogue.store.mark_read(A.session_key, ctx.turn_id, 1)
-    root = dialogue.root
-    for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
-        dialogue.store.db.execute(f"DROP TABLE {table}")
-    dialogue.store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
-    dialogue.store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
-    dialogue.store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
-    dialogue.store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-    dialogue.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-    dialogue.store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT)")
-    remove_v4_columns(dialogue.store.db)
-    dialogue.store.db.execute("PRAGMA user_version=6")
-    dialogue.store.db.commit()
-    dialogue.close()
-    upgraded = SocialStore(root, now=dialogue.now)
-    try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert upgraded.scopes.state(A.session_key)["read_through"] == 1
-        assert upgraded.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-        upgraded.db.execute("PRAGMA user_version=99")
-    finally:
-        upgraded.close()
-    with pytest.raises(ValueError, match="unsupported"):
-        SocialStore(root)
-
-
 @pytest.mark.parametrize("section", [
     {"dynamicWait": {"quietSeconds": 4, "maxSeconds": 1}},
     {"dynamicWait": {"maxSeconds": float("nan")}},
@@ -636,6 +606,13 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
 def test_dialogue_configuration_rejects_invalid_windows(section):
     with pytest.raises(ValidationError):
         TelegramSocialConfig.model_validate(section)
+
+
+def test_unknown_schema_version_is_rejected(dialogue):
+    dialogue.store.db.execute("PRAGMA user_version=23")
+    dialogue.close()
+    with pytest.raises(ValueError, match="unsupported social schema version: 23"):
+        SocialStore(dialogue.root)
 
 
 def test_dialogue_config_round_trips_in_public_manifest():

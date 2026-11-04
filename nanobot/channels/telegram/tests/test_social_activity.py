@@ -1,17 +1,14 @@
 """Self-directed work scheduling, durable checkpoints and actual runner/tool delivery."""
 
 import json
-import sqlite3
 from unittest.mock import AsyncMock
 
 import pytest
 
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
 from nanobot.channels.telegram.social.activity import ActivityRequest
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
-from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_proactive import claim, enable, tick, view
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
 from nanobot.channels.telegram.tests.test_social_scheduler import clock, social
@@ -196,63 +193,6 @@ async def test_claimed_activity_is_not_replayed_after_restart(social):
         assert restored.store.activities.context(A.session_key)[0]["id"] == entry["id"]
         assert restored.store.db.execute("SELECT status FROM wakes WHERE id=?", (inbound.metadata["_social_job"],)).fetchone()[0] == "cancelled"
         assert restored.bus.inbound.empty()
-    finally:
-        restored.close()
-
-
-@pytest.mark.parametrize("fail", [False, True])
-def test_schema_sixteen_migration_preserves_data_and_rolls_back(social, monkeypatch, fail):
-    db = social.store.db
-    with db:
-        db.execute("DROP TABLE activity_steps")
-        db.execute("DROP TABLE activities")
-        db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-        db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-        db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-        db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
-        db.executescript("""
-ALTER TABLE wakes DROP COLUMN admission;
-ALTER TABLE judge_state ADD COLUMN pending_first REAL;
-ALTER TABLE judge_state ADD COLUMN pending_last REAL;
-ALTER TABLE judge_state ADD COLUMN pending_seq INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN pending_due REAL;
-ALTER TABLE judge_state ADD COLUMN pending_max REAL;
-ALTER TABLE judge_state ADD COLUMN inflight INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE judge_state ADD COLUMN batch_id TEXT;
-ALTER TABLE judge_state ADD COLUMN opportunity TEXT;
-CREATE TABLE judge_batches (
-    id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key), version TEXT NOT NULL,
-    judge_revision INTEGER NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
-    after_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, created REAL NOT NULL,
-    expires REAL NOT NULL, due REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-    decision TEXT, error_code TEXT, fallback_at REAL, input_meta TEXT, handoff_job TEXT,
-    condition_config TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE judge_attempts (batch_id TEXT NOT NULL REFERENCES judge_batches(id) ON DELETE CASCADE,
-    attempt INTEGER NOT NULL, started REAL NOT NULL, finished REAL, error_code TEXT, latency_ms INTEGER,
-    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, PRIMARY KEY(batch_id,attempt));
-        """)
-        db.execute("PRAGMA user_version=16")
-    scopes = [tuple(row) for row in db.execute("SELECT * FROM scopes")]
-    social.close()
-    connect = sqlite3.connect
-    if fail:
-        class Interrupted(sqlite3.Connection):
-            def execute(self, sql, parameters=()):
-                if "CREATE TABLE IF NOT EXISTS activity_steps" in sql:
-                    raise sqlite3.OperationalError("activity migration interrupted")
-                return super().execute(sql, parameters)
-        monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: connect(*a, **kw, factory=Interrupted))
-        with pytest.raises(sqlite3.OperationalError, match="interrupted"):
-            SocialStore(social.root, now=social.now)
-        monkeypatch.setattr(sqlite3, "connect", connect)
-        with connect(social.root / "social.sqlite3") as original:
-            assert original.execute("PRAGMA user_version").fetchone()[0] == 16
-            assert not original.execute("SELECT 1 FROM sqlite_master WHERE name='activities'").fetchone()
-    restored = SocialStore(social.root, now=social.now)
-    try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert [tuple(row) for row in restored.db.execute("SELECT * FROM scopes")] == scopes
-        assert restored.db.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         restored.close()
 

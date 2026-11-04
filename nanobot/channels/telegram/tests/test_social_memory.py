@@ -14,7 +14,6 @@ from nanobot.agent.hook import AgentHookContext, AgentRunHookContext
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.hook import SocialExposureHook
 from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
@@ -22,9 +21,7 @@ from nanobot.channels.telegram.social.runtime import (
     TelegramSocialRuntime,
     encode_view,
 )
-from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, message, social, wake
-from nanobot.channels.telegram.tests.test_social_scheduler import remove_v4_columns
 from nanobot.config.schema import TelegramSocialConfig
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
@@ -275,36 +272,6 @@ def test_restart_keeps_corrections_and_suppressions(social):
             record(reopened, ctx)
     finally:
         reopened.close()
-
-
-def test_schema_three_upgrade_preserves_observations_views_and_watermarks(social):
-    ctx = expose(social)
-    social.store.mark_read(A.session_key, ctx.turn_id, 1)
-    for table in ("proactive_state", "memory_evidence", "memories", "memory_suppressions", "memory_resets"):
-        social.store.db.execute(f"DROP TABLE {table}")
-    social.store.db.execute("ALTER TABLE wakes DROP COLUMN proactive_source")
-    social.store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-    social.store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-    social.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-    for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
-        social.store.db.execute(f"DROP TABLE {table}")
-    social.store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
-    social.store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
-    social.store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
-    remove_v4_columns(social.store.db)
-    social.store.db.execute("PRAGMA user_version=3")
-    social.store.db.commit()
-    social.close()
-    store = SocialStore(social.root)
-    try:
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert store.db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-        assert store.scopes.state(A.session_key)["read_through"] == 1
-        assert store.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
-        assert store.db.execute("SELECT COUNT(*) FROM views").fetchone()[0] == 1
-        assert SocialMemory(store).apply(A.session_key, ctx.turn_id, MemoryRequest(action="list"))["memories"] == []
-    finally:
-        store.close()
 
 
 @pytest.mark.parametrize("params", [

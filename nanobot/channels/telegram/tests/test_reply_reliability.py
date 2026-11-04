@@ -12,15 +12,12 @@ from nanobot.agent.tools.context import RequestContext, ToolContext, request_con
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import OutboundMessage
-from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
-from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, channel, message
 from nanobot.channels.telegram.tests.test_social_scheduler import (
     clock,
     context,
     observed,
-    remove_v4_columns,
     social,
 )
 from nanobot.config.schema import ToolsConfig
@@ -283,31 +280,6 @@ async def test_channels_without_receipt_support_report_queued(social):
     receipt = await social.bus.deliver_outbound(OutboundMessage("other", "123", "queued"))
     assert receipt.status == "queued" and receipt.message_ids == ()
     assert social.bus.outbound.qsize() == 1
-
-
-def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
-    social.store.observe(observed(social), 500)
-    root = social.root
-    social.close()
-    import sqlite3
-    with sqlite3.connect(root / "social.sqlite3") as db:
-        db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
-        db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
-        db.execute("ALTER TABLE actions DROP COLUMN message_ids")
-        for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
-            db.execute(f"DROP TABLE {table}")
-        db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
-        db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
-        db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
-        remove_v4_columns(db)
-        db.execute("PRAGMA user_version=5")
-    upgraded = SocialStore(root, now=social.now)
-    try:
-        assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert upgraded.scopes.state(A.session_key)["next_seq"] == 2
-        assert upgraded.db.execute("SELECT COUNT(*) FROM actions WHERE kind='message'").fetchone()[0] == 0
-    finally:
-        upgraded.close()
 
 
 async def test_queued_keyword_cannot_outlive_condition_ttl(social):
