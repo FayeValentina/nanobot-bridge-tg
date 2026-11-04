@@ -5,7 +5,7 @@
 
 ## 交接：当前状态与下一步（新对话从这里开始读）
 
-**最后更新：2026-11-04，线上版本 `4d803e1f`（P7-c；Phase 7 进行中，下一步 P7-d），social schema 22。** owner 已体验 Phase 5、B1、P7-a、B2-a，反馈正常。
+**最后更新：2026-11-04，线上版本 `b620709c`（P7-d，**Phase 7 完成**），social schema 22。** owner 已体验 Phase 5、B1、P7-a、B2-a，反馈正常。
 
 - **已完成**：Phase 0、0.5、1、2、3，以及追加项 A1。测试 982 个（社交目录 + 契约 + gateway），场景测试 21 个，全部通过，零 xfail。
 - **Phase 3 结果**（P3-0 只读清单 + P3-a～P3-d，明细见下表）：`social/db/` 有 connection、schema 和 8 个仓储
@@ -53,15 +53,17 @@
   Phase 6 结果：social/runtime.py 960→352 行（目标 <300 留给 Phase 7/8 继续收缩，get_state 43 行、policy_for_session 38 行仍在）；social/ 中没有任何组件持有 runtime。
   P6-0 疑点中暂不处理、已记录：recover 标记提前写入、close 只取消不等待、set_wake 普通分支不 notify、文件 watcher 不刷新 social、channel 构造时用自身 social config 覆盖 gateway 补的 OAuth 路径。
   `tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。
-- **Phase 7 进行中**（owner 2026-11-04 确认开始）。只读清单 P7-0 已完成（`.agent/tasks/P7-0.report.md`）。主要事实：线上 16 小时 judge 41 批，33 wake / 8 observe，observe 全部是另一 bot 的 /usage 回执；
+- **Phase 7 已完成**（owner 2026-11-04 确认开始）。只读清单 P7-0 已完成（`.agent/tasks/P7-0.report.md`）。主要事实：线上 16 小时 judge 41 批，33 wake / 8 observe，observe 全部是另一 bot 的 /usage 回执；
   selector ValidationError 原因是模型把 jargon 返回成对象且引用了不存在的候选；黑话旧 failed 批次现在是 cancelled/scope_changed（迁移按实际数据保留，不改回）。
   **owner 决定**：其他 bot 的非 directed 消息仍经 judge（写入审查文档 §5.1）。拆为：
   - **P7-a**（已完成，owner 已体验通过）：准入分层。真人普通消息与 directed 本地 wake（不调 judge），bot 消息与选择性等待下的消息仍调 judge；保留合并窗口、批次表与 `_handoff`。【行为变更】
   - **P7-b**（已完成）：judge 内部重写（内存 PendingBatch、单次 8 秒不重试、删 judge_batches/judge_attempts（导出历史到 backups）、新提示词、`record_llm_call` 用量、已曝光复用移到 `db/wakes.py`、快照 `admission` 字段）。
     P7-0 疑点 3–10、18、19 在此设计时逐条决定。
   - **P7-c**（已完成）：LearningWorker（保留 jargon 多阶段调用与逐次记账的差异，疑点 16–17）。
-  - **P7-d**：selection 简化（一 turn 一次、turn 结束清缓存、调用后不复核）、修 ValidationError、动态 SQL 迁到各 Library、learning.py 跨拥有者 SQL 迁出。
+  - **P7-d**（已完成）：selection 简化（一 turn 一次、turn 结束清缓存、调用后不复核）、修 ValidationError、动态 SQL 迁到各 Library、learning.py 跨拥有者 SQL 迁出。
   `tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。评估脚本（scripts/ 与 tests/evaluate_*）多处已失效（store.wake、message_deliveries、冻结 hook 编译），留给评估脚本迁移。
+- **下一步：Phase 8**（提示词外置、去重、移除角色字面量 P0-6；工具 12→8 合并 §5.3【行为变更】），风险中（行为层面）。开始前先问 owner，照例先派只读分析。
+  Codex CLI 登录凭证 2026-11-04 曾失效（refresh token 被其他 Codex 进程用掉），owner 重新登录后恢复；再出现时请 owner 运行 `codex logout && codex login`。
 - **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
   `Wakes._check_trigger_source` 读 judge_batches 的只读例外（Phase 7 judge 简化时重看）；P3-0 疑点 Q4/Q5（Phase 4）、Q6（Phase 7）、
   Q10/Q11/Q13–Q15（按所属 Phase）。P3-0 清单 `.agent/tasks/P3-0.report.md` 的行号已过时，只作线索。
@@ -115,3 +117,4 @@
 | B2-a 多段发送逐段决定引用【小幅行为变更】 | 追加 | `66457345` | 2026-11-04 healthy | owner 认为“只有第一段引用”仍僵硬，应由主模型逐段决定。parts 项可为字符串或 `{text, reply_to}`，顶层 reply_to 仅作第一段缺省；每个目标须已观察；幂等按 (content, reply_to) 逐段比较；协议加一句引用指导。社交目录 + 契约 + gateway 1058 passed；场景 22 passed；ruff/basedpyright 干净 | 生产代码净增 13 行。待 owner 体验模型是否会自然地逐段引用 |
 | P7-b judge 内部重写（schema 22）【小幅行为变更】 | 7 | `1f50af8b` | 2026-11-04 healthy；线上库已迁移到 schema 22，`telegram-social/backups/judge-history-schema21.json` 已生成，3 个 scope 水位不变，日志无异常 | 社交目录 + 契约 + gateway + config + cli 1619 passed（Claude 复跑）；场景测试断言未改；ruff 干净；basedpyright 0 errors；Claude 在线上库新副本上独立复演迁移：导出 59/41 行，其余表行数与水位不变，quick_check ok | judge 相关代码 1043→392 行，生产代码净减 627 行。judge 配置只剩 7 个字段（timeout 8、context 12）。judge 用量进 llm_usage（source=system）。旧表名只留在 schema 历史升级与迁移测试中（Claude 接受此例外）。`_run` 异常时窗口已取走、水位未推进，需重启 recover 才重新处理（记录，未处理） |
 | P7-c LearningWorker；供应商错误退还重试次数【小幅行为变更】 | 7 | `4d803e1f` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway + cli 1527 passed（Claude 复跑）；场景 22 passed；ruff 干净；basedpyright 0 errors | 两份生命周期合并为 `learning_worker.py`（106 行），生产代码净增 41 行（导入、签名、jargon 独立 provider 配置）。**Claude 补修**：退款后 attempts 回到 0 时 `last_batch_due` 忽略该批次，欠费期间会每个周期重试；改为 `attempts>0 OR model_calls>0`，新增断言在旧查询上失败。**线上遗留**：表达批次 `54c6bbb2…`（19:37–19:43 欠费期间耗尽重试，failed）会永久阻止 topic 53 的表达学习；重新排队 SQL 见 P7-c 报告第 4 节。另有同一时段的 topic 53 批次 `3f11241a…`。**owner 2026-11-04 同意重新排队**：Claude 先备份 `telegram-social/backups/social-before-learning-requeue-20261104.sqlite3`，再把这两行改为 ready、attempts=0（游标、来源、失败计数、错误详情不变） |
+| P7-d selection 容错、一 turn 一次、SQL 回归拥有者【小幅行为变更】 | 7 | `b620709c` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway + cli 1542 passed（Claude 复跑）；场景 22 passed；ruff 干净；basedpyright 0 errors；selection.py 中 `db.execute` 0 处；两次线上 ValidationError 的原始输出回放后都保留贴纸选择 | 生产代码净增 30 行（新增 Library 方法 15 个）。provider 重配不再清缓存（缓存按 turn 结束清除）。首次派发因 Codex CLI 凭证失效未执行，owner 重新登录后重派 |
