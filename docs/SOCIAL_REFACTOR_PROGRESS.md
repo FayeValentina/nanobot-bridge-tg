@@ -5,7 +5,7 @@
 
 ## 交接：当前状态与下一步（新对话从这里开始读）
 
-**最后更新：2026-11-04，线上版本 `eb913c04`（追加项 B1-a：连发合并回复，待 owner 群内体验），social schema 21。** owner 已体验 Phase 5，反馈基本没问题。
+**最后更新：2026-11-04，线上版本 `eb913c04`（追加项 B1-a：连发合并回复，owner 已体验通过），social schema 21。** owner 已体验 Phase 5，反馈基本没问题。
 
 - **已完成**：Phase 0、0.5、1、2、3，以及追加项 A1。测试 982 个（社交目录 + 契约 + gateway），场景测试 21 个，全部通过，零 xfail。
 - **Phase 3 结果**（P3-0 只读清单 + P3-a～P3-d，明细见下表）：`social/db/` 有 connection、schema 和 8 个仓储
@@ -41,7 +41,8 @@
 - **追加项 B1（连发合并回复，owner 2026-11-04 反馈）**：B1-0 只读分析（`.agent/tasks/B1-0.report.md`）确认根因是 1.5 秒合并窗口 + 运行中的 turn 看不到后到消息 + 发送前无检查。
   owner 选择：B1-a 发送前收取新消息（每 turn 最多拦一次，返回新快照，曝光后后续 wake 并入当前 turn）+ 合并窗口 10 秒。
   线上配置已改：`coalesceSeconds 10`、`dynamicWait.quietSeconds 10 / unfinishedSeconds 10 / maxSeconds 30`（备份 `config.json.before-burst-20261104`）。
-  代价：单条消息回复约慢 8.5 秒。待 owner 体验；已知未覆盖：judge 批次含未曝光新消息时仍可能另起 turn；普通 message 工具不做检查。
+  代价：单条消息回复约慢 8.5 秒。**owner 实测通过**（14:22:54–14:23:24 每 10 秒一条共 4 条 → 两个 judge wake 并入同一 turn、一次 3 段回复覆盖全部、发送前收取触发 1 次）。
+  观察项：同日 14:22 一次 proactive turn 的 V5 selector 报 `ValidationError ... Choice string_type`（selection 降级为空，不影响回复），来源未查；已知未覆盖：judge 批次含未曝光新消息时仍可能另起 turn；普通 message 工具不做检查。
 - **下一步：Phase 6**（runtime 拆分并去掉组件对 runtime 的反向引用 P0-1；wiring.py P2-3；工具一类一个 P2-1），风险中。开始前先问 owner，照例先派只读分析。
   `tests/cli/test_commands.py` 9 个既有失败计划在 Phase 6 修；`tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。
 - **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
