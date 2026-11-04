@@ -15,9 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.channels.telegram.social.db.views import complete_view_ids
 from nanobot.channels.telegram.social.expressions import (
+    ExpressionLibrary,
     make_expression_provider,
     redacted_error_detail,
 )
+from nanobot.channels.telegram.social.jargon import JargonLibrary
 from nanobot.channels.telegram.social.models import MediaReference
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import Config, TelegramSocialConfig
@@ -44,11 +46,16 @@ class SelectionInput(BaseModel):
 
 
 class Choice(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    expressions: list[str] = Field(default_factory=list, max_length=3)
-    jargon: list[str] = Field(default_factory=list, max_length=5)
-    stickers: list[str] = Field(default_factory=list, max_length=5)
-    reason: str = Field(default="", max_length=240)
+    model_config = ConfigDict(extra="ignore")
+    expressions: list[str | dict[str, object]] = Field(default_factory=list)
+    jargon: list[str | dict[str, object]] = Field(default_factory=list)
+    stickers: list[str | dict[str, object]] = Field(default_factory=list)
+    reason: str = ""
+
+    def ids(self, field: str) -> list[str]:
+        items: list[str | dict[str, object]] = getattr(self, field)
+        return [value for item in items
+                if isinstance(value := item if isinstance(item, str) else item.get("id"), str)]
 
 
 @dataclass(frozen=True)
@@ -67,9 +74,6 @@ class UsageTurn:
 
 @dataclass
 class TurnSelection:
-    source: list[TurnMessage]
-    version: str
-    config_revision: int
     selected: list[Candidate] = field(default_factory=list)
     status: str = "empty"
 
@@ -101,8 +105,10 @@ def retrieval_terms(text: str) -> list[str]:
 
 
 class ContextSelector:
-    def __init__(self, store: SocialStore, config: Callable[[], TelegramSocialConfig], now: Callable[[], float]) -> None:
+    def __init__(self, store: SocialStore, expressions: ExpressionLibrary, jargon: JargonLibrary,
+                 config: Callable[[], TelegramSocialConfig], now: Callable[[], float]) -> None:
         self.store = store
+        self.expressions, self.jargon = expressions, jargon
         self.config = config
         self.now = now
         self.provider: LLMProvider | None = None
@@ -118,7 +124,6 @@ class ContextSelector:
         except Exception as exc:
             logger.warning("Social selector provider configuration failed: {}", redacted_error_detail(exc))
             self.provider, self.model = None, ""
-        self.cache.clear()
 
     def cancel(self) -> None:
         for task in self.tasks:
@@ -149,42 +154,27 @@ class ContextSelector:
         terms = retrieval_terms(text)
         scenes = [scene for scene, hints in SCENE_HINTS.items() if any(w in text for w in hints.split())]
         result: list[Candidate] = []
-        specs: list[tuple[Literal["expression", "jargon", "sticker"], str, str, int, list[str]]] = [
-            ("expression", "expressions", "status IN ('available','usable')", config.expression_candidates if config.selection_expressions else 0,
-             ["situation", "expression", "tone", "suitable", "unsuitable", "scene_tags", "intent_category"]),
-            ("jargon", "jargon", "status IN ('understand_only','usable') AND (expires IS NULL OR expires>?)", config.jargon_candidates if config.selection_jargon else 0,
-             ["term", "aliases", "local_meaning", "public_meaning", "usage", "unsuitable", "status", "scene_tags", "intent_category"]),
-            ("sticker", "stickers", "trim(note)<>''", config.selection_sticker_candidates if config.selection_stickers else 0,
-             ["note"]),
+        specs: list[tuple[Literal["expression", "jargon", "sticker"], int]] = [
+            ("expression", config.expression_candidates if config.selection_expressions else 0),
+            ("jargon", config.jargon_candidates if config.selection_jargon else 0),
+            ("sticker", config.selection_sticker_candidates if config.selection_stickers else 0),
         ]
-        for kind, table, condition, limit, fields in specs:
+        for kind, limit in specs:
             if not limit:
                 continue
-            # Scope/status indexes bound the search domain. SQL ranks keyword and
-            # stored scene matches; a diverse fallback allows semantic matches with
-            # no shared literal words. Never use global popularity as relevance.
-            haystack = "lower(" + "||' '||".join(fields) + ")"
             needles = terms + (scenes if kind != "sticker" else [w for s in scenes for w in SCENE_HINTS[s].split()])
-            score = "+".join(f"(instr({haystack},?)>0)" for _ in needles) or "0"
-            partition = "intent_category" if kind != "sticker" else "substr(note,1,6)"
-            revision = "revision" if kind != "sticker" else "0 AS revision"
-            args: list[str | int | float] = [*needles, scope]
-            if kind == "jargon":
-                args.append(self.now())
-            args.append(limit)
-            rows = self.store.db.execute(
-                f"SELECT * FROM (SELECT id,{revision},{','.join(fields)},({score}) AS relevance,"
-                f"ROW_NUMBER() OVER (PARTITION BY {partition} ORDER BY updated DESC,id) AS variety "
-                f"FROM {table} WHERE scope=? AND {condition}) ORDER BY relevance DESC,variety,id LIMIT ?", args,
-            ).fetchall()
-            for row in rows:
-                result.append(Candidate(kind, str(row["id"]), int(row["revision"]),
-                    {name: str(row[name])[:400] for name in fields}))
+            if kind == "expression":
+                rows = self.expressions.candidates(scope, needles, limit)
+            elif kind == "jargon":
+                rows = self.jargon.candidates(scope, needles, self.now(), limit)
+            else:
+                rows = self.store.stickers.candidates(scope, needles, limit)
+            result.extend(Candidate(kind, str(row["id"]), int(row["revision"]),
+                {name: str(row[name])[:400] for name in row.keys() if name not in {"id", "revision", "relevance", "variety"}}) for row in rows)
         return result
 
     def current(self, scope: str, candidate: Candidate) -> bool:
-        table = {"expression": "expressions", "jargon": "jargon", "sticker": "stickers"}[candidate.kind]
-        row = self.store.db.execute(f"SELECT * FROM {table} WHERE scope=? AND id=?", (scope, candidate.entry_id)).fetchone()
+        row = {"expression": self.expressions, "jargon": self.jargon, "sticker": self.store.stickers}[candidate.kind].row(scope, candidate.entry_id)
         if row is None:
             return False
         if candidate.kind != "sticker" and (row["revision"] != candidate.revision or row["status"] not in {"usable", "available", "understand_only"}):
@@ -193,31 +183,17 @@ class ContextSelector:
             return False
         return all(str(row[name])[:400] == value for name, value in candidate.data.items())
 
-    def messages_current(self, scope: str, messages: list[TurnMessage]) -> bool:
-        return all(self.store.messages.current_revision(scope, m.message_id, m.revision) is not None for m in messages)
+    def forget(self, scope: str, turn: str) -> None:
+        self.cache.pop((scope, turn), None)
 
     async def select(self, scope: str, turn: str, model_text: str = "") -> list[Candidate]:
-        # Every hook iteration reuses this direct ID/revision/value comparison.
-        # A changed input in the SAME natural turn returns empty, preserving the
-        # one-call budget; a new turn can select against the new input.
         async with self.locks.setdefault(scope, asyncio.Lock()):
+            key = (scope, turn)
+            if (previous := self.cache.get(key)) is not None:
+                return previous.selected
             source = self.input(scope, turn, model_text)
             store = self.store
-            version = store.scopes.state(scope)["version"]
-            key = (scope, turn)
-            previous = self.cache.get(key)
-            if previous is not None:
-                if (previous.source == source and previous.version == version
-                        and previous.config_revision == store.learning.config_revision
-                        and self.messages_current(scope, source)
-                        and all(self.current(scope, c) for c in previous.selected)):
-                    return previous.selected
-                for detail in reversed(store.learning.recent.get(scope, [])):
-                    if detail.get("turn_id") == turn:
-                        detail["reuse_status"] = "changed_input_or_entry_returned_empty"
-                        break
-                return []
-            cached = TurnSelection(source, version, store.learning.config_revision)
+            cached = TurnSelection()
             self.cache[key] = cached
             while len(self.cache) > 100:
                 self.cache.popitem(last=False)
@@ -225,7 +201,7 @@ class ContextSelector:
                 return []  # Restart/eviction never buys a second call in this turn.
             started = time.monotonic()
             pool: list[Candidate] = []
-            calls = input_tokens = output_tokens = 0
+            calls = input_tokens = output_tokens = dropped = 0
             reason = ""
             task = None
             try:
@@ -264,19 +240,17 @@ class ContextSelector:
                         choice = Choice.model_validate_json(response.content)
                         reason = choice.reason
                         selected: list[Candidate] = []
-                        for kind, ids, limit in [("expression", choice.expressions, self.config().learning.selection_expressions),
-                                                 ("jargon", choice.jargon, self.config().learning.selection_jargon),
-                                                 ("sticker", choice.stickers, self.config().learning.selection_stickers)]:
+                        for kind, ids, limit in [("expression", choice.ids("expressions"), self.config().learning.selection_expressions),
+                                                 ("jargon", choice.ids("jargon"), self.config().learning.selection_jargon),
+                                                 ("sticker", choice.ids("stickers"), self.config().learning.selection_stickers)]:
                             choices: list[Candidate] = []
                             for identity in dict.fromkeys(ids):
                                 item = references.get(identity)
                                 if item is None or item.kind != kind or not self.current(scope, item):
-                                    raise ValueError("unknown or stale candidate")
+                                    dropped += 1
+                                    continue
                                 choices.append(item)
                             selected.extend(choices[:limit])
-                        if (self.input(scope, turn, model_text) != source or not self.messages_current(scope, source)
-                                or store.scopes.state(scope)["version"] != version or store.learning.config_revision != cached.config_revision):
-                            raise ValueError("input changed")
                         bounded = self.context(selected)
                         included = {str(item["id"]) for entries in bounded.values() for item in entries}
                         cached.selected = [item for item in selected if item.entry_id in included]
@@ -296,7 +270,7 @@ class ContextSelector:
                     candidates=len(pool), selected=[(c.kind, c.entry_id, c.revision) for c in cached.selected],
                     status=cached.status, calls=calls, input_tokens=input_tokens, output_tokens=output_tokens,
                     latency_ms=int((time.monotonic() - started) * 1000),
-                    explanation={"reason": reason, "model": self.model, "input_tokens": input_tokens,
+                    explanation={"dropped": dropped, "reason": reason, "model": self.model, "input_tokens": input_tokens,
                                  "output_tokens": output_tokens, "input_messages": [[m.message_id, m.revision] for m in source],
                                  "candidates": [{"kind": c.kind, "id": c.entry_id, "selected": c in cached.selected} for c in pool]})
             except Exception as exc:

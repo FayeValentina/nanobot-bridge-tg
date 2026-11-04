@@ -18,6 +18,8 @@ from nanobot.channels.telegram.social.models import ObservedMessage
 from nanobot.config.schema import TelegramSocialLearningConfig
 
 if TYPE_CHECKING:
+    from nanobot.channels.telegram.social.expressions import ExpressionLibrary
+    from nanobot.channels.telegram.social.jargon import JargonLibrary
     from nanobot.channels.telegram.social.store import SocialStore
 
 LearningKind = Literal["expression", "jargon"]
@@ -30,6 +32,9 @@ class SocialLearning:
         self.config = TelegramSocialLearningConfig()
         self.config_revision = 0
         self.recent: dict[str, deque[dict[str, object]]] = {}
+
+    def attach_libraries(self, expressions: ExpressionLibrary, jargon: JargonLibrary) -> None:
+        self.expressions, self.jargon = expressions, jargon
 
     def configure(self, config: TelegramSocialLearningConfig) -> None:
         self.config = config
@@ -111,15 +116,8 @@ class SocialLearning:
             self.db.executemany("DELETE FROM learning_events WHERE id=?", [(row["id"],) for row in overflow])
 
     def invalidate(self, scope: str, message_id: int, revision: int | None) -> None:
-        for kind, table, evidence, id_column in (
-            ("expression", "expressions", "expression_evidence", "expression_id"),
-            ("jargon", "jargon", "jargon_evidence", "memory_id"),
-        ):
-            for row in self.db.execute(f"SELECT DISTINCT t.id,t.revision FROM {table} t JOIN {evidence} e ON e.{id_column}=t.id "
-                                       "WHERE t.scope=? AND e.message_id=? AND (? IS NULL OR e.revision<>?) "
-                                       "AND t.status IN ('candidate','confirmed','usable','available','understand_only')", (scope, message_id, revision, revision)).fetchall():
-                status = "disabled" if kind == "jargon" else "expired"
-                self.db.execute(f"UPDATE {table} SET status=?,revision=revision+1,updated=? WHERE id=?", (status, self.store.now(), row["id"]))
+        for kind, library in (("expression", self.expressions), ("jargon", self.jargon)):
+            for row in library.invalidate_source(scope, message_id, revision):
                 self.db.execute("INSERT INTO learning_changes(scope,kind,entry_id,revision,action,origin,reason,at) "
                                 "VALUES(?,?,?,?,'invalidate','source','source_changed_or_deleted',?)",
                                 (scope, kind, row["id"], row["revision"] + 1, self.store.now()))
@@ -225,16 +223,14 @@ class SocialLearning:
                          calls: int = 1) -> None:
         with transaction(self.db):
             for kind, entry, revision in selected:
-                table = {"expression": "expressions", "jargon": "jargon", "sticker": "stickers"}.get(kind)
-                if table is None:
+                if kind not in {"expression", "jargon", "sticker"}:
                     raise ValueError("unknown selection kind")
                 if kind == "sticker":
                     valid = self.store.stickers.exists(scope, entry)
                 elif kind == "jargon":
-                    valid = self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status IN ('usable','understand_only')", (scope, entry, revision)).fetchone()
+                    valid = self.jargon.selection_entry(scope, entry, revision)
                 else:
-                    valid = self.db.execute(f"SELECT 1 FROM {table} WHERE scope=? AND id=? AND revision=? "
-                                            "AND status IN ('usable','available','confirmed','candidate')", (scope, entry, revision)).fetchone()
+                    valid = self.expressions.selection_entry(scope, entry, revision)
                 if valid is None:
                     raise ValueError("selected entry is missing, inactive, changed or outside this scope")
             self.db.execute("INSERT INTO expression_turns VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -243,9 +239,7 @@ class SocialLearning:
                                 [(scope, turn_id, kind, entry, revision) for kind, entry, revision in selected])
             for kind, entry, revision in selected:
                 if kind in {'expression', 'jargon'}:
-                    table = 'expressions' if kind == 'expression' else 'jargon'
-                    self.db.execute(f"UPDATE {table} SET last_selected=? WHERE scope=? AND id=? AND revision=?",
-                                    (self.store.now(), scope, entry, revision))
+                    (self.expressions if kind == "expression" else self.jargon).mark_usage(scope, entry, revision, "last_selected")
         detail = {"turn_id": turn_id, "target_message_id": target_message_id, "selected": selected,
                   "status": status, "calls": calls, "latency_ms": latency_ms, **explanation}
         self.recent.setdefault(scope, deque(maxlen=self.config.selection_history_turns)).append(detail)
@@ -258,7 +252,7 @@ class SocialLearning:
         item just because some text was sent, and never increases human occurrences.
         """
         with transaction(self.db):
-            if kind == "jargon" and not self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status='usable'", (scope, entry_id, revision)).fetchone():
+            if kind == "jargon" and not self.jargon.usable_entry(scope, entry_id, revision):
                 raise ValueError("only current usable jargon can be attributed as natural use")
             receipt = self.store.deliveries.confirmed_receipt(scope, turn_id, delivery_id)
             if receipt is None:
@@ -267,9 +261,8 @@ class SocialLearning:
                                       (delivery_id, scope, turn_id, kind, entry_id, revision)).rowcount
             if not changed:
                 raise ValueError("usage requires the selected entry revision")
-            table = {"expression": "expressions", "jargon": "jargon"}.get(kind)
-            if table is not None:
-                self.db.execute(f"UPDATE {table} SET last_confirmed=? WHERE scope=? AND id=? AND revision=?", (self.store.now(), scope, entry_id, revision))
+            if kind in {"expression", "jargon"}:
+                (self.expressions if kind == "expression" else self.jargon).mark_usage(scope, entry_id, revision, "last_confirmed")
 
     def status(self, scope: str) -> dict[str, object]:
         return {"enabled": self.config.enabled, "stage": "expression_and_jargon_learning", "extractor_enabled": self.config.enabled,
@@ -281,9 +274,8 @@ class SocialLearning:
                 "cursors": [dict(row) for row in self.db.execute("SELECT * FROM learning_cursors WHERE scope=?", (scope,))],
                 "batches": [dict(row) for row in self.db.execute("SELECT id,kind,purpose,status,attempts,source_count,result_count,reason,substr(error_detail,1,120) AS error_detail,model,model_calls,input_tokens,output_tokens,search_calls,fetch_calls,research_chars,latency_ms,created,updated FROM learning_batches WHERE scope=? ORDER BY created DESC LIMIT 20", (scope,))],
                 "counts": [dict(row) for row in self.db.execute("SELECT * FROM learning_counts WHERE scope=?", (scope,))],
-                "usable_expressions": self.db.execute("SELECT COUNT(*) FROM expressions WHERE scope=? AND status IN ('usable','available')", (scope,)).fetchone()[0],
-                "jargon_entries": self.db.execute("SELECT COUNT(*) FROM jargon WHERE scope=? AND status IN ('candidate','understand_only','usable')", (scope,)).fetchone()[0],
-                "jargon_states": {row[0]: row[1] for row in self.db.execute("SELECT status,COUNT(*) FROM jargon WHERE scope=? GROUP BY status", (scope,))},
+                "usable_expressions": self.expressions.usable_count(scope),
+                **self.jargon.counts(scope),
                 "recent_selections": list(self.recent.get(scope, []))}
 
     def expression_generation(self, scope: str) -> sqlite3.Row:

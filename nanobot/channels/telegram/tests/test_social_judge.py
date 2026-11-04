@@ -9,6 +9,8 @@ from pydantic import ValidationError
 
 from nanobot.channels.telegram.manifest import SETUP_SPEC
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
+from nanobot.channels.telegram.social.expressions import ExpressionLibrary
+from nanobot.channels.telegram.social.jargon import JargonLibrary
 from nanobot.channels.telegram.social.judge import (
     JudgeInput,
     JudgeMessage,
@@ -186,6 +188,7 @@ async def test_cancelled_request_is_recorded(case, monkeypatch):
 
 def test_schema_eight_upgrade_preserves_main_data(tmp_path):
     store = SocialStore(tmp_path)
+    store.learning.attach_libraries(ExpressionLibrary(store), JargonLibrary(store))
     store.bind(A, "version1")
     for seq in range(1, 4):
         store.observe(ObservedMessage(A, seq, seq+10, "1", "Alice", 990.+seq, "text"), 500)

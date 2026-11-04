@@ -12,8 +12,10 @@ from loguru import logger
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.social.models import MediaReference
 from nanobot.channels.telegram.social.runtime import encode_view
+from nanobot.channels.telegram.social.selection import Choice
 from nanobot.channels.telegram.tests.test_social_memory import apply, expose
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, message, social, wake
+from nanobot.config.schema import Config
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 __all__ = ['social']
@@ -73,11 +75,12 @@ async def test_actual_unclaimed_snapshot_selected_before_it_is_marked_seen(socia
     assert social.store.db.execute('SELECT seen FROM views').fetchone()[0] == 0
 
 
-@pytest.mark.parametrize('change', ['message_edit','new_message','entry_revision','disabled','sticker_note','config'])
-async def test_changed_values_never_reuse_stale_candidates_or_buy_second_call(social, change):
+@pytest.mark.parametrize('change', ['message_edit','new_message','entry_revision','disabled','sticker_note','config','scope','provider_config'])
+async def test_changed_values_reuse_first_selection_without_second_call(social, change):
     provider = seed(social)
     view(social)
-    assert await social.selector.select(A.session_key,'turn')
+    selected = await social.selector.select(A.session_key,'turn')
+    assert selected
     if change=='message_edit':
         social.store.observe(replace(message(text='现在认真求助'),update_id=101,is_edit=True),500)
     elif change=='new_message':
@@ -88,14 +91,19 @@ async def test_changed_values_never_reuse_stale_candidates_or_buy_second_call(so
         social.store.db.execute("UPDATE expressions SET status='disabled'")
     elif change=='sticker_note':
         social.store.stickers.annotate(A.session_key,{'s-124':'严肃的另一张图'})
+    elif change=='scope':
+        social.store.bind(A,'another-version')
+    elif change=='provider_config':
+        social.selector.configure_provider(Config())
     else:
         social.store.learning.configure(social.config.learning.model_copy(update={'selection_stickers':0}))
-    assert await social.selector.select(A.session_key,'turn') == []
+    assert await social.selector.select(A.session_key,'turn') is selected
     assert provider.chat.await_count == 1
+    assert 'reuse_status' not in social.store.learning.recent[A.session_key][-1]
 
 
-@pytest.mark.parametrize('content', ['not json', '{"stickers":["outside-scope"]}', '{"expressions":["e-a","e-a","e-a","e-a"]}'])
-async def test_malformed_or_forged_response_degrades_to_empty_without_retry(social,content):
+@pytest.mark.parametrize('content', ['not json', '', 'x' * 8001])
+async def test_invalid_content_degrades_to_empty_without_retry(social,content):
     provider=seed(social)
     view(social)
     provider.chat.side_effect=None
@@ -143,7 +151,7 @@ async def test_no_model_for_empty_library_and_empty_is_valid_for_serious_help(so
     assert social.store.db.execute("SELECT status FROM expression_turns WHERE turn_id='serious'").fetchone()[0]=='empty'
 
 
-async def test_inflight_revision_or_scope_change_discards_result(social):
+async def test_inflight_inactive_entry_is_dropped(social):
     provider=seed(social)
     view(social)
     async def response(**kwargs):
@@ -152,6 +160,26 @@ async def test_inflight_revision_or_scope_change_discards_result(social):
     provider.chat.side_effect=response
     assert await social.selector.select(A.session_key,'turn')==[]
     assert not social.store.db.execute('SELECT 1 FROM expression_selections').fetchone()
+    detail = social.store.learning.recent[A.session_key][-1]
+    assert detail['status'] == 'empty' and detail['dropped'] == 1
+
+
+@pytest.mark.parametrize('change', ['message', 'scope', 'config'])
+async def test_inflight_input_changes_keep_selection(social, change):
+    provider = seed(social)
+    view(social)
+    async def response(**kwargs):
+        if change == 'message':
+            view(social, mid=2, text='新话题')
+        elif change == 'scope':
+            social.store.bind(A, 'another-version')
+        else:
+            social.store.learning.configure(social.config.learning.model_copy(update={'selection_chars': 2000}))
+        return LLMResponse(content='{"stickers":["s2"]}')
+    provider.chat.side_effect = response
+    chosen = await social.selector.select(A.session_key, 'turn')
+    assert [(c.kind, c.entry_id) for c in chosen] == [('sticker', 's-124')]
+    assert provider.chat.await_count == 1
 
 
 def test_recent_usage_is_sent_only_all_paths_grouped_by_turn(social):
@@ -199,12 +227,14 @@ async def test_end_to_end_sticker_without_search_receipt_and_transient_prompt(tm
     loop=agent(tmp_path,social,[])
     async def model(**kwargs):
         calls.append(deepcopy(kwargs))
+        assert len(social.selector.cache) == 1
         if len(calls)==1:
             return LLMResponse(content=None,tool_calls=[ToolCallRequest(id='sticker',name='social_sticker',arguments={'action':'send','sticker_id':'s-124'})])
         return LLMResponse(content='')
     loop.provider.chat_stream_with_retry=AsyncMock(side_effect=model)
     await loop._dispatch(await wake(social,text='蓝票这回领先了哈哈'))
     assert selector.chat.await_count==1
+    assert social.selector.cache == {}
     first=str(calls[0]['messages'])
     assert 'optional_expression_references' in first and 's-124' in first
     assert 'pending_matters' in first and 'recent_confirmed_usage' in first
@@ -290,3 +320,69 @@ async def test_selector_failure_logs_and_keeps_single_call_cache(social, excepti
     assert A.session_key in record['message'] and 'turn=turn' in record['message']
     assert social.store.db.execute('SELECT status FROM expression_turns').fetchone()[0] == status
     assert provider.chat.await_count == 1
+
+
+@pytest.mark.parametrize('content,dropped,expected', [
+    ('{"jargon":[{"id":"j1","note":"x"}],"stickers":["s2"]}', 0, [('jargon', 'j-a'), ('sticker', 's-124')]),
+    ('{"jargon":["not-provided"],"stickers":["s2"]}', 1, [('sticker', 's-124')]),
+    ('{"jargon":["s2"],"stickers":["s2"]}', 1, [('sticker', 's-124')]),
+    ('{"expressions":["e0","e0","e0","e0"],"extra":true}', 0, [('expression', 'e-a')]),
+    ('{"jargon":[{}, {"id":7}],"stickers":[{"id":"s2"}]}', 0, [('sticker', 's-124')]),
+])
+async def test_tolerant_selection_keeps_valid_candidates(social, content, dropped, expected):
+    provider = seed(social)
+    view(social)
+    provider.chat.side_effect = None
+    provider.chat.return_value = LLMResponse(content=content)
+    chosen = await social.selector.select(A.session_key, 'turn')
+    assert [(c.kind, c.entry_id) for c in chosen] == expected
+    detail = social.store.learning.recent[A.session_key][-1]
+    assert detail['status'] == 'selected' and detail['dropped'] == dropped
+    assert provider.chat.await_count == 1
+
+
+@pytest.mark.parametrize('log_line,content', [
+    (208, '{"expressions":[],"jargon":[{"id":"j1","note":"codex"}],"stickers":["s2"],"reason":"算力/用量吐槽"}'),
+    (425, '{"expressions":[],"jargon":[{"id":"j1","note":"codex"}],"stickers":["s2"],"reason":"算力/用量吐槽"}'),
+])
+async def test_recorded_validation_errors_keep_sticker_selection(social, log_line, content):
+    # Exact response.content from /tmp/p7/container-72h.log; both pools were sticker-only.
+    provider = seed(social)
+    social.config.learning.selection_expressions = 0
+    social.config.learning.selection_jargon = 0
+    view(social, turn=f'log-{log_line}')
+    pool = social.selector.candidates(A.session_key, social.selector.input(A.session_key, f'log-{log_line}'))
+    assert Choice.model_validate_json(content).ids('stickers') == ['s2']
+    provider.chat.side_effect = None
+    provider.chat.return_value = LLMResponse(content=content)
+    chosen = await social.selector.select(A.session_key, f'log-{log_line}')
+    payload = json.loads(provider.chat.call_args.kwargs['messages'][1]['content'])
+    assert {c['kind'] for c in payload['candidates']} == {'sticker'}
+    assert chosen == [pool[2]]
+    detail = social.store.learning.recent[A.session_key][-1]
+    assert detail['status'] == 'selected' and detail['dropped'] == 1
+
+
+@pytest.mark.parametrize('finish_reason,tool_calls', [
+    ('length', []), ('stop', [ToolCallRequest(id='x', name='message', arguments={})]),
+])
+async def test_invalid_envelope_stays_error(social, finish_reason, tool_calls):
+    provider = seed(social)
+    view(social)
+    provider.chat.side_effect = None
+    provider.chat.return_value = LLMResponse(content='{"stickers":["s2"]}', finish_reason=finish_reason, tool_calls=tool_calls)
+    assert await social.selector.select(A.session_key, 'turn') == []
+    assert social.store.learning.recent[A.session_key][-1]['status'] == 'error'
+
+
+async def test_valid_choices_are_truncated_to_selection_limit(social):
+    provider = seed(social)
+    view(social)
+    source = social.selector.input(A.session_key, 'turn')
+    pool = social.selector.candidates(A.session_key, source)
+    refs = [f's{i}' for i, c in enumerate(pool) if c.kind == 'sticker'][:6]
+    provider.chat.side_effect = None
+    provider.chat.return_value = LLMResponse(content=json.dumps({'stickers': refs}))
+    chosen = await social.selector.select(A.session_key, 'turn')
+    assert chosen == [pool[int(ref[1:])] for ref in refs[:social.config.learning.selection_stickers]]
+    assert social.store.learning.recent[A.session_key][-1]['dropped'] == 0

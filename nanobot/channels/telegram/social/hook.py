@@ -129,6 +129,8 @@ class SocialExposureHook(AgentHook):
         self._restore_memory_context()
         ctx = current_request_context()
         if ctx is not None and ctx.turn_id is not None:
+            if ctx.session_key is not None:
+                self.context_builder.selector.forget(ctx.session_key, ctx.turn_id)
             failed = context.error is not None or context.exception is not None
             status = WakeStatus.FAILED if failed else WakeStatus.UNSENT if self._unsent_final else WakeStatus.COMPLETED
             if ctx.session_key is not None and not failed and not self._unsent_final:

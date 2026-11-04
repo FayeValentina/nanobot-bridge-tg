@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
+from nanobot.channels.telegram.social.expressions import ExpressionLibrary
 from nanobot.channels.telegram.social.jargon import JargonLibrary, JargonRequest
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
@@ -24,6 +25,7 @@ B = ConversationScope("telegram", -1002, 42)
 @pytest.fixture
 def store(tmp_path):
     instance = SocialStore(tmp_path, now=lambda: 1000.)
+    instance.learning.attach_libraries(ExpressionLibrary(instance), JargonLibrary(instance))
     instance.bind(A, "1")
     instance.bind(B, "1")
     instance.learning.configure(TelegramSocialLearningConfig(min_messages=2))

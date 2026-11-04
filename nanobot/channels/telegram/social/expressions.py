@@ -110,6 +110,30 @@ class ExpressionLibrary:
         self.store = store
         self.db = store.db
 
+    def candidates(self, scope: str, needles: list[str], limit: int) -> list[sqlite3.Row]:
+        score = "+".join("(instr(lower(situation||' '||expression||' '||tone||' '||suitable||' '||unsuitable||' '||scene_tags||' '||intent_category),?)>0)" for _ in needles) or "0"
+        return self.db.execute(f"SELECT * FROM (SELECT id,revision,situation,expression,tone,suitable,unsuitable,scene_tags,intent_category,({score}) AS relevance,"
+            "ROW_NUMBER() OVER (PARTITION BY intent_category ORDER BY updated DESC,id) AS variety "
+            "FROM expressions WHERE scope=? AND status IN ('available','usable')) ORDER BY relevance DESC,variety,id LIMIT ?", [*needles, scope, limit]).fetchall()
+
+    def row(self, scope: str, entry_id: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM expressions WHERE scope=? AND id=?", (scope, entry_id)).fetchone()
+
+    def invalidate_source(self, scope: str, message_id: int, revision: int | None) -> list[sqlite3.Row]:
+        rows = self.db.execute("SELECT DISTINCT t.id,t.revision FROM expressions t JOIN expression_evidence e ON e.expression_id=t.id WHERE t.scope=? AND e.message_id=? AND (? IS NULL OR e.revision<>?) AND t.status IN ('candidate','confirmed','usable','available','understand_only')", (scope, message_id, revision, revision)).fetchall()
+        for row in rows:
+            self.db.execute("UPDATE expressions SET status=?,revision=revision+1,updated=? WHERE id=?", ("expired", self.store.now(), row["id"]))
+        return rows
+
+    def selection_entry(self, scope: str, entry_id: str, revision: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT 1 FROM expressions WHERE scope=? AND id=? AND revision=? AND status IN ('usable','available','confirmed','candidate')", (scope, entry_id, revision)).fetchone()
+
+    def mark_usage(self, scope: str, entry_id: str, revision: int, field: Literal["last_selected", "last_confirmed"]) -> None:
+        self.db.execute(f"UPDATE expressions SET {field}=? WHERE scope=? AND id=? AND revision=?", (self.store.now(), scope, entry_id, revision))
+
+    def usable_count(self, scope: str) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM expressions WHERE scope=? AND status IN ('usable','available')", (scope,)).fetchone()[0]
+
     def list(self, scope: str) -> list[dict[str, object]]:
         return [dict(row) for row in self.db.execute("SELECT * FROM expressions WHERE scope=? ORDER BY created,id", (scope,))]
 

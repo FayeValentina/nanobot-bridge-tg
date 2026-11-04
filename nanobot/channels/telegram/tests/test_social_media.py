@@ -19,6 +19,8 @@ from telegram.error import BadRequest, RetryAfter, TimedOut
 from nanobot.agent.tools.context import request_context
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
+from nanobot.channels.telegram.social.expressions import ExpressionLibrary
+from nanobot.channels.telegram.social.jargon import JargonLibrary
 from nanobot.channels.telegram.social.media import SocialMediaCache
 from nanobot.channels.telegram.social.models import MediaReference
 from nanobot.channels.telegram.social.store import SocialStore
@@ -495,6 +497,7 @@ def test_cache_rejects_symlink_and_oversized_pixel_payload(tmp_path):
 def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     root = tmp_path / "v2"
     store = SocialStore(root)
+    store.learning.attach_libraries(ExpressionLibrary(store), JargonLibrary(store))
     store.bind(A, "version")
     store.observe(message(text="old photo", media=("photo",)), 100)
     action = store.reserve_send(A.session_key, "version", "old text", kind="text")

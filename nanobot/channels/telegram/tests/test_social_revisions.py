@@ -6,6 +6,8 @@ import stat
 import pytest
 
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
+from nanobot.channels.telegram.social.expressions import ExpressionLibrary
+from nanobot.channels.telegram.social.jargon import JargonLibrary
 from nanobot.channels.telegram.social.models import ObservedMessage
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_runtime import A
@@ -15,6 +17,7 @@ from nanobot.channels.telegram.tests.test_social_scheduler import remove_v4_colu
 def test_schema_ten_upgrade_removes_keys_and_preserves_journals(tmp_path):
     now = [1000.]
     store = SocialStore(tmp_path, now=lambda: now[0])
+    store.learning.attach_libraries(ExpressionLibrary(store), JargonLibrary(store))
     store.bind(A, "version1")
     for seq in range(1, 4):
         store.observe(ObservedMessage(A, seq, seq+10, "1", "Alice", 990.+seq, "text"), 500)

@@ -115,6 +115,34 @@ class JargonLibrary:
     def generation(self, scope: str) -> int:
         return int(self.store.learning.jargon_generation(scope)[0])
 
+    def candidates(self, scope: str, needles: list[str], now: float, limit: int) -> list[sqlite3.Row]:
+        score = "+".join("(instr(lower(term||' '||aliases||' '||local_meaning||' '||public_meaning||' '||usage||' '||unsuitable||' '||status||' '||scene_tags||' '||intent_category),?)>0)" for _ in needles) or "0"
+        return self.db.execute(f"SELECT * FROM (SELECT id,revision,term,aliases,local_meaning,public_meaning,usage,unsuitable,status,scene_tags,intent_category,({score}) AS relevance,"
+            "ROW_NUMBER() OVER (PARTITION BY intent_category ORDER BY updated DESC,id) AS variety "
+            "FROM jargon WHERE scope=? AND status IN ('understand_only','usable') AND (expires IS NULL OR expires>?)) ORDER BY relevance DESC,variety,id LIMIT ?", [*needles, scope, now, limit]).fetchall()
+
+    def row(self, scope: str, entry_id: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM jargon WHERE scope=? AND id=?", (scope, entry_id)).fetchone()
+
+    def invalidate_source(self, scope: str, message_id: int, revision: int | None) -> list[sqlite3.Row]:
+        rows = self.db.execute("SELECT DISTINCT t.id,t.revision FROM jargon t JOIN jargon_evidence e ON e.memory_id=t.id WHERE t.scope=? AND e.message_id=? AND (? IS NULL OR e.revision<>?) AND t.status IN ('candidate','confirmed','usable','available','understand_only')", (scope, message_id, revision, revision)).fetchall()
+        for row in rows:
+            self.db.execute("UPDATE jargon SET status=?,revision=revision+1,updated=? WHERE id=?", ("disabled", self.store.now(), row["id"]))
+        return rows
+
+    def selection_entry(self, scope: str, entry_id: str, revision: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status IN ('usable','understand_only')", (scope, entry_id, revision)).fetchone()
+
+    def mark_usage(self, scope: str, entry_id: str, revision: int, field: Literal["last_selected", "last_confirmed"]) -> None:
+        self.db.execute(f"UPDATE jargon SET {field}=? WHERE scope=? AND id=? AND revision=?", (self.store.now(), scope, entry_id, revision))
+
+    def usable_entry(self, scope: str, entry_id: str, revision: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT 1 FROM jargon WHERE scope=? AND id=? AND revision=? AND status='usable'", (scope, entry_id, revision)).fetchone()
+
+    def counts(self, scope: str) -> dict[str, object]:
+        return {"jargon_entries": self.db.execute("SELECT COUNT(*) FROM jargon WHERE scope=? AND status IN ('candidate','understand_only','usable')", (scope,)).fetchone()[0],
+                "jargon_states": {row[0]: row[1] for row in self.db.execute("SELECT status,COUNT(*) FROM jargon WHERE scope=? GROUP BY status", (scope,))}}
+
     def expire(self, scope: str) -> None:
         for row in self.db.execute("SELECT id FROM jargon WHERE scope=? AND status<>'disabled' AND expires<=?", (scope, self.store.now())).fetchall():
             self.retire_sources(scope, str(row[0]))

@@ -14,6 +14,7 @@ from nanobot.channels.telegram.social.expressions import (
     ExtractionResult,
     make_expression_provider,
 )
+from nanobot.channels.telegram.social.jargon import JargonLibrary
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 from nanobot.channels.telegram.social.store import SocialStore
@@ -28,6 +29,7 @@ B = ConversationScope("telegram", -1002, 42)
 def setup(tmp_path):
     clock = [1000.]
     store = SocialStore(tmp_path, now=lambda: clock[0])
+    store.learning.attach_libraries(ExpressionLibrary(store), JargonLibrary(store))
     store.bind(A, "1")
     store.bind(B, "1")
     store.learning.configure(TelegramSocialLearningConfig(min_messages=1))
@@ -149,6 +151,7 @@ def test_manual_revision_old_source_similar_wording_and_semantic_merge_never_rev
     # Restart keeps both wording guard and source suppression.
     store.close()
     reopened = SocialStore(tmp_path, now=lambda: clock[0])
+    reopened.learning.attach_libraries(ExpressionLibrary(reopened), JargonLibrary(reopened))
     try:
         reopened.learning.configure(TelegramSocialLearningConfig(min_messages=1))
         library = ExpressionLibrary(reopened)

@@ -10,6 +10,15 @@ class StickerLibrary:
     def __init__(self, db: sqlite3.Connection, now: Callable[[], float]) -> None:
         self.db, self.now = db, now
 
+    def candidates(self, scope: str, needles: list[str], limit: int) -> list[sqlite3.Row]:
+        score = "+".join("(instr(lower(note),?)>0)" for _ in needles) or "0"
+        return self.db.execute(f"SELECT * FROM (SELECT id,0 AS revision,note,({score}) AS relevance,"
+            "ROW_NUMBER() OVER (PARTITION BY substr(note,1,6) ORDER BY updated DESC,id) AS variety "
+            "FROM stickers WHERE scope=? AND trim(note)<>'') ORDER BY relevance DESC,variety,id LIMIT ?", [*needles, scope, limit]).fetchall()
+
+    def row(self, scope: str, entry_id: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM stickers WHERE scope=? AND id=?", (scope, entry_id)).fetchone()
+
     def collect(self, key: str, ref: MediaReference, note: str | None, limit: int) -> str:
         if ref.kind != "sticker" or ref.animated or ref.video:
             raise ValueError("only static stickers can be collected in this release")
