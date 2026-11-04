@@ -323,7 +323,7 @@ class SocialStore:
                 raise PermissionError("parts require an active authorized turn")
             for index, text in enumerate(texts):
                 action = uuid4().hex
-                self.deliveries.insert_part(action, key, version, text, now, now, expires, reply_to, turn, group, index)
+                self.deliveries.insert_part(action, key, version, text, now, now, expires, reply_to if index == 0 else None, turn, group, index)
                 if followup_id is not None:
                     self.followups.reserve(key, followup_id, turn, action)
         return self.deliveries.group_parts(group)

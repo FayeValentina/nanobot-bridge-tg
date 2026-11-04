@@ -603,6 +603,17 @@ async def test_platform_429_retry_uses_same_action_without_an_agent_or_new_model
     assert tg._app.bot.send_message.await_args.kwargs["reply_parameters"].message_id == 1
 
 
+async def test_burst_quotes_the_reply_target_only_on_its_first_part(social):
+    await social.observe(observed(social), directed=False)
+    sender = AsyncMock(side_effect=[501, 502])
+    social.set_sender(sender)
+    await social.delivery.send_parts(context(social), ["first", "second"], 1)
+    await social.run_due()
+    clock(social).advance(2)
+    await social.run_due()
+    assert [call.args[2] for call in sender.await_args_list] == [1, None]
+
+
 async def test_burst_sends_paced_parts_with_individual_receipts_and_no_replay(social):
     sender = AsyncMock(side_effect=[501, 502, 503])
     social.set_sender(sender)
