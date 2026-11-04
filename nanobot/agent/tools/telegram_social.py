@@ -137,24 +137,24 @@ class TelegramSocialTool(Tool):
             return ToolResult.error("social tools require an active group/topic turn")
         try:
             if self.name == "social_activity":
-                scope = self.runtime.validate_context(ctx)
+                scope = self.runtime.bindings.validate_context(ctx)
                 assert ctx.turn_id is not None
                 result = self.runtime.store.activities.apply(scope.session_key, ctx.turn_id, ActivityRequest.model_validate(kwargs))
             elif self.name == "social_jargon":
                 result = self.runtime.jargon_action(ctx, JargonRequest.model_validate(kwargs))
             elif self.name == "social_expression":
-                scope = self.runtime.validate_context(ctx)
+                scope = self.runtime.bindings.validate_context(ctx)
                 result = self.runtime.expressions.library.change(scope.session_key, ExpressionEdit.model_validate(kwargs))
             elif self.name == "social_memory":
                 result = self.runtime.memory_action(ctx, MemoryRequest.model_validate(kwargs))
             elif self.name == "social_get_media":
-                return await self.runtime.get_media(ctx, kwargs["message_id"])
+                return await self.runtime.media.get(ctx, kwargs["message_id"])
             elif self.name == "social_sticker":
                 action = kwargs["action"]
                 if action == "list":
-                    result = {"stickers": self.runtime.list_stickers(ctx, kwargs.get("query", ""))}
+                    result = {"stickers": self.runtime.stickers.search(ctx, kwargs.get("query", ""))}
                 elif action == "collect" and "message_id" in kwargs:
-                    result = {"sticker_id": self.runtime.collect_sticker(ctx, kwargs["message_id"], kwargs.get("note"))}
+                    result = {"sticker_id": self.runtime.stickers.collect(ctx, kwargs["message_id"], kwargs.get("note"))}
                 elif action == "send" and "sticker_id" in kwargs:
                     result = await self.runtime.send_sticker(ctx, kwargs["sticker_id"], kwargs.get("reply_to"))
                 elif action == "import_set" and "set_name" in kwargs:
@@ -174,12 +174,12 @@ class TelegramSocialTool(Tool):
             elif self.name == "social_mark_read":
                 result = {"read_through": self.runtime.mark_read(ctx, kwargs["through"])}
             elif self.name == "social_wait":
-                result = self.runtime.wait(ctx, kwargs.get("seconds"), sleeping=kwargs.get("sleeping", False),
+                result = self.runtime.waiting.wait(ctx, kwargs.get("seconds"), sleeping=kwargs.get("sleeping", False),
                                            on_timeout=kwargs.get("on_timeout", False), purpose=kwargs.get("purpose"),
                                            quiet_seconds=kwargs.get("quiet_seconds"), infinite=kwargs.get("infinite", False),
                                            until=kwargs.get("until"))
             elif self.name == "social_set_wake":
-                result = self.runtime.set_wake(ctx, keywords=kwargs.get("keywords", []),
+                result = self.runtime.waiting.set_wake(ctx, keywords=kwargs.get("keywords", []),
                                                senders=kwargs.get("senders", []), on_messages=kwargs.get("on_messages", False),
                                                ttl_seconds=kwargs.get("ttl_seconds", 3600), one_shot=kwargs.get("one_shot", True),
                                                on_question=kwargs.get("on_question", False),

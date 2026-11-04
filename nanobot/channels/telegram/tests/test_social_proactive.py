@@ -152,7 +152,7 @@ async def test_stop_proactive_contact_survives_sleep_clear_and_restart(social):
     enable(social)
     ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                          turn_id="ordinary", metadata={"message_thread_id": A.thread_id})
-    social.set_wake(ctx, keywords=[], senders=[], on_messages=False, proactive_paused=True)
+    social.waiting.set_wake(ctx, keywords=[], senders=[], on_messages=False, proactive_paused=True)
     social.store.wakes.set_wake_config(A.session_key, "{}")
     social.store.db.execute("UPDATE scopes SET mode='sleeping' WHERE key=?", (A.session_key,))
     social.store.db.commit()
@@ -163,7 +163,7 @@ async def test_stop_proactive_contact_survives_sleep_clear_and_restart(social):
     restored.proactive.random_value = lambda: 0
     try:
         assert restored.proactive.status(A.session_key)["stopped"] == 1
-        restored.set_wake(ctx, keywords=[], senders=[], on_messages=False, proactive_paused=False)
+        restored.waiting.set_wake(ctx, keywords=[], senders=[], on_messages=False, proactive_paused=False)
         await tick(restored)
         assert view(restored.bus.inbound.get_nowait())["wake_reason"] == "proactive"
     finally:
@@ -215,7 +215,7 @@ def view(inbound):
 def claim(social, inbound, turn="proactive-turn"):
     ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                          turn_id=turn, metadata=dict(inbound.metadata))
-    social.admit_request(ctx)
+    social.waiting.admit_request(ctx)
     social.store.note_seen(A.session_key, turn, encode_view(view(inbound)))
     return ctx
 
@@ -551,7 +551,7 @@ async def test_wait_after_queuing_parts_keeps_existing_delivery_without_new_wake
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
     await social.send_parts(ctx, ["第一条", "第二条"], None)
-    social.wait(ctx, 300)
+    social.waiting.wait(ctx, 300)
     social.store.wakes.finish(ctx.turn_id, "completed")
     await social.run_due()
     await tick(social, 2)

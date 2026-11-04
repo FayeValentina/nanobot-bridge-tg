@@ -332,8 +332,8 @@ async def test_standing_preferences_do_not_invent_a_selective_wait(social, mode)
 async def test_real_selective_wait_keeps_conditions_deadline_and_one_shot(social, seconds, infinite):
     social.config.cooldown_seconds = 0
     ctx = context(social)
-    social.set_wake(ctx, keywords=["到家"], senders=["456"], on_messages=False, ttl_seconds=60)
-    social.wait(ctx, seconds, purpose="messages", infinite=infinite)
+    social.waiting.set_wake(ctx, keywords=["到家"], senders=["456"], on_messages=False, ttl_seconds=60)
+    social.waiting.wait(ctx, seconds, purpose="messages", infinite=infinite)
     finish(social, ctx)
     provider = decide(social, "observe")
     await social.observe(observed(social, text="今晚吃面"), directed=False)
@@ -356,7 +356,7 @@ async def test_real_selective_wait_keeps_conditions_deadline_and_one_shot(social
     resumed = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                              turn_id="resumed", metadata=inbound.metadata,
                              attributes={"context_version": social.store.scopes.state(A.session_key)["version"]})
-    social.admit_request(resumed)
+    social.waiting.admit_request(resumed)
     assert social.store.scopes.state(A.session_key)["wake_config"] == "{}"
 
 
@@ -364,8 +364,8 @@ async def test_expired_temporary_wait_does_not_fall_back_to_question_only_observ
     social.config.cooldown_seconds = 0
     social.config.scopes[0].wake_on_question = True
     ctx = context(social)
-    social.set_wake(ctx, keywords=["到家"], senders=[], on_messages=False, ttl_seconds=1)
-    social.wait(ctx, infinite=True, purpose="messages")
+    social.waiting.set_wake(ctx, keywords=["到家"], senders=[], on_messages=False, ttl_seconds=1)
+    social.waiting.wait(ctx, infinite=True, purpose="messages")
     finish(social, ctx)
     clock(social).advance(2)
     provider = decide(social)
@@ -380,7 +380,7 @@ async def test_sleep_observation_is_not_a_selective_question_wait(social):
     social.config.scopes[0].wake_on_question = True
     social.config.sleep_observation.enabled = True
     ctx = context(social)
-    social.wait(ctx, 30, sleeping=True)
+    social.waiting.wait(ctx, 30, sleeping=True)
     finish(social, ctx)
     provider = decide(social)
     await social.observe(observed(social, text="你别用繁体字"), directed=False)
@@ -526,7 +526,7 @@ async def test_invalidated_judge_image_download_never_calls_model(social, change
     await settle_images(social)
     provider.chat.assert_not_awaited()
     assert social.bus.inbound.empty()
-    assert not list(social.media.root.iterdir())
+    assert not list(social.media.cache.root.iterdir())
 
 
 async def test_bounded_judge_retry_reuses_downloaded_original(social):
@@ -563,7 +563,7 @@ async def test_general_reply_wait_never_inherits_standing_question_only_preferen
     social.store.observe(observed(social), 500)
     ctx = context(social)
     social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
-    social.wait(ctx, 30, purpose=purpose)
+    social.waiting.wait(ctx, 30, purpose=purpose)
     finish(social, ctx)
     intent = social.judging.intent(A)
     assert intent.purpose == purpose

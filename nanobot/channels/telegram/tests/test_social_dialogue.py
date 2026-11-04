@@ -56,7 +56,7 @@ def take(runtime):
 def admit(runtime, msg, turn="followup"):
     ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                          turn_id=turn, metadata=dict(msg.metadata))
-    runtime.admit_request(ctx)
+    runtime.waiting.admit_request(ctx)
     return ctx
 
 
@@ -111,7 +111,7 @@ async def test_duplicate_update_does_not_extend_the_fixed_coalescing_window(dial
 
 async def test_reply_continuation_survives_read_ack_and_is_consumed_once(dialogue):
     ctx = expose(dialogue)
-    result = dialogue.wait(ctx, 12, purpose="reply", quiet_seconds=3)
+    result = dialogue.waiting.wait(ctx, 12, purpose="reply", quiet_seconds=3)
     assert result["deferred"]
     # mark_read remains independent of waiting; use the store as the old turn has yielded.
     dialogue.store.mark_read(A.session_key, ctx.turn_id, 1)
@@ -131,14 +131,14 @@ async def test_reply_continuation_survives_read_ack_and_is_consumed_once(dialogu
 def test_reply_already_quiet_returns_without_yielding(dialogue):
     ctx = expose(dialogue)
     clock(dialogue).advance(5)
-    assert dialogue.wait(ctx, 12, purpose="reply") == {"deferred": False, "purpose": "reply", "quiet": True}
+    assert dialogue.waiting.wait(ctx, 12, purpose="reply") == {"deferred": False, "purpose": "reply", "quiet": True}
     assert not ctx.attributes["social_deferred"]
     assert dialogue.get_state(ctx)["dialogue"]["wait"] is None
 
 
 async def test_messages_wait_has_distinct_quiet_and_total_timeouts(dialogue):
     ctx = expose(dialogue)
-    dialogue.wait(ctx, 60, purpose="messages", quiet_seconds=3)
+    dialogue.waiting.wait(ctx, 60, purpose="messages", quiet_seconds=3)
     finish(dialogue, ctx)
     clock(dialogue).advance(10)
     await dialogue.run_due()
@@ -158,7 +158,7 @@ async def test_messages_wait_has_distinct_quiet_and_total_timeouts(dialogue):
 async def test_messages_arriving_between_model_input_and_wait_tool_are_not_lost(dialogue):
     ctx = expose(dialogue)
     await dialogue.observe(observed(dialogue, 2, text="下午三点"), directed=False)
-    dialogue.wait(ctx, 60, purpose="messages", quiet_seconds=1)
+    dialogue.waiting.wait(ctx, 60, purpose="messages", quiet_seconds=1)
     finish(dialogue, ctx)
     clock(dialogue).advance(2)
     await dialogue.run_due()
@@ -169,8 +169,8 @@ async def test_messages_arriving_between_model_input_and_wait_tool_are_not_lost(
 
 async def test_selective_messages_wait_ignores_unmatched_chatter(dialogue):
     ctx = expose(dialogue)
-    dialogue.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False)
-    dialogue.wait(ctx, 60, purpose="messages")
+    dialogue.waiting.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False)
+    dialogue.waiting.wait(ctx, 60, purpose="messages")
     finish(dialogue, ctx)
     await dialogue.observe(observed(dialogue, 2, text="无关聊天"), directed=False)
     clock(dialogue).advance(10)
@@ -194,13 +194,13 @@ async def test_reply_at_automatic_total_cap_cannot_start_another_full_wait(dialo
     msg, view = take(dialogue)
     ctx = admit(dialogue, msg)
     dialogue.store.note_seen(A.session_key, ctx.turn_id, encode_view(view))
-    result = dialogue.wait(ctx, 12, purpose="reply", quiet_seconds=4)
+    result = dialogue.waiting.wait(ctx, 12, purpose="reply", quiet_seconds=4)
     assert result == {"deferred": False, "purpose": "reply", "quiet": False}
 
 
 async def test_wait_consumption_and_continuation_insert_roll_back_together(dialogue):
     ctx = expose(dialogue)
-    dialogue.wait(ctx, 12, purpose="reply", quiet_seconds=3)
+    dialogue.waiting.wait(ctx, 12, purpose="reply", quiet_seconds=3)
     finish(dialogue, ctx)
     dialogue.store.db.execute("CREATE TEMP TRIGGER reject_continuation BEFORE INSERT ON dialogue_jobs "
                               "BEGIN SELECT RAISE(ABORT, 'test transaction failure'); END")
@@ -217,7 +217,7 @@ async def test_wait_consumption_and_continuation_insert_roll_back_together(dialo
 
 async def test_wait_deadline_and_new_mention_merge_into_one_directed_turn(dialogue):
     ctx = expose(dialogue)
-    dialogue.wait(ctx, 12, purpose="reply", quiet_seconds=3)
+    dialogue.waiting.wait(ctx, 12, purpose="reply", quiet_seconds=3)
     finish(dialogue, ctx)
     clock(dialogue).advance(3)
     await dialogue.observe(observed(dialogue, 2, text="@bot 马上回答"), directed=True)
@@ -230,7 +230,7 @@ async def test_wait_deadline_and_new_mention_merge_into_one_directed_turn(dialog
 
 async def test_messages_timeout_cannot_rearm_without_new_human_content(dialogue):
     ctx = expose(dialogue)
-    dialogue.wait(ctx, 10, purpose="messages", on_timeout=True)
+    dialogue.waiting.wait(ctx, 10, purpose="messages", on_timeout=True)
     finish(dialogue, ctx)
     clock(dialogue).advance(10)
     await dialogue.run_due()
@@ -238,7 +238,7 @@ async def test_messages_timeout_cannot_rearm_without_new_human_content(dialogue)
     assert view["dialogue"]["quiet"] is False
     ctx = admit(dialogue, msg)
     dialogue.store.note_seen(A.session_key, ctx.turn_id, encode_view(view))
-    dialogue.wait(ctx, 10, purpose="messages", on_timeout=True)
+    dialogue.waiting.wait(ctx, 10, purpose="messages", on_timeout=True)
     finish(dialogue, ctx)
     clock(dialogue).advance(10)
     await dialogue.run_due()
@@ -248,8 +248,8 @@ async def test_messages_timeout_cannot_rearm_without_new_human_content(dialogue)
 @pytest.mark.parametrize("admission_delay", [0, 10])
 async def test_selective_wait_ttl_limits_continuation_even_after_queueing(dialogue, admission_delay):
     ctx = expose(dialogue)
-    dialogue.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False, ttl_seconds=5)
-    dialogue.wait(ctx, 60, purpose="messages", quiet_seconds=1)
+    dialogue.waiting.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False, ttl_seconds=5)
+    dialogue.waiting.wait(ctx, 60, purpose="messages", quiet_seconds=1)
     finish(dialogue, ctx)
     await dialogue.observe(observed(dialogue, 2, text="出发"), directed=False)
     clock(dialogue).advance(1 if admission_delay else 6)
@@ -267,7 +267,7 @@ async def test_selective_wait_ttl_limits_continuation_even_after_queueing(dialog
 @pytest.mark.parametrize("queued", [False, True])
 async def test_removed_source_cannot_create_a_contextless_reply(dialogue, queued):
     ctx = expose(dialogue)
-    dialogue.wait(ctx, 12, purpose="reply", quiet_seconds=1)
+    dialogue.waiting.wait(ctx, 12, purpose="reply", quiet_seconds=1)
     finish(dialogue, ctx)
     clock(dialogue).advance(1)
     if queued:
@@ -312,7 +312,7 @@ async def test_attention_preserves_selective_conditions_and_topic_scope(dialogue
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
     await dialogue.send(ctx, "你什么时候出发？", None)
-    dialogue.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False)
+    dialogue.waiting.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False)
     finish(dialogue, ctx)
     await dialogue.observe(observed(dialogue, 2, text="下午三点"), directed=False)
     await dialogue.observe(observed(dialogue, 3, scope=B, text="下午三点"), directed=False)
@@ -415,7 +415,7 @@ async def test_paced_group_records_confirmed_context_after_last_child(dialogue):
 async def test_sleep_observation_transfers_to_sleep_locally_and_mark_read_stays_pure(dialogue):
     ctx = expose(dialogue)
     assert dialogue.mark_read(ctx, 1) == 1
-    result = dialogue.wait(ctx, 600, sleeping=True)
+    result = dialogue.waiting.wait(ctx, 600, sleeping=True)
     assert result["purpose"] == "observe" and result["deferred"]
     finish(dialogue, ctx)
     clock(dialogue).advance(299)
@@ -430,7 +430,7 @@ async def test_sleep_observation_transfers_to_sleep_locally_and_mark_read_stays_
 
 async def test_sleep_observation_new_content_is_shown_before_sleep(dialogue):
     ctx = expose(dialogue)
-    dialogue.wait(ctx, 600, sleeping=True)
+    dialogue.waiting.wait(ctx, 600, sleeping=True)
     finish(dialogue, ctx)
     clock(dialogue).advance(30)
     await dialogue.observe(observed(dialogue, 2, text="还有一件事"), directed=False)
@@ -447,7 +447,7 @@ async def test_unseen_arrival_before_sleep_tool_gets_a_fresh_snapshot(dialogue):
     decide(dialogue)
     ctx = expose(dialogue)
     await dialogue.observe(observed(dialogue, 2, text="还没说完"), directed=False)
-    dialogue.wait(ctx, 600, sleeping=True)
+    dialogue.waiting.wait(ctx, 600, sleeping=True)
     finish(dialogue, ctx)
     clock(dialogue).advance(2)
     await dialogue.run_due()
@@ -468,7 +468,7 @@ def test_already_quiet_conversation_does_not_wait_another_five_minutes(dialogue)
     # Keep an authorized test turn live while advancing the manual clock.
     dialogue.store.db.execute("UPDATE wakes SET expires=expires+600")
     clock(dialogue).advance(301)
-    assert dialogue.wait(ctx, 600, sleeping=True)["mode"] == "sleeping"
+    assert dialogue.waiting.wait(ctx, 600, sleeping=True)["mode"] == "sleeping"
 
 
 async def test_model_error_does_not_leave_a_running_lock(tmp_path, dialogue):
@@ -486,7 +486,7 @@ async def test_model_error_does_not_leave_a_running_lock(tmp_path, dialogue):
 @pytest.mark.parametrize("text", ["晚安", "再见！", "good night"])
 def test_explicit_farewell_enters_sleep_observation(dialogue, text):
     ctx = expose(dialogue, text=text)
-    assert dialogue.wait(ctx, 600, sleeping=True)["purpose"] == "observe"
+    assert dialogue.waiting.wait(ctx, 600, sleeping=True)["purpose"] == "observe"
 
 
 async def test_confirmed_publication_resets_observation_evidence(dialogue):
@@ -507,7 +507,7 @@ async def test_new_send_resets_even_a_previously_quiet_sleep_credential(dialogue
     clock(dialogue).advance(301)
     dialogue.set_sender(AsyncMock(return_value=800))
     await dialogue.send(ctx, "什么时候出发？", None)
-    result = dialogue.wait(ctx, 600, sleeping=True)
+    result = dialogue.waiting.wait(ctx, 600, sleeping=True)
     assert result["purpose"] == "observe" and result["total_due"] == dialogue.now() + 300
 
 
@@ -515,9 +515,9 @@ async def test_new_send_resets_even_a_previously_quiet_sleep_credential(dialogue
 async def test_persisted_wait_survives_restart_without_duplicate_continuations(dialogue, purpose):
     ctx = expose(dialogue)
     if purpose == "observe":
-        dialogue.wait(ctx, 600, sleeping=True)
+        dialogue.waiting.wait(ctx, 600, sleeping=True)
     else:
-        dialogue.wait(ctx, 30, purpose=purpose, on_timeout=True)
+        dialogue.waiting.wait(ctx, 30, purpose=purpose, on_timeout=True)
     root, config, now, bus = dialogue.root, dialogue.config, dialogue.now, dialogue.bus
     dialogue.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
@@ -552,7 +552,7 @@ async def test_restart_preserves_automatic_quiet_deadline(dialogue):
 @pytest.mark.parametrize("change", ["pause", "disable", "role", "background"])
 async def test_operator_changes_only_invalidate_pending_observation_for_binding_changes(dialogue, change):
     ctx = expose(dialogue)
-    dialogue.wait(ctx, 600, sleeping=True)
+    dialogue.waiting.wait(ctx, 600, sleeping=True)
     finish(dialogue, ctx)
     if change == "pause":
         dialogue.config.scopes[0].paused = True
@@ -589,7 +589,7 @@ async def test_background_wait_releases_real_agent_lock(tmp_path, dialogue):
 @pytest.mark.parametrize("delta", [-100, 1000])
 async def test_clock_jump_does_not_replay_old_wait_or_spin(dialogue, delta):
     ctx = expose(dialogue)
-    dialogue.wait(ctx, 30, purpose="messages", on_timeout=True)
+    dialogue.waiting.wait(ctx, 30, purpose="messages", on_timeout=True)
     finish(dialogue, ctx)
     clock(dialogue).advance(delta)
     for _ in range(3):

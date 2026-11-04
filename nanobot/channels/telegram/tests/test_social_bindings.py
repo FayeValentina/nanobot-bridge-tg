@@ -157,8 +157,8 @@ def test_validate_context_does_not_write_database(runtime, require_claim):
     # Validation must not resolve edited personas, even when checking a claimed wake.
     (runtime.roles / "friend.md").write_text("CHANGED PERSONA", encoding="utf-8")
     changes = runtime.store.db.total_changes
-    assert runtime.validate_context(ctx, require_claim=require_claim) == SCOPE
-    assert runtime.validate_context(ctx, require_claim=require_claim) == SCOPE
+    assert runtime.bindings.validate_context(ctx, require_claim=require_claim) == SCOPE
+    assert runtime.bindings.validate_context(ctx, require_claim=require_claim) == SCOPE
     assert runtime.store.db.total_changes == changes
 
 

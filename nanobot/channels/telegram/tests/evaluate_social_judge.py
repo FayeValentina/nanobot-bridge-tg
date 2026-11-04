@@ -106,12 +106,12 @@ async def evaluate(args):
                     ctx = RequestContext(channel="telegram", chat_id=str(scope.chat_id), session_key=scope.session_key,
                         turn_id="setup", metadata={"message_thread_id": 53, "_social_job": job},
                         attributes={"context_version": runtime.store.scopes.state(scope.session_key)["version"]})
-                    runtime.admit_request(ctx)
+                    runtime.waiting.admit_request(ctx)
                     if case.get("wait"):
-                        runtime.set_wake(ctx, keywords=["到家"], senders=["456"], on_messages=False, ttl_seconds=60)
-                        runtime.wait(ctx, infinite=True, purpose="messages", quiet_seconds=0.1)
+                        runtime.waiting.set_wake(ctx, keywords=["到家"], senders=["456"], on_messages=False, ttl_seconds=60)
+                        runtime.waiting.wait(ctx, infinite=True, purpose="messages", quiet_seconds=0.1)
                     else:
-                        runtime.wait(ctx, 30, sleeping=True)
+                        runtime.waiting.wait(ctx, 30, sleeping=True)
                     runtime.store.wakes.finish("setup", "completed")
                 elif case.get("sleeping"):
                     with runtime.store.db:

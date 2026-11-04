@@ -102,14 +102,14 @@ async def test_on_demand_image_is_native_bounded_and_cached(social):
     download = loader_for(tg, picture((1800, 900)))
     await tg._observe_social(update_with_media())
     ctx = context(social)
-    blocks = await social.get_media(ctx, 1)
+    blocks = await social.media.get(ctx, 1)
     assert blocks[0]["type"] == "image_url"
     raw = base64.b64decode(blocks[0]["image_url"]["url"].split(",", 1)[1])
     with Image.open(io.BytesIO(raw)) as image:
         assert image.size == (1536, 768) and image.format == "JPEG"
     assert Path(blocks[0]["_meta"]["path"]).is_file()
-    assert len(list(social.media.root.glob("*.original"))) == 1
-    await social.get_media(ctx, 1)
+    assert len(list(social.media.cache.root.glob("*.original"))) == 1
+    await social.media.get(ctx, 1)
     download.assert_awaited_once()
 
 
@@ -118,11 +118,11 @@ async def test_media_cannot_read_other_group_or_topic(social):
     loader_for(tg)
     await tg._observe_social(update_with_media())
     with pytest.raises(PermissionError, match="not observed"):
-        await social.get_media(context(social, B, turn="other"), 1)
+        await social.media.get(context(social, B, turn="other"), 1)
     tg._app.bot.get_file.assert_not_awaited()
     ctx = replace(context(social, turn="wrong-topic"), metadata={"message_thread_id": 43})
     with pytest.raises(PermissionError):
-        await social.get_media(ctx, 1)
+        await social.media.get(ctx, 1)
 
 
 @pytest.mark.parametrize("failure", ["invalid", "large_bytes", "large_pixels", "download", "missing_size"])
@@ -140,7 +140,7 @@ async def test_media_failure_is_explicit_and_text_still_sends(social, failure):
         tg._app.bot.get_file.return_value.file_size = None
     await tg._observe_social(update)
     ctx = context(social)
-    blocks = await social.get_media(ctx, 1)
+    blocks = await social.media.get(ctx, 1)
     assert all(block["type"] == "text" for block in blocks)
     assert "unavailable" in blocks[0]["text"]
     assert (await social.send(ctx, "text still works", None))["status"] == "sent"
@@ -157,7 +157,7 @@ async def test_motion_uses_thumbnail_without_decoding_original(social, kind, val
     loader_for(tg)
     update = update_with_media(kind, thumbnail={"file_id": "thumb", "file_unique_id": "thumb-unique", "width": 40, "height": 20}, **values)
     await tg._observe_social(update)
-    blocks = await social.get_media(context(social), 1)
+    blocks = await social.media.get(context(social), 1)
     tg._app.bot.get_file.assert_awaited_once_with("thumb")
     assert "thumbnail only" in blocks[1]["text"]
 
@@ -166,7 +166,7 @@ async def test_tgs_without_thumbnail_uses_metadata(social):
     tg = channel(social)
     loader_for(tg)
     await tg._observe_social(update_with_media("sticker", is_animated=True))
-    blocks = await social.get_media(context(social), 1)
+    blocks = await social.media.get(context(social), 1)
     assert blocks[0]["type"] == "text" and "no thumbnail" in blocks[0]["text"]
     tg._app.bot.get_file.assert_not_awaited()
 
@@ -176,7 +176,7 @@ async def test_image_budget_includes_concurrent_calls_and_cached_reads(social):
     loader_for(tg)
     await tg._observe_social(update_with_media())
     ctx = context(social)
-    results = await asyncio.gather(*(social.get_media(ctx, 1) for _ in range(7)))
+    results = await asyncio.gather(*(social.media.get(ctx, 1) for _ in range(7)))
     assert sum(block["type"] == "image_url" for result in results for block in result) == 4
 
 
@@ -192,8 +192,8 @@ async def test_pause_during_download_discards_media_result(social):
 
     tg._app.bot.get_file.return_value.download_as_bytearray.side_effect = interrupted_download
     with pytest.raises(PermissionError, match="paused"):
-        await social.get_media(ctx, 1)
-    assert not list(social.media.root.iterdir())
+        await social.media.get(ctx, 1)
+    assert not list(social.media.cache.root.iterdir())
 
 
 async def test_reply_identifies_member_and_can_view_old_quoted_photo(social):
@@ -207,7 +207,7 @@ async def test_reply_identifies_member_and_can_view_old_quoted_photo(social):
     view = json.loads(social.read_messages(ctx))
     quoted = view["messages"][0]["reply"]
     assert quoted["sender_id"] == "456" and not quoted["is_bot"]
-    assert (await social.get_media(ctx, 99))[0]["type"] == "image_url"
+    assert (await social.media.get(ctx, 99))[0]["type"] == "image_url"
     result = await social.send(ctx, "reply to the right member", 99)
     assert result["status"] == "sent"
     kwargs = tg._app.bot.send_message.call_args.kwargs
@@ -222,7 +222,7 @@ async def test_cross_topic_quoted_message_does_not_grant_media_or_reply(social):
     await tg._observe_social(update_with_media(reply=reply))
     ctx = context(social)
     with pytest.raises(PermissionError):
-        await social.get_media(ctx, 99)
+        await social.media.get(ctx, 99)
     with pytest.raises(PermissionError):
         await social.send(ctx, "wrong topic", 99)
 
@@ -272,10 +272,10 @@ async def test_static_sticker_collect_search_dedup_and_receipt(social):
     loader_for(tg)
     await observe_sticker(social)
     ctx = context(social)
-    sticker_id = social.collect_sticker(ctx, 1, "happy greeting")
+    sticker_id = social.stickers.collect(ctx, 1, "happy greeting")
     await observe_sticker(social, seq=2, file_id="fresh-file-id")
-    assert social.collect_sticker(ctx, 2, None) == sticker_id
-    assert social.list_stickers(ctx, "greeting") == [{"sticker_id": "unique", "note": "happy greeting", "uses": 0, "emoji": "🙂"}]
+    assert social.stickers.collect(ctx, 2, None) == sticker_id
+    assert social.stickers.search(ctx, "greeting") == [{"sticker_id": "unique", "note": "happy greeting", "uses": 0, "emoji": "🙂"}]
     result = await social.send_sticker(ctx, sticker_id, 1)
     assert result["status"] == "sent"
     repeated = await social.send_sticker(ctx, sticker_id, 1)
@@ -288,7 +288,7 @@ async def test_static_sticker_collect_search_dedup_and_receipt(social):
     assert not social.store.delivery(result["action_id"], "unknown", error="late receipt")
     row = social.store.deliveries.get(result["action_id"])
     assert row["status"] == "sent" and json.loads(row["message_ids"]) == [result["message_id"]]
-    assert social.list_stickers(ctx, "")[0]["uses"] == 1
+    assert social.stickers.search(ctx, "")[0]["uses"] == 1
     tg._app.bot.send_sticker.assert_awaited_once()
     tg._app.bot.send_message.assert_not_awaited()
 
@@ -296,32 +296,32 @@ async def test_static_sticker_collect_search_dedup_and_receipt(social):
 async def test_sticker_library_and_notes_do_not_cross_scopes(social):
     await observe_sticker(social)
     ctx = context(social)
-    social.collect_sticker(ctx, 1, "private group note")
+    social.stickers.collect(ctx, 1, "private group note")
     other = context(social, B, turn="other-group")
-    assert social.list_stickers(other, "") == []
+    assert social.stickers.search(other, "") == []
     with pytest.raises(PermissionError):
         await social.send_sticker(other, "unique", None)
     with pytest.raises(PermissionError):
-        social.collect_sticker(other, 1, "cross group")
+        social.stickers.collect(other, 1, "cross group")
 
 
 async def test_collection_is_bounded_but_existing_entries_can_be_updated(social):
     social.config.sticker_limit = 1
     await observe_sticker(social)
     ctx = context(social)
-    social.collect_sticker(ctx, 1, "first")
-    social.collect_sticker(ctx, 1, "updated")
+    social.stickers.collect(ctx, 1, "first")
+    social.stickers.collect(ctx, 1, "updated")
     await observe_sticker(social, seq=2, unique_id="second")
     with pytest.raises(PermissionError, match="limit"):
-        social.collect_sticker(ctx, 2, "too many")
-    assert social.list_stickers(ctx, "")[0]["note"] == "updated"
+        social.stickers.collect(ctx, 2, "too many")
+    assert social.stickers.search(ctx, "")[0]["note"] == "updated"
 
 
 @pytest.mark.parametrize("values", [{"animated": True}, {"video": True}])
 async def test_animated_stickers_cannot_be_collected_or_sent(social, values):
     await observe_sticker(social, **values)
     with pytest.raises(ValueError, match="static"):
-        social.collect_sticker(context(social), 1, None)
+        social.stickers.collect(context(social), 1, None)
 
 
 @pytest.mark.parametrize("failure,status", [(TimedOut("timeout"), "unknown"), (BadRequest("invalid file id"), "failed")])
@@ -331,9 +331,9 @@ async def test_sticker_failure_does_not_count_use_or_block_later_text(social, fa
     tg._app.bot.send_sticker.side_effect = failure
     await observe_sticker(social)
     ctx = context(social)
-    social.collect_sticker(ctx, 1, None)
+    social.stickers.collect(ctx, 1, None)
     assert (await social.send_sticker(ctx, "unique", None))["status"] == status
-    assert social.list_stickers(ctx, "")[0]["uses"] == 0
+    assert social.stickers.search(ctx, "")[0]["uses"] == 0
     assert (await social.send(ctx, "still here", None))["status"] == "sent"
     if status == "unknown":
         social.store.wakes.finish(ctx.turn_id, "completed")
@@ -348,7 +348,7 @@ async def test_stickers_share_text_budget_and_pause_gate(social):
     social.config.max_sends_per_hour = 1
     await observe_sticker(social)
     ctx = context(social)
-    social.collect_sticker(ctx, 1, None)
+    social.stickers.collect(ctx, 1, None)
     await social.send(ctx, "one send", None)
     with pytest.raises(PermissionError, match="budget"):
         await social.send_sticker(ctx, "unique", None)
@@ -364,15 +364,15 @@ async def test_sticker_429_reuses_action_and_counts_only_success(social):
     tg._app.bot.send_sticker.side_effect = [RetryAfter(1), SimpleNamespace(message_id=601)]
     await observe_sticker(social)
     ctx = context(social)
-    social.collect_sticker(ctx, 1, None)
+    social.stickers.collect(ctx, 1, None)
     result = await social.send_sticker(ctx, "unique", 1)
-    assert result["status"] == "queued" and social.list_stickers(ctx, "")[0]["uses"] == 0
+    assert result["status"] == "queued" and social.stickers.search(ctx, "")[0]["uses"] == 0
     with social.store.db:
         social.store.db.execute("UPDATE actions SET due=? WHERE id=?", (social.now() - 1, result["action_id"]))
     await social.run_due()
     row = social.store.db.execute("SELECT * FROM actions WHERE id=?", (result["action_id"],)).fetchone()
     assert row["status"] == "sent" and row["attempts"] == 2
-    assert social.list_stickers(ctx, "")[0]["uses"] == 1
+    assert social.stickers.search(ctx, "")[0]["uses"] == 1
     assert tg._app.bot.send_sticker.await_count == 2
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 1
 
@@ -383,7 +383,7 @@ async def test_restart_cancels_sticker_retry_without_resending(social):
     tg._app.bot.send_sticker.side_effect = RetryAfter(10)
     await observe_sticker(social)
     ctx = context(social)
-    social.collect_sticker(ctx, 1, None)
+    social.stickers.collect(ctx, 1, None)
     action = await social.send_sticker(ctx, "unique", None)
     social.store.recover()
     row = social.store.db.execute("SELECT status FROM actions WHERE id=?", (action["action_id"],)).fetchone()
@@ -398,7 +398,7 @@ async def test_pause_cancels_queued_sticker_without_use_count(social):
     tg._app.bot.send_sticker.side_effect = RetryAfter(10)
     await observe_sticker(social)
     ctx = context(social)
-    social.collect_sticker(ctx, 1, None)
+    social.stickers.collect(ctx, 1, None)
     result = await social.send_sticker(ctx, "unique", None)
     social.store.pause(A.session_key)
     await social.run_due()

@@ -137,7 +137,7 @@ class SocialHarness:
                 self._workspace, sessions_root=self._directory / "sessions",
             ),
             session_policy_resolver=self._runtime.policy_for_session,
-            request_admission=self._runtime.admit_request,
+            request_admission=self._runtime.waiting.admit_request,
             hook_factories=[self._runtime.hook_factory, lambda turn: observer], tool_registry=registry,
         )
         self._loop.set_runtime_context_window(32000)

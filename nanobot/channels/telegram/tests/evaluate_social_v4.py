@@ -275,7 +275,7 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                 ctx = RequestContext(channel="telegram", chat_id=str(SCOPE.chat_id), session_key=SCOPE.session_key,
                     turn_id=f"v4c-{name}-{len(turns)}", metadata=dict(inbound.metadata), runtime=llm_runtime)
                 registry_context[0] = ctx
-                runtime.admit_request(ctx)
+                runtime.waiting.admit_request(ctx)
                 persona = runtime.bindings.resolve(SCOPE).persona
                 hook = runtime.hook_factory(AgentTurnHookContext(session_key=SCOPE.session_key))
                 started = time.monotonic()
@@ -307,7 +307,7 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
                 # Start from an actually confirmed fake-platform send, then exercise
                 # the real automatic reply wait. Silence in a generated first turn
                 # must not accidentally count as evidence of reply-wait behavior.
-                runtime.keep_reply_intent(SCOPE, "prior-0")
+                runtime.waiting.keep_reply_intent(SCOPE, "prior-0")
                 before = len(provider.calls)
                 wait = runtime.store.db.execute("SELECT total_due FROM dialogue_waits WHERE scope=?", (SCOPE.session_key,)).fetchone()
                 assert wait is not None

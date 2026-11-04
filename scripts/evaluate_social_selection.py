@@ -86,7 +86,7 @@ async def evaluate(config_path: Path, source_db: Path, output: Path) -> None:
             loop=AgentLoop(bus=bus,provider=provider,model=preset.model,workspace=workspace,max_iterations=4,
                 context_window_tokens=config.agents.defaults.context_window_tokens,session_manager=SessionManager(workspace,sessions_root=root/'sessions'),
                 tool_registry=registry,tools_config=config.tools.model_copy(update={'enabled_tools':list(SOCIAL_TOOLS)}),
-                session_policy_resolver=runtime.policy_for_session,request_admission=runtime.admit_request,
+                session_policy_resolver=runtime.policy_for_session,request_admission=runtime.waiting.admit_request,
                 hook_factories=[runtime.hook_factory,lambda _:capture])
             started=time.monotonic()
             try:

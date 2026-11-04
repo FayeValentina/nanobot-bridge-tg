@@ -105,7 +105,7 @@ async def evaluate(args):
             member = ObservedMessage(scope,11,11,"member","群友",time.time(),text)
             judge_result = None
             if args.live_judge and name == "short_reply":
-                runtime.keep_reply_intent(scope, "prior-0")
+                runtime.waiting.keep_reply_intent(scope, "prior-0")
                 await runtime.observe(member, directed=False)
                 await asyncio.sleep(1.6)
                 await runtime.run_due()
@@ -128,7 +128,7 @@ async def evaluate(args):
                 assert judge_result["decision"]["decision"] == "wake"
                 inbound = runtime.bus.inbound.get_nowait()
                 ctx.metadata.update(inbound.metadata)
-                runtime.admit_request(ctx)
+                runtime.waiting.admit_request(ctx)
                 view = json.loads(inbound.content.split("\n",1)[1])
             else:
                 runtime.store.observe(member,500)

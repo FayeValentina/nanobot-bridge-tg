@@ -78,8 +78,8 @@ async def test_explicit_silence_never_gets_a_delivery_check(tmp_path, social):
 
 async def test_conditional_wait_filters_numbers_and_consumes_keyword_once(social):
     ctx = context(social)
-    social.set_wake(ctx, keywords=["5", "五"], senders=[], on_messages=False)
-    social.wait(ctx, 3600)
+    social.waiting.set_wake(ctx, keywords=["5", "五"], senders=[], on_messages=False)
+    social.waiting.wait(ctx, 3600)
     social.store.wakes.finish(ctx.turn_id, "completed")
     for i, text in enumerate(["1", "2", "unrelated"], 1):
         await social.observe(observed(social, i, text=text), directed=False)
@@ -94,7 +94,7 @@ async def test_conditional_wait_filters_numbers_and_consumes_keyword_once(social
     assert json.loads(inbound.content.split("\n", 1)[1])["wake_reason"] == "judge"
     # A delayed candidate must not consume the condition before model admission.
     assert json.loads(social.store.scopes.state(A.session_key)["wake_config"])["keywords"] == ["5", "五"]
-    social.admit_request(RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
+    social.waiting.admit_request(RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                                        turn_id="consume-keyword", metadata=dict(inbound.metadata)))
     assert social.store.scopes.state(A.session_key)["wake_config"] == "{}"
     assert social.store.scopes.state(B.session_key)["wake_config"] == "{}"
@@ -102,8 +102,8 @@ async def test_conditional_wait_filters_numbers_and_consumes_keyword_once(social
 
 async def test_conditional_wait_direct_mention_interrupts_without_consuming_condition(social):
     ctx = context(social)
-    social.set_wake(ctx, keywords=["5"], senders=[], on_messages=False)
-    social.wait(ctx, 3600)
+    social.waiting.set_wake(ctx, keywords=["5"], senders=[], on_messages=False)
+    social.waiting.wait(ctx, 3600)
     social.store.wakes.finish(ctx.turn_id, "completed")
     await social.observe(observed(social, text="@bot help"), directed=True)
     clock(social).advance(11)
@@ -114,8 +114,8 @@ async def test_conditional_wait_direct_mention_interrupts_without_consuming_cond
 
 async def test_condition_deadline_survives_restart_and_expiry_clears_it(social):
     ctx = context(social)
-    social.set_wake(ctx, keywords=["5"], senders=[], on_messages=False, ttl_seconds=5, one_shot=False)
-    social.wait(ctx, 100)
+    social.waiting.set_wake(ctx, keywords=["5"], senders=[], on_messages=False, ttl_seconds=5, one_shot=False)
+    social.waiting.wait(ctx, 100)
     social.store.wakes.finish(ctx.turn_id, "completed")
     root, config, bus, now = social.root, social.config, social.bus, social.now
     social.close()
@@ -312,8 +312,8 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
 
 async def test_queued_keyword_cannot_outlive_condition_ttl(social):
     ctx = context(social)
-    social.set_wake(ctx, keywords=["5"], senders=[], on_messages=False, ttl_seconds=3)
-    social.wait(ctx, 100)
+    social.waiting.set_wake(ctx, keywords=["5"], senders=[], on_messages=False, ttl_seconds=3)
+    social.waiting.wait(ctx, 100)
     social.store.wakes.finish(ctx.turn_id, "completed")
     await social.observe(observed(social, text="5"), directed=False)
     clock(social).advance(4)

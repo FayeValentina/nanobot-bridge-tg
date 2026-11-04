@@ -1,17 +1,16 @@
 """Channel-owned message batching around the single intermediary component."""
 
-# These two channel-owned objects share their private lifecycle, not an external API.
-# pyright: reportPrivateUsage=false
-
 from __future__ import annotations
 
 import asyncio
 import json
 import sqlite3
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Callable
+from typing import Any, cast
 
 from loguru import logger
 
+from nanobot.channels.telegram.social.bindings import ScopeBindings
 from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.judge import (
     JudgeProviderSettings,
@@ -26,23 +25,31 @@ from nanobot.channels.telegram.social.judge_models import (
     JudgeReply,
     JudgeSnapshot,
 )
+from nanobot.channels.telegram.social.media import SocialMedia
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
     ProactiveCandidate,
     QuotedMessage,
 )
-from nanobot.config.schema import Config
+from nanobot.channels.telegram.social.store import SocialStore
+from nanobot.channels.telegram.social.waiting import SocialWaiting
+from nanobot.config.schema import Config, TelegramSocialConfig
 from nanobot.providers.base import LLMProvider
-
-if TYPE_CHECKING:
-    from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 
 
 class JudgeCoordinator:
-    def __init__(self, runtime: TelegramSocialRuntime, provider: LLMProvider | None = None,
+    def __init__(self, store: SocialStore, bindings: ScopeBindings, waiting: SocialWaiting,
+                 media: SocialMedia, notify: Callable[[], None],
+                 config: Callable[[], TelegramSocialConfig], now: Callable[[], float],
+                 provider: LLMProvider | None = None,
                  provider_version: JudgeProviderSettings = "") -> None:
-        self.runtime = runtime
-        self.store = runtime.store
+        self.store = store
+        self.bindings = bindings
+        self.waiting = waiting
+        self.media = media
+        self.notify = notify
+        self.config = config
+        self.now = now
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.provider = provider
         self.provider_version = provider_version
@@ -50,48 +57,40 @@ class JudgeCoordinator:
 
     def configure(self, *, provider_changed: bool = False) -> None:
         if self.provider is None:
-            self.provider, self.provider_version = make_judge_provider(Config(), self.runtime.config.judge)
-        self.judge = SocialJudge(self.store, self.runtime.config.judge, self.provider,
+            self.provider, self.provider_version = make_judge_provider(Config(), self.config().judge)
+        self.judge = SocialJudge(self.store, self.config().judge, self.provider,
                                  provider_changed=provider_changed, media_loader=self._media_content)
         # A restart can change the prompt as well as the provider. Reassess live
         # pending content with fresh facts instead of restoring an old wait intent.
         with transaction(self.store.db):
             self.store.judge.cancel_other_revisions(self.judge.revision)
-            self.store.judge.requeue_provider_changes(self.runtime.now())
+            self.store.judge.requeue_provider_changes(self.now())
 
     def set_provider(self, provider: LLMProvider, version: JudgeProviderSettings) -> None:
         changed = version != self.provider_version
         self.provider, self.provider_version = provider, version
         self.configure(provider_changed=changed)
-        self.runtime.scheduler.notify()
+        self.notify()
 
     def cancel(self) -> None:
         for task in self.tasks.values():
             task.cancel()
 
     def coalesce_delay(self, scope: ConversationScope) -> float:
-        binding = self.runtime.binding(scope)
+        binding = self.bindings.binding(scope)
         assert binding is not None
-        conditions, _ = self.runtime._wake_conditions(scope.session_key)
+        conditions, _ = self.waiting.conditions(scope.session_key)
         delay = conditions.coalesce_seconds if conditions.coalesce_seconds is not None else binding.coalesce_seconds
-        delay = self.runtime.config.coalesce_seconds if delay is None else delay
+        delay = self.config().coalesce_seconds if delay is None else delay
         wait = self.store.wakes.wait(scope.session_key)
         if wait and wait["purpose"] in {"reply", "messages"}:
             delay = float(wait["quiet_seconds"])
         return delay
 
-    def enqueue(self, scope: ConversationScope, seq: int, opportunity: str | None = None) -> None:
-        binding = self.runtime.binding(scope)
-        if binding is None or binding.paused:
-            return
-        delay = self.coalesce_delay(scope)
-        self.store.judge.queue(scope.session_key, seq, delay=delay,
-                                    maximum=self.runtime.config.dynamic_wait.max_seconds, opportunity=opportunity)
-
     def intent(self, scope: ConversationScope) -> JudgeIntent | None:
-        binding = self.runtime.binding(scope)
+        binding = self.bindings.binding(scope)
         assert binding is not None
-        conditions, dynamic = self.runtime._wake_conditions(scope.session_key)
+        conditions, dynamic = self.waiting.conditions(scope.session_key)
         state = self.store.scopes.state(scope.session_key)  # Expiring conditions can end an infinite wait.
         wait = self.store.wakes.wait(scope.session_key)
         dynamic = dynamic and bool(conditions.keywords or conditions.senders or conditions.on_messages or conditions.on_question)
@@ -124,7 +123,7 @@ class JudgeCoordinator:
         assert scope is not None  # JudgeSnapshot validates the scope.
 
         def validate() -> None:
-            if self.runtime.binding(scope) is None or not self.store.judge.current(snapshot):
+            if self.bindings.binding(scope) is None or not self.store.judge.current(snapshot):
                 raise PermissionError("judge image batch is no longer current")
 
         validate()
@@ -136,12 +135,12 @@ class JudgeCoordinator:
             return []
         blocks: list[dict[str, Any]] = []
         used: set[tuple[int, str]] = set()
-        settings = self.runtime.config.judge
-        limit = min(settings.media_max_images, self.runtime.config.media_max_images_per_turn)
+        settings = self.config().judge
+        limit = min(settings.media_max_images, self.config().media_max_images_per_turn)
         try:
             # Bound all image I/O together, leaving time for the actual decision.
             async with asyncio.timeout(min(settings.media_timeout_seconds, settings.timeout_seconds / 2)):
-                async with self.runtime._media_lock:
+                async with self.media.lock:
                     for message_id, label in targets:
                         validate()
                         for ref in self.store.messages.media_for_message(snapshot.scope, message_id):
@@ -159,7 +158,7 @@ class JudgeCoordinator:
                                     continue
                                 ref = ref.model_copy(update={"file_id": ref.thumbnail_id, "size": None, "width": 0, "height": 0})
                                 image_label += "; thumbnail only, motion not decoded"
-                            images = await self.runtime.prepare_media(scope, ref, image_label, validate=validate,
+                            images = await self.media.prepare(scope, ref, image_label, validate=validate,
                                                                       max_edge=settings.media_max_edge)
                             blocks.extend({key: value for key, value in block.items() if key != "_meta"} for block in images)
         except TimeoutError:
@@ -205,18 +204,18 @@ class JudgeCoordinator:
         key = scope.session_key
         pending = self.store.judge.state(key)
         after = self.store.judge.through(key)
-        rows = self.store.messages.range(key, after, pending["pending_seq"], self.runtime.config.judge.context_messages)
+        rows = self.store.messages.range(key, after, pending["pending_seq"], self.config().judge.context_messages)
         # Leading non-events can be passed locally; this is assessment, never main read.
         while rows:
             facts = json.loads(rows[0]["judge_facts"])
-            if facts.get("eligible") and float(facts.get("received_at",rows[0]["at"])) + self.runtime.config.judge.batch_ttl_seconds > self.runtime.now():
+            if facts.get("eligible") and float(facts.get("received_at",rows[0]["at"])) + self.config().judge.batch_ttl_seconds > self.now():
                 break
             after = int(rows.pop(0)["seq"])
         with transaction(self.store.db):
             self.store.judge.set_through(after, key)
         if not rows and pending["opportunity"] is None:
             return None
-        binding = self.runtime.binding(scope)
+        binding = self.bindings.binding(scope)
         assert binding is not None
         state = self.store.scopes.state(key)
         new = [self._message(row) for row in rows]
@@ -226,17 +225,17 @@ class JudgeCoordinator:
         through = new[-1].seq if new else after
         if not new and pending["opportunity"] is None:
             return None
-        history = [self._message(row) for row in reversed(self.store.messages.history_through(key, after, max(0, self.runtime.config.judge.context_messages-len(new))))]
+        history = [self._message(row) for row in reversed(self.store.messages.history_through(key, after, max(0, self.config().judge.context_messages-len(new))))]
         confirmed_after = [self._message(row) for row in self.store.messages.self_after(key, through)]
-        while history and len(history+new+confirmed_after) > self.runtime.config.judge.context_messages:
+        while history and len(history+new+confirmed_after) > self.config().judge.context_messages:
             history.pop(0)
-        confirmed_after = confirmed_after[:max(0,self.runtime.config.judge.context_messages-len(history)-len(new))]
-        now = self.runtime.now()
+        confirmed_after = confirmed_after[:max(0,self.config().judge.context_messages-len(history)-len(new))]
+        now = self.now()
         arrival_times = [float(json.loads(row["judge_facts"]).get("received_at",row["at"])) for row in rows
                          if int(row["seq"]) <= through and json.loads(row["judge_facts"]).get("eligible")]
         created = min(arrival_times) if arrival_times else float(pending["pending_first"]) if pending["pending_first"] is not None else now
-        persona = self.runtime.bindings.resolve(scope).persona
-        expires = created+self.runtime.config.judge.batch_ttl_seconds
+        persona = self.bindings.resolve(scope).persona
+        expires = created+self.config().judge.batch_ttl_seconds
         if pending["opportunity"] and not new:
             expires = min(expires, ProactiveCandidate.model_validate_json(pending["opportunity"]).expires_at)
         selected_new = tuple(int(row["seq"]) for row in rows if int(row["seq"]) <= through and json.loads(row["judge_facts"]).get("eligible"))
@@ -253,11 +252,11 @@ class JudgeCoordinator:
                     participation=JudgeParticipation(keywords=tuple(binding.wake_keywords), senders=tuple(binding.wake_senders),
                                                      on_messages=binding.wake_on_messages, on_question=binding.wake_on_question),
                     quiet_due=max(arrival_times)+self.coalesce_delay(scope) if arrival_times else now,
-                    total_due=created+self.runtime.config.dynamic_wait.max_seconds if arrival_times else now)
+                    total_due=created+self.config().dynamic_wait.max_seconds if arrival_times else now)
         truncated = False
         while True:
             snapshot = JudgeSnapshot.model_validate({**base, "messages": tuple(history+new+confirmed_after), "history_truncated": truncated})
-            if len(snapshot.prompt_json()) <= self.runtime.config.judge.context_chars:
+            if len(snapshot.prompt_json()) <= self.config().judge.context_chars:
                 return snapshot
             truncated = True
             if history:
@@ -283,14 +282,14 @@ class JudgeCoordinator:
                 raise ValueError("judge context budget cannot hold required facts")
 
     async def start_due(self) -> None:
-        now = self.runtime.now()
+        now = self.now()
         rows = self.store.judge.due_scopes(now)
         for row in rows:
             key = str(row["scope"])
             if key in self.tasks:
                 continue
             scope = ConversationScope.from_session_key(key)
-            if scope is None or self.runtime.binding(scope) is None or self.store.scopes.state(key)["mode"] == "paused":
+            if scope is None or self.bindings.binding(scope) is None or self.store.scopes.state(key)["mode"] == "paused":
                 continue
             with transaction(self.store.db):
                 self.store.judge.claim_scope(key)
@@ -320,8 +319,8 @@ class JudgeCoordinator:
             # advance assessment as if the input had been handled.
             if batch and not self.store.closed:
                 with transaction(self.store.db):
-                    self.store.judge.finish_failed_commit(self.runtime.now(), batch)
-                    self.store.judge.retry_failed_commit(self.runtime.now()+1, batch)
+                    self.store.judge.finish_failed_commit(self.now(), batch)
+                    self.store.judge.retry_failed_commit(self.now()+1, batch)
                 result = self.store.judge.record(batch)
             preparation_failed = result is None
         except Exception:
@@ -335,22 +334,22 @@ class JudgeCoordinator:
             if not self.store.closed:
                 with transaction(self.store.db):
                     state = self.store.judge.state(key)
-                    if result is not None and result.status == "pending" and result.expires > self.runtime.now():
+                    if result is not None and result.status == "pending" and result.expires > self.now():
                         self.store.judge.reschedule_batch(result.id, min(result.due,result.expires), key)
                     else:
                         if snapshot is not None and (result is None or result.error_code != "provider_changed"):
                             self.store.judge.advance_through(snapshot.through_seq, key)
                         remaining = self.store.messages.eligible_after(key, self.store.judge.through(key))
-                        due = self.runtime.now() if remaining or state["opportunity"] is not None else None
+                        due = self.now() if remaining or state["opportunity"] is not None else None
                         if remaining and state["pending_first"] is not None:
                             due = min(float(state["pending_last"])+self.coalesce_delay(scope),float(state["pending_max"]))
                         if preparation_failed:
-                            end = float(state["pending_first"] or self.runtime.now()) + self.runtime.config.judge.batch_ttl_seconds
-                            due = min(self.runtime.now()+5,end)
-                            if self.runtime.now() >= end:
+                            end = float(state["pending_first"] or self.now()) + self.config().judge.batch_ttl_seconds
+                            due = min(self.now()+5,end)
+                            if self.now() >= end:
                                 self.store.judge.discard_pending(key)
                                 due = None
-                        if self.store.scopes.state(key)["mode"] == "paused" or self.runtime.binding(scope) is None:
+                        if self.store.scopes.state(key)["mode"] == "paused" or self.bindings.binding(scope) is None:
                             due = None
                         self.store.judge.release_scope(due, key)
-                self.runtime.scheduler.notify()
+                self.notify()

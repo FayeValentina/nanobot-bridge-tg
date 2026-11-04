@@ -535,7 +535,7 @@ def _run_gateway(
         tool_registry=tools,
         recovery_admission=recovery,
         session_policy_resolver=telegram_social.policy_for_session,
-        request_admission=telegram_social.admit_request,
+        request_admission=telegram_social.waiting.admit_request,
     )
     telegram_social.expressions.main_busy = lambda: bool(agent._active_tasks)  # pyright: ignore[reportPrivateUsage]
     telegram_social.jargon.main_busy = telegram_social.expressions.main_busy

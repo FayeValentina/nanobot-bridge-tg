@@ -130,8 +130,8 @@ async def test_infinite_wait_has_no_timer_or_lock_and_direct_address_interrupts(
 async def test_infinite_temporary_wait_expires_back_to_administrator_triggers(v2b):
     v2b.config.scopes[0].wake_keywords = ["base"]
     ctx = context(v2b)
-    v2b.set_wake(ctx, keywords=["temporary"], senders=[], on_messages=False, ttl_seconds=5)
-    v2b.wait(ctx, infinite=True, sleeping=True)
+    v2b.waiting.set_wake(ctx, keywords=["temporary"], senders=[], on_messages=False, ttl_seconds=5)
+    v2b.waiting.wait(ctx, infinite=True, sleeping=True)
     finish(v2b, ctx)
     assert v2b.store.wakes.next_due() == v2b.now() + 5
     clock(v2b).advance(5)
@@ -145,8 +145,8 @@ async def test_infinite_temporary_wait_expires_back_to_administrator_triggers(v2
 
 async def test_infinite_messages_ttl_clears_both_wait_intent_and_infinite_flag(v2b):
     ctx = expose(v2b)
-    v2b.set_wake(ctx, keywords=["temporary"], senders=[], on_messages=False, ttl_seconds=5)
-    v2b.wait(ctx, infinite=True, purpose="messages")
+    v2b.waiting.set_wake(ctx, keywords=["temporary"], senders=[], on_messages=False, ttl_seconds=5)
+    v2b.waiting.wait(ctx, infinite=True, purpose="messages")
     finish(v2b, ctx)
     clock(v2b).advance(5)
     await v2b.run_due()
@@ -158,7 +158,7 @@ async def test_infinite_messages_ttl_clears_both_wait_intent_and_infinite_flag(v
 
 async def test_infinite_message_wait_starts_a_bounded_burst_on_first_new_message(v2b):
     ctx = expose(v2b)
-    v2b.wait(ctx, infinite=True, purpose="messages", quiet_seconds=3)
+    v2b.waiting.wait(ctx, infinite=True, purpose="messages", quiet_seconds=3)
     finish(v2b, ctx)
     clock(v2b).advance(1000)
     await v2b.run_due()
@@ -180,7 +180,7 @@ async def test_infinite_sleep_observation_completes_locally(v2b):
     v2b.config.sleep_observation.enabled = True
     v2b.configure(v2b.config)
     ctx = expose(v2b)
-    result = v2b.wait(ctx, infinite=True, sleeping=True)
+    result = v2b.waiting.wait(ctx, infinite=True, sleeping=True)
     assert result["purpose"] == "observe"
     finish(v2b, ctx)
     clock(v2b).advance(300)
@@ -195,7 +195,7 @@ async def test_absolute_wait_does_not_move_its_deadline_for_sleep_observation(v2
     v2b.configure(v2b.config)
     ctx = expose(v2b)
     end = v2b.now() + 30
-    result = v2b.wait(ctx, until=until(v2b, 30), sleeping=True, on_timeout=True)
+    result = v2b.waiting.wait(ctx, until=until(v2b, 30), sleeping=True, on_timeout=True)
     assert result["total_due"] == pytest.approx(end)
     finish(v2b, ctx)
     clock(v2b).advance(31)
@@ -215,7 +215,7 @@ async def test_absolute_wait_does_not_move_its_deadline_for_sleep_observation(v2
 def test_invalid_or_ambiguous_wait_modes_are_rejected_before_yielding(v2b, args):
     ctx = context(v2b)
     with pytest.raises(ValueError):
-        v2b.wait(ctx, **args)
+        v2b.waiting.wait(ctx, **args)
     assert v2b.store.scopes.state(A.session_key)["mode"] == "active"
     assert not ctx.attributes.get("social_deferred")
 
@@ -224,13 +224,13 @@ def test_absolute_deadline_accepts_explicit_non_utc_offset(v2b):
     from datetime import timedelta
     ctx = context(v2b)
     end = datetime.fromtimestamp(v2b.now() + 30, timezone(timedelta(hours=8))).isoformat()
-    result = v2b.wait(ctx, until=end)
+    result = v2b.waiting.wait(ctx, until=end)
     assert result["wake_at"] == pytest.approx(v2b.now() + 30)
 
 
 async def test_new_wait_modes_and_sampling_recover_without_redrawing(v2b):
     ctx = context(v2b)
-    v2b.wait(ctx, infinite=True, sleeping=True)
+    v2b.waiting.wait(ctx, infinite=True, sleeping=True)
     root, config, now, bus = v2b.root, v2b.config, v2b.now, v2b.bus
     v2b.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
@@ -250,7 +250,7 @@ async def test_new_wait_modes_and_sampling_recover_without_redrawing(v2b):
 def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
     ctx = expose(v2b)
     v2b.mark_read(ctx, 1)
-    v2b.wait(ctx, 60, purpose="messages", quiet_seconds=3)
+    v2b.waiting.wait(ctx, 60, purpose="messages", quiet_seconds=3)
     finish(v2b, ctx)
     root = v2b.root
     db = v2b.store.db
@@ -297,8 +297,8 @@ async def test_scope_coalescing_and_model_override_obey_operator_ceiling(v2b):
     v2b.configure(v2b.config)
     ctx = context(v2b)
     with pytest.raises(ValueError, match="operator limit"):
-        v2b.set_wake(ctx, keywords=["go"], senders=[], on_messages=False, coalesce_seconds=11)
-    v2b.set_wake(ctx, keywords=["go"], senders=[], on_messages=False, coalesce_seconds=2)
+        v2b.waiting.set_wake(ctx, keywords=["go"], senders=[], on_messages=False, coalesce_seconds=11)
+    v2b.waiting.set_wake(ctx, keywords=["go"], senders=[], on_messages=False, coalesce_seconds=2)
     finish(v2b, ctx)
     await v2b.observe(event(v2b, text="go"), directed=False)
     assert v2b.bus.inbound.empty()

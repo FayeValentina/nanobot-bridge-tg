@@ -432,7 +432,7 @@ async def test_future_intention_is_not_weighted_or_sent_early(social):
 async def test_stop_contact_prevents_linked_proactive_send_but_allows_normal_answer(social):
     item = own(social)
     social.set_sender(AsyncMock(return_value=501))
-    social.set_wake(ordinary(), keywords=[], senders=[], on_messages=False, proactive_paused=True)
+    social.waiting.set_wake(ordinary(), keywords=[], senders=[], on_messages=False, proactive_paused=True)
     with pytest.raises(PermissionError, match="stopped"):
         await social.send(ordinary("proactive"), "追问近况", None, followup_id=item["id"])
     assert (await social.send(ordinary("answer"), "回答你的新问题", None))["status"] == "sent"

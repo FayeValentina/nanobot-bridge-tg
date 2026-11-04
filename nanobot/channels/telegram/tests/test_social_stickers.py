@@ -51,7 +51,7 @@ def test_pack_parser_rejects_unrelated_urls_and_paths(value):
 async def test_full_pack_import_is_idempotent_persistent_and_preserves_learning(social):
     tg = channel(social)
     loader_for(tg)
-    social._sticker_set_loader = AsyncMock(return_value=pack(120))
+    social.stickers.loader = AsyncMock(return_value=pack(120))
     ctx = context(social)
     result = await social.stickers.import_set(ctx, "https://t.me/addstickers/LLM_Moe")
     assert (result["imported"], result["unlearned"]) == (120, 120)
@@ -70,7 +70,7 @@ async def test_full_pack_import_is_idempotent_persistent_and_preserves_learning(
 
 async def test_pack_limit_is_atomic_and_pause_during_lookup_discards_result(social):
     loader = AsyncMock(return_value=pack())
-    social._sticker_set_loader = loader
+    social.stickers.loader = loader
     social.config.sticker_limit = 2
     ctx = context(social)
     with pytest.raises(PermissionError, match="no stickers imported"):
@@ -90,7 +90,7 @@ async def test_pack_limit_is_atomic_and_pause_during_lookup_discards_result(soci
 async def test_view_annotate_search_and_send_through_tool(social):
     tg = channel(social)
     loader_for(tg)
-    social._sticker_set_loader = AsyncMock(return_value=pack())
+    social.stickers.loader = AsyncMock(return_value=pack())
     tool = TelegramSocialTool(social, "social_sticker")
     ctx = context(social)
     with request_context(ctx):
@@ -114,7 +114,7 @@ async def test_view_annotate_search_and_send_through_tool(social):
 
 async def test_annotations_require_view_and_validate_whole_batch_before_writing(social):
     channel(social)
-    social._sticker_set_loader = AsyncMock(return_value=pack())
+    social.stickers.loader = AsyncMock(return_value=pack())
     ctx = context(social)
     await social.stickers.import_set(ctx, "LLM_Moe")
     with pytest.raises(PermissionError, match="view"):
@@ -129,7 +129,7 @@ async def test_annotations_require_view_and_validate_whole_batch_before_writing(
 async def test_preview_budget_is_shared_and_failed_images_cannot_be_annotated(social):
     tg = channel(social)
     loader_for(tg, error=RuntimeError("offline"))
-    social._sticker_set_loader = AsyncMock(return_value=pack())
+    social.stickers.loader = AsyncMock(return_value=pack())
     social.config.media_max_images_per_turn = 2
     ctx = context(social)
     await social.stickers.import_set(ctx, "LLM_Moe")
@@ -156,7 +156,7 @@ async def test_channel_adapter_normalizes_real_sdk_sticker_set(social):
 async def test_real_agent_learns_native_sheet_and_sends_in_same_turn(tmp_path, social):
     tg = channel(social)
     loader_for(tg)
-    social._sticker_set_loader = AsyncMock(return_value=pack(1))
+    social.stickers.loader = AsyncMock(return_value=pack(1))
 
     def call(identity, **arguments):
         return LLMResponse(content=None, tool_calls=[ToolCallRequest(

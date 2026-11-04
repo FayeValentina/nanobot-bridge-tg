@@ -89,7 +89,7 @@ def agent(tmp_path, social, responses, *, tools_config=None):
         bus=social.bus, provider=provider, workspace=workspace,
         context_window_tokens=32000, model="m1-offline", cron_service=MagicMock(),
         session_manager=SessionManager(workspace, sessions_root=tmp_path / "sessions"),
-        session_policy_resolver=social.policy_for_session, request_admission=social.admit_request,
+        session_policy_resolver=social.policy_for_session, request_admission=social.waiting.admit_request,
         hook_factories=[social.hook_factory], tool_registry=tools,
         tools_config=tools_config,
     )
@@ -119,7 +119,7 @@ def context(social, scope=A, *, turn="test-turn"):
         turn_id=turn, metadata={"message_thread_id": scope.thread_id, "_social_job": job},
         attributes={"context_version": version},
     )
-    social.admit_request(ctx)
+    social.waiting.admit_request(ctx)
     return ctx
 
 

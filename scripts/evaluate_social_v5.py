@@ -381,7 +381,7 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
             for paths in (args.source_db.parent/'media-cache').glob('*_'+ref.unique_id+'.original'):
                 return paths.read_bytes()[:limit]
             raise RuntimeError('No cached source image; do not infer pixels')
-        runtime._media_loader=loader
+        runtime.media.loader=loader
         registry=ToolRegistry()
         for name in sorted(SOCIAL_TOOLS if arm.startswith('full') else SOCIAL_TOOLS-{'social_jargon','social_expression'}):
             registry.register(RecordedTool(TelegramSocialTool(runtime,name),trace))
@@ -405,7 +405,7 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
         llm=llm.with_generation_overrides(temperature=temperature)
         ctx=RequestContext(channel='telegram',chat_id=str(scope.chat_id),session_key=scope.session_key,turn_id=turn,
             metadata={'message_thread_id':scope.thread_id,'_social_job':job},runtime=llm)
-        runtime.admit_request(ctx)
+        runtime.waiting.admit_request(ctx)
         protocol=SOCIAL_PROTOCOL if arm.startswith('full') else frozen['protocol']
         persona=f'{protocol}\n\n# Operator persona\n{role}\n\n# Operator group background\n'
         media=native_paths(prefix,assets,args.source_db,root)

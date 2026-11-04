@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from nanobot.agent.tools.context import RequestContext
 from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import TelegramSocialConfig, TelegramSocialScopeConfig
@@ -201,6 +202,24 @@ class ScopeBindings:
         if binding is None:
             binding = next((item for item in candidates if item.all_topics), None)
         return binding if binding is not None and binding.enabled else None
+
+    def validate_context(self, ctx: RequestContext, *, require_claim: bool = True) -> ConversationScope:
+        scope = ConversationScope.from_session_key(ctx.session_key or "")
+        if (
+            scope is None or ctx.channel != scope.channel or ctx.chat_id != str(scope.chat_id)
+            or int(ctx.metadata.get("message_thread_id") or 0) != scope.thread_id
+            or ctx.turn_id is None
+        ):
+            raise PermissionError("social tool requires an authoritative group/topic turn")
+        if self.binding(scope) is None:
+            raise PermissionError("social tools require an enabled group/topic")
+        if self.store.scopes.state(scope.session_key)["mode"] == "paused":
+            raise PermissionError("social conversation is paused")
+        if ctx.attributes.get("social_deferred"):
+            raise PermissionError("this turn has already yielded to social_wait")
+        if require_claim and ctx.metadata.get("_social_job") is not None and not self.store.wakes.active_turn(scope.session_key, self.store.scopes.state(scope.session_key)["version"], ctx.turn_id):
+            raise PermissionError("social tool requires an active authorized wake")
+        return scope
 
     def role_file(self, binding: TelegramSocialScopeConfig) -> Path:
         return (self.roles / f"{binding.role_id}.md").resolve()

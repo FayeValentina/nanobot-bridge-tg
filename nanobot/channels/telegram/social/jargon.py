@@ -1,6 +1,4 @@
 """V5-C scoped jargon meanings, explicit authority and bounded research evidence."""
-# These channel-owned helpers share source/exposure validation with SocialMemory.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import json

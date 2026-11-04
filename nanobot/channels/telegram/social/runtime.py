@@ -9,7 +9,7 @@ import sqlite3
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 from uuid import uuid4
 
 from loguru import logger
@@ -33,7 +33,7 @@ from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.jargon_learning import JargonLearner
 from nanobot.channels.telegram.social.judge import JudgeProviderSettings
 from nanobot.channels.telegram.social.judge_runtime import JudgeCoordinator
-from nanobot.channels.telegram.social.media import SocialMediaCache
+from nanobot.channels.telegram.social.media import SocialMedia, SocialMediaCache, SocialMediaLoader
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
@@ -43,31 +43,26 @@ from nanobot.channels.telegram.social.models import (
     Snapshot,
     SocialDeliveryUnknownError,
     SocialRateLimitError,
-    StickerSet,
 )
 from nanobot.channels.telegram.social.proactive import SocialProactive, is_quiet
 from nanobot.channels.telegram.social.scheduler import SocialScheduler
 from nanobot.channels.telegram.social.selection import ContextSelector
-from nanobot.channels.telegram.social.stickers import SocialStickers
+from nanobot.channels.telegram.social.stickers import SocialStickers, SocialStickerSetLoader
 from nanobot.channels.telegram.social.store import SocialStore
-from nanobot.channels.telegram.social.wake import wait_duration
+from nanobot.channels.telegram.social.waiting import SocialWaiting
 from nanobot.config.schema import (
     TelegramSocialConfig,
     TelegramSocialScopeConfig,
-    TelegramSocialSleepInterruptConfig,
-    TelegramSocialWakeConfig,
 )
 from nanobot.providers.base import LLMProvider, ToolCallRequest
 from nanobot.runtime_context import append_runtime_context
 from nanobot.session.manager import Session, SessionPolicy
-from nanobot.utils.helpers import build_image_content_blocks, strip_think
+from nanobot.utils.helpers import strip_think
 
 SOCIAL_TOOLS = frozenset({"social_activity", "social_jargon", "social_expression", "social_get_state", "social_read_messages", "social_mark_read", "social_send",
                           "social_wait", "social_set_wake", "social_get_media", "social_sticker", "social_memory"})
 
 SocialSender = Callable[[ConversationScope, str, int | None], Awaitable[int]]
-SocialMediaLoader = Callable[[MediaReference, int], Awaitable[bytes]]
-SocialStickerSetLoader = Callable[[str], Awaitable[StickerSet]]
 
 NEW_MESSAGES_NOTICE = "NOT sent: new messages arrived after the snapshot you answered. Read them below and reply once to everything together (one send, text or parts); do not answer the earlier messages separately. If nothing changes your reply, send it again."
 
@@ -93,23 +88,24 @@ class TelegramSocialRuntime:
         self.proactive = SocialProactive(self.store, self.memory)
         self.now = now
         self.scheduler = SocialScheduler(self.store, self.run_due)
+        self.config = config
+        self.media = SocialMedia(SocialMediaCache(root / "media-cache"), self.store, self.bindings, lambda: self.config)
+        self.waiting = SocialWaiting(self.store, self.bindings, self.proactive,
+                                     self.scheduler.notify, lambda: self.config, self.now)
+        self.stickers = SocialStickers(self.store, self.bindings, self.media, lambda: self.config)
+        self.judging = JudgeCoordinator(self.store, self.bindings, self.waiting, self.media,
+                                        self.scheduler.notify, lambda: self.config, self.now,
+                                        judge_provider, judge_provider_version)
         self._cycle_lock = asyncio.Lock()
         self.channel = channel
         self.bus = bus
         self._sender: SocialSender | None = None
         self._sticker_sender: SocialSender | None = None
-        self._media_loader: SocialMediaLoader | None = None
-        self._sticker_set_loader: SocialStickerSetLoader | None = None
-        self.media = SocialMediaCache(root / "media-cache")
-        self.stickers = SocialStickers(self)
-        self._media_lock = asyncio.Lock()
         self._send_locks: dict[str, asyncio.Lock] = {}
         self._send_rechecked: dict[str, str] = {}
         self._closed = False
         self._recovered = False
         self._epoch = uuid4().hex
-        self.config = config
-        self.judging = JudgeCoordinator(self, judge_provider, judge_provider_version)
         self.learning_task: asyncio.Task[None] | None = None
         self.expressions = ExpressionLearner(self)
         self.jargon = JargonLearner(self)
@@ -132,90 +128,26 @@ class TelegramSocialRuntime:
 
     def set_media_services(self, loader: SocialMediaLoader, sticker_sender: SocialSender,
                            sticker_set_loader: SocialStickerSetLoader | None = None) -> None:
-        self._media_loader = loader
+        self.media.loader = loader
         self._sticker_sender = sticker_sender
-        self._sticker_set_loader = sticker_set_loader
-
-    async def get_media(self, ctx: RequestContext, message_id: int) -> list[dict[str, Any]]:
-        scope = self.validate_context(ctx)
-        refs = self.store.messages.media_for_message(scope.session_key, message_id)
-        if self._media_loader is None:
-            return [{"type": "text", "text": "Media unavailable: Telegram downloader is offline."}]
-        blocks: list[dict[str, Any]] = []
-        # One lock bounds concurrent downloads and the per-turn model image total.
-        async with self._media_lock:
-            for original in refs:
-                self.validate_context(ctx)
-                used = int(ctx.attributes.get("social_images", 0))
-                if used >= self.config.media_max_images_per_turn:
-                    blocks.append({"type": "text", "text": "Per-turn media image limit reached."})
-                    break
-                ref = original
-                thumbnail = original.animated or original.video or original.kind in {"video", "animation"}
-                if thumbnail:
-                    if not original.thumbnail_id:
-                        blocks.append({"type": "text", "text": f"{original.summary()}: no thumbnail; motion not decoded."})
-                        continue
-                    ref = original.model_copy(update={"file_id": original.thumbnail_id,
-                                                      "size": None, "width": 0, "height": 0})
-                ctx.attributes["social_images"] = used + 1
-                blocks.extend(await self.prepare_media(scope, ref,
-                    f"Message {message_id}: {original.summary()}" + ("; thumbnail only, motion not decoded" if thumbnail else ""),
-                    validate=lambda: self.validate_context(ctx)))
-        return blocks or [{"type": "text", "text": "This message has no supported visual media."}]
-
-    async def prepare_media(self, scope: ConversationScope, ref: MediaReference, label: str, *,
-                            validate: Callable[[], object], max_edge: int | None = None) -> list[dict[str, Any]]:
-        """Shared main/judge image preparation; callers hold the media lock and validate their own turn/batch."""
-        validate()
-        if self._media_loader is None:
-            return [{"type": "text", "text": f"{label}: media unavailable; downloader is offline."}]
-        try:
-            if ref.size is not None and ref.size > self.config.media_max_bytes:
-                raise ValueError("media exceeds the byte limit")
-            if ref.width * ref.height > self.config.media_max_pixels:
-                raise ValueError("media exceeds the pixel limit")
-            raw = self.media.original(scope, ref, self.config.media_max_bytes)
-            if raw is None:
-                raw = await asyncio.wait_for(self._media_loader(ref, self.config.media_max_bytes), timeout=20)
-            validate()
-            config = self.config.model_copy(update={"media_max_edge": min(max_edge, self.config.media_max_edge)}) if max_edge else self.config
-            image, path = await asyncio.to_thread(self.media.prepare, scope, ref, raw, config)
-            validate()
-            return build_image_content_blocks(image, "image/jpeg", path, label)
-        except (asyncio.CancelledError, PermissionError):
-            raise
-        except Exception:
-            return [{"type": "text", "text": f"{label}: media unavailable, invalid or exceeds limits; do not infer image content."}]
-
-    def collect_sticker(self, ctx: RequestContext, message_id: int, note: str | None) -> str:
-        scope = self.validate_context(ctx)
-        refs = self.store.messages.media_for_message(scope.session_key, message_id)
-        ref = next((ref for ref in refs if ref.kind == "sticker"), None)
-        if ref is None:
-            raise ValueError("this message has no sticker")
-        return self.store.stickers.collect(scope.session_key, ref, note, self.config.sticker_limit)
-
-    def list_stickers(self, ctx: RequestContext, query: str) -> list[dict[str, object]]:
-        scope = self.validate_context(ctx)
-        return self.store.stickers.search(scope.session_key, query)
+        self.stickers.loader = sticker_set_loader
 
     async def send_sticker(self, ctx: RequestContext, sticker_id: str, reply_to: int | None) -> DeliveryResult:
-        scope = self.validate_context(ctx)
+        scope = self.bindings.validate_context(ctx)
         ref = self.store.stickers.get(scope.session_key, sticker_id)
         if ref.animated or ref.video or ref.kind != "sticker":
             raise ValueError("only static stickers can be sent in this release")
         return await self.send(ctx, f"[sticker:{ref.unique_id}]", reply_to, sticker=ref)
 
     def memory_action(self, ctx: RequestContext, request: MemoryRequest) -> dict[str, object]:
-        scope = self.validate_context(ctx)
+        scope = self.bindings.validate_context(ctx)
         assert ctx.turn_id is not None
         result = self.memory.apply(scope.session_key, ctx.turn_id, request)
         self.scheduler.notify()
         return result
 
     def jargon_action(self, ctx: RequestContext, request: JargonRequest) -> dict[str, object]:
-        scope = self.validate_context(ctx)
+        scope = self.bindings.validate_context(ctx)
         assert ctx.turn_id is not None
         result = self.jargon.jargon.apply(scope.session_key, ctx.turn_id, request)
         self.scheduler.notify()
@@ -294,68 +226,8 @@ class TelegramSocialRuntime:
             session.metadata["_social_runtime_epoch"] = self._epoch
         return policy
 
-    def validate_context(self, ctx: RequestContext, *, require_claim: bool = True) -> ConversationScope:
-        scope = ConversationScope.from_session_key(ctx.session_key or "")
-        if (
-            scope is None or ctx.channel != scope.channel or ctx.chat_id != str(scope.chat_id)
-            or int(ctx.metadata.get("message_thread_id") or 0) != scope.thread_id
-            or ctx.turn_id is None
-        ):
-            raise PermissionError("social tool requires an authoritative group/topic turn")
-        if self.binding(scope) is None:
-            raise PermissionError("social tools require an enabled group/topic")
-        if self.store.scopes.state(scope.session_key)["mode"] == "paused":
-            raise PermissionError("social conversation is paused")
-        if ctx.attributes.get("social_deferred"):
-            raise PermissionError("this turn has already yielded to social_wait")
-        if require_claim and ctx.metadata.get("_social_job") is not None and not self.store.wakes.active_turn(scope.session_key, self.store.scopes.state(scope.session_key)["version"], ctx.turn_id):
-            raise PermissionError("social tool requires an active authorized wake")
-        return scope
-
-    def admit_request(self, ctx: RequestContext) -> None:
-        job = ctx.metadata.get("_social_job")
-        # Ordinary tools, commands, cron and background turns use their normal
-        # admission path. Only scheduler deliveries claim a social WakeJob.
-        if job is None:
-            return
-        scope = self.validate_context(ctx, require_claim=False)
-        if not isinstance(job, str) or ctx.turn_id is None:
-            raise PermissionError("social execution requires an authorized wake")
-        self._wake_conditions(scope.session_key)
-        self.proactive.check_job(scope.session_key, job, self.binding(scope))
-        self.store.wakes.claim(scope.session_key, job, self.store.scopes.state(scope.session_key)["version"], ctx.turn_id)
-        self.consume_wake_conditions(scope.session_key, job)
-
     def is_activity_turn(self, ctx: RequestContext) -> bool:
         return self.store.wakes.is_activity_turn(ctx.session_key, ctx.turn_id)
-
-    def consume_wake_conditions(self, key: str, job: str) -> None:
-        """Admission includes a fresh busy-time candidate exposed in the current run."""
-        row = self.store.wakes.running_conditions(key, job)
-        if row is None or row[0] == "{}":
-            return
-        conditions, dynamic = self._wake_conditions(key)
-        if dynamic and conditions.one_shot and row[0] == self.store.scopes.state(key)["wake_config"]:
-            self.store.wakes.set_wake_config(key, "{}")
-
-    def _wake_conditions(self, key: str) -> tuple[TelegramSocialWakeConfig, bool]:
-        raw = self.store.scopes.state(key)["wake_config"]
-        conditions = TelegramSocialWakeConfig.model_validate_json(raw)
-        if conditions.expires_at is not None and conditions.expires_at <= self.now():
-            self.store.wakes.set_wake_config(key, "{}")
-            return TelegramSocialWakeConfig(), False
-        return conditions, raw != "{}"
-
-    def _effective_wake(self, key: str, binding: TelegramSocialScopeConfig) -> tuple[TelegramSocialWakeConfig, bool]:
-        conditions, dynamic = self._wake_conditions(key)
-        if not dynamic:
-            conditions = TelegramSocialWakeConfig(
-                keywords=binding.wake_keywords, senders=binding.wake_senders,
-                on_messages=binding.wake_on_messages, on_question=binding.wake_on_question,
-                probability=0, one_shot=False,
-                coalesce_seconds=binding.coalesce_seconds,
-            )
-        return conditions, dynamic
 
     async def observe(self, message: ObservedMessage, *, directed: bool) -> None:
         binding = self.binding(message.scope)
@@ -381,7 +253,7 @@ class TelegramSocialRuntime:
             for scope in self.store.scopes.all():
                 self.sync_scope(scope)
                 if self.binding(scope) is not None:
-                    self._wake_conditions(scope.session_key)
+                    self.waiting.conditions(scope.session_key)
             self.store.wakes.consume_timers()
             bindings = {scope.session_key: binding for scope in self.store.scopes.all()
                         if (binding := self.binding(scope)) is not None}
@@ -438,10 +310,10 @@ class TelegramSocialRuntime:
         self.scheduler.notify()
 
     def get_state(self, ctx: RequestContext) -> dict[str, Any]:
-        scope = self.validate_context(ctx)
+        scope = self.bindings.validate_context(ctx)
         binding = self.binding(scope)
         assert binding is not None  # validate_context checked the current operator binding.
-        conditions, _ = self._wake_conditions(scope.session_key)
+        conditions, _ = self.waiting.conditions(scope.session_key)
         state = self.store.scopes.state(scope.session_key)
         requests = self.store.wakes.request_usage(scope.session_key, self.now() - 3600)
         sends = self.store.deliveries.attempt_count(scope.session_key, self.now() - 3600)
@@ -481,97 +353,8 @@ class TelegramSocialRuntime:
                 "remaining_send_attempts": max(0, self.config.max_sends_per_hour - int(sends)),
                 "send_ready_at": (last_send + self.config.send_cooldown_seconds) if last_send is not None else None}
 
-    def wait(self, ctx: RequestContext, seconds: float | None = None, *, sleeping: bool = False,
-             on_timeout: bool = False, purpose: Literal["reply", "messages"] | None = None,
-             quiet_seconds: float | None = None, infinite: bool = False,
-             until: str | None = None) -> dict[str, Any]:
-        scope = self.validate_context(ctx)
-        seconds, deadline = wait_duration(seconds, infinite=infinite, until=until, on_timeout=on_timeout,
-                                          now=self.now(), maximum=self.config.max_wait_seconds)
-        assert ctx.turn_id is not None
-        if purpose is not None:
-            if purpose not in {"reply", "messages"} or sleeping:
-                raise ValueError("purpose must be reply/messages and cannot be combined with sleeping")
-            if purpose == "reply" and seconds is None:
-                raise ValueError("reply waiting must have a finite total limit")
-            quiet = self.config.dynamic_wait.quiet_seconds if quiet_seconds is None else quiet_seconds
-            if not math.isfinite(quiet) or not 0.1 <= quiet <= self.config.dynamic_wait.max_seconds:
-                raise ValueError("quiet interval exceeds the operator limit")
-            binding = self.binding(scope)
-            assert binding is not None  # validate_context checked the current binding.
-            conditions, dynamic = self._effective_wake(scope.session_key, binding)
-            result = self.store.wait_for_quiet(scope.session_key, ctx.turn_id, purpose=purpose,
-                                               quiet=quiet, seconds=seconds, on_timeout=on_timeout,
-                                               condition_expires=conditions.expires_at if purpose == "messages" and (dynamic or infinite) else None,
-                                               selective=True, max_delay=self.config.dynamic_wait.max_seconds)
-            ctx.attributes["social_deferred"] = result["deferred"]
-            self.scheduler.notify()
-            return result
-        if quiet_seconds is not None:
-            raise ValueError("quiet_seconds requires an explicit purpose")
-        if sleeping and self.config.sleep_observation.enabled:
-            due = self.store.wakes.sleep_observation_due(scope.session_key, self.config.sleep_observation.window_seconds)
-            if due is not None:
-                if deadline is not None:
-                    due = min(due, deadline)
-                conditions, dynamic = self._wake_conditions(scope.session_key)
-                result = self.store.wait_for_quiet(scope.session_key, ctx.turn_id, purpose="observe",
-                                                   quiet=self.config.sleep_observation.window_seconds,
-                                                   seconds=max(0.1, due - self.now()), on_timeout=on_timeout,
-                                                   sleep_seconds=seconds, quiet_due=due, sleep_until=deadline,
-                                                   condition_expires=conditions.expires_at if infinite and dynamic else None)
-                ctx.attributes["social_deferred"] = True
-                self.scheduler.notify()
-                return result
-        self.store.wakes.defer(scope.session_key, ctx.turn_id, sleeping=sleeping, seconds=seconds, on_timeout=on_timeout)
-        ctx.attributes["social_deferred"] = True
-        self.scheduler.notify()
-        return {"mode": "sleeping" if sleeping else "waiting", "wake_at": self.now() + seconds if seconds is not None else None,
-                "on_timeout": on_timeout, "infinite": infinite}
-
-    def set_wake(self, ctx: RequestContext, *, keywords: list[str], senders: list[str],
-                 on_messages: bool, ttl_seconds: float = 3600, one_shot: bool = True,
-                 on_question: bool = False,
-                 sleep_interrupts: TelegramSocialSleepInterruptConfig | None = None,
-                 coalesce_seconds: float | None = None,
-                 proactive_paused: bool | None = None) -> dict[str, Any]:
-        scope = self.validate_context(ctx)
-        binding = self.binding(scope)
-        if binding is None or not binding.allow_ambient_wake:
-            raise PermissionError("operator disabled model-configured wake conditions")
-        if not math.isfinite(ttl_seconds) or not 1 <= ttl_seconds <= self.config.max_wait_seconds:
-            raise ValueError("wake conditions TTL exceeds the operator limit")
-        if coalesce_seconds is not None:
-            limit = min(self.config.max_coalesce_seconds, self.config.dynamic_wait.max_seconds) if self.config.dynamic_wait.enabled else self.config.max_coalesce_seconds
-            if not math.isfinite(coalesce_seconds) or not 0 <= coalesce_seconds <= limit:
-                raise ValueError("coalescing interval exceeds the operator limit")
-        if sleep_interrupts is not None and any(
-            getattr(sleep_interrupts, name) and not getattr(binding.sleep_interrupts, name)
-            for name in TelegramSocialSleepInterruptConfig.model_fields
-        ):
-            raise PermissionError("sleep interruption exceeds the operator policy")
-        if proactive_paused is not None:
-            with transaction(self.store.db):
-                self.store.proactive_state.set_stopped(int(proactive_paused), scope.session_key)
-            if proactive_paused:
-                self.proactive.cancel_invalid({item.session_key: current for item in self.store.scopes.all()
-                                               if (current := self.binding(item)) is not None})
-            self.scheduler.notify()
-            if not keywords and not senders and not on_messages and not on_question:
-                return {"proactive_paused": proactive_paused}
-        if not keywords and not senders and not on_messages and not on_question:
-            self.store.wakes.set_wake_config(scope.session_key, "{}")
-            return {"cleared": True}
-        conditions = TelegramSocialWakeConfig(keywords=keywords, senders=senders, on_messages=on_messages,
-                                              on_question=on_question,
-                                              sleep_interrupts=sleep_interrupts, coalesce_seconds=coalesce_seconds,
-                                              expires_at=self.now() + ttl_seconds, one_shot=one_shot)
-        result = conditions.model_dump()
-        self.store.wakes.set_wake_config(scope.session_key, conditions.model_dump_json())
-        return result
-
     def read_messages(self, ctx: RequestContext) -> str:
-        scope = self.validate_context(ctx)
+        scope = self.bindings.validate_context(ctx)
         return self.read_messages_for(scope, ctx.turn_id)
 
     def read_messages_for(self, scope: ConversationScope, turn: str | None) -> str:
@@ -599,7 +382,7 @@ class TelegramSocialRuntime:
         raise PermissionError(NEW_MESSAGES_NOTICE + "\n" + self.read_messages_for(scope, turn))
 
     def mark_read(self, ctx: RequestContext, through: int) -> int:
-        scope = self.validate_context(ctx)
+        scope = self.bindings.validate_context(ctx)
         assert ctx.turn_id is not None
         return self.store.mark_read(scope.session_key, ctx.turn_id, through)
 
@@ -640,7 +423,7 @@ class TelegramSocialRuntime:
 
     async def send(self, ctx: RequestContext, text: str, reply_to: int | None,
                    *, sticker: MediaReference | None = None, followup_id: str | None = None) -> DeliveryResult:
-        scope = self.validate_context(ctx)
+        scope = self.bindings.validate_context(ctx)
         text = self._public_text(text)
         if reply_to is not None and not self.store.messages.has_message(scope.session_key, reply_to):
             raise PermissionError("reply target was not observed in this group/topic")
@@ -648,7 +431,7 @@ class TelegramSocialRuntime:
             raise RuntimeError("Telegram sender is unavailable")
         lock = self.send_lock(scope)
         async with lock:
-            self.validate_context(ctx)
+            self.bindings.validate_context(ctx)
             version = self.store.scopes.state(scope.session_key)["version"]
             previous_action = self.store.deliveries.latest_content(scope.session_key, version, ctx.turn_id, "sticker" if sticker else "text", text)
             if previous_action is not None:
@@ -659,7 +442,7 @@ class TelegramSocialRuntime:
                                              kind="sticker" if sticker else "text", turn=ctx.turn_id, sticker=sticker, followup_id=followup_id)
             with transaction(self.store.db):
                 self.store.deliveries.set_reply_expiry(reply_to, ctx.turn_id, action)
-            self.validate_context(ctx)
+            self.bindings.validate_context(ctx)
             return await self._deliver(scope, action, version, text, reply_to)
 
     def _public_text(self, text: str) -> str:
@@ -682,7 +465,7 @@ class TelegramSocialRuntime:
 
     async def send_parts(self, ctx: RequestContext, texts: list[str], reply_to: int | None,
                          *, followup_id: str | None = None) -> list[DeliveryResult]:
-        scope = self.validate_context(ctx)
+        scope = self.bindings.validate_context(ctx)
         if not 2 <= len(texts) <= 3:
             raise ValueError("a burst must contain two or three short parts")
         texts = [self._public_text(text) for text in texts]
@@ -695,7 +478,7 @@ class TelegramSocialRuntime:
         assert ctx.turn_id is not None
         lock = self.send_lock(scope)
         async with lock:
-            self.validate_context(ctx)
+            self.bindings.validate_context(ctx)
             version = self.store.scopes.state(scope.session_key)["version"]
             # Repeated identical calls return each child's receipt, including partial failures.
             for group in self.store.deliveries.turn_groups(scope.session_key, version, ctx.turn_id):
@@ -770,23 +553,7 @@ class TelegramSocialRuntime:
                                           MediaReference.model_validate_json(sticker[0]).unique_id)
         self.scheduler.notify()
         if turn is not None and self.store.scopes.state(scope.session_key)["mode"] == "observing":
-            self.keep_reply_intent(scope, turn)
-
-    def keep_reply_intent(self, scope: ConversationScope, turn: str) -> None:
-        """Use the existing local wait; a missing reply never calls a model."""
-        key = scope.session_key
-        binding = self.binding(scope)
-        if binding is None or binding.paused or self.store.scopes.state(key)["mode"] not in {"active", "observing"}:
-            return
-        confirmed = self.store.deliveries.confirmed_turn(key, turn)
-        if confirmed is None:
-            return
-        conditions, dynamic = self._effective_wake(key, binding)
-        self.store.wait_for_quiet(key, turn, purpose="messages", quiet=self.config.dynamic_wait.quiet_seconds,
-                                  seconds=min(30, self.config.max_wait_seconds), on_timeout=False, selective=True,
-                                  condition_expires=conditions.expires_at if dynamic else None,
-                                  max_delay=self.config.dynamic_wait.max_seconds)
-        self.scheduler.notify()
+            self.waiting.keep_reply_intent(scope, turn)
 
     async def _retry_sends(self) -> None:
         for row in self.store.deliveries.ready_sends():
@@ -889,7 +656,7 @@ class _SocialExposureHook(AgentHook):
         if ctx is None or ctx.session_key is None or ctx.turn_id is None:
             return
         for job in self.runtime.store.note_seen(ctx.session_key, ctx.turn_id, transcript_text(context.model_messages)):
-            self.runtime.consume_wake_conditions(ctx.session_key, job)
+            self.runtime.waiting.consume(ctx.session_key, job)
 
     async def before_execute_tools(self, context: AgentHookContext) -> None:
         self._note(context)
@@ -954,7 +721,7 @@ class _SocialExposureHook(AgentHook):
             if ctx.session_key is not None and not failed and not self._unsent_final:
                 scope = ConversationScope.from_session_key(ctx.session_key)
                 if scope is not None:
-                    self.runtime.keep_reply_intent(scope, ctx.turn_id)
+                    self.runtime.waiting.keep_reply_intent(scope, ctx.turn_id)
             if ctx.session_key is not None:
                 self.runtime.store.wakes.release_pending(ctx.session_key)
             self.runtime.scheduler.notify()

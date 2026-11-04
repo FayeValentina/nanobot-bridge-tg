@@ -97,7 +97,7 @@ def context(social, *, scope=A, turn="test-turn"):
         turn_id=turn, metadata={"message_thread_id": scope.thread_id, "_social_job": job},
         attributes={"context_version": version},
     )
-    social.admit_request(ctx)
+    social.waiting.admit_request(ctx)
     return ctx
 
 
@@ -193,7 +193,7 @@ async def test_wait_tool_ends_agent_turn_without_an_extra_model_request(tmp_path
 async def test_sleep_ignores_ambient_but_direct_address_interrupts(social):
     social.config.scopes[0].wake_on_messages = True
     ctx = context(social)
-    social.wait(ctx, 300, sleeping=True)
+    social.waiting.wait(ctx, 300, sleeping=True)
     finish(social, ctx)
     await social.observe(observed(social), directed=False)
     clock(social).advance(15)
@@ -206,7 +206,7 @@ async def test_sleep_ignores_ambient_but_direct_address_interrupts(social):
     new_ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                              turn_id="interrupt", metadata=inbound.metadata,
                              attributes={"context_version": social.store.scopes.state(A.session_key)["version"]})
-    social.admit_request(new_ctx)
+    social.waiting.admit_request(new_ctx)
     assert social.store.scopes.state(A.session_key)["mode"] == "active"
     assert social.store.scopes.state(A.session_key)["wake_at"] is None
 
@@ -215,7 +215,7 @@ async def test_sleep_ignores_ambient_but_direct_address_interrupts(social):
 @pytest.mark.parametrize("on_timeout", [False, True])
 async def test_wait_and_sleep_deadlines_are_one_shot(social, sleeping, on_timeout):
     ctx = context(social)
-    social.wait(ctx, 30, sleeping=sleeping, on_timeout=on_timeout)
+    social.waiting.wait(ctx, 30, sleeping=sleeping, on_timeout=on_timeout)
     finish(social, ctx)
     clock(social).advance(31)
     await social.run_due()
@@ -229,7 +229,7 @@ async def test_wait_and_sleep_deadlines_are_one_shot(social, sleeping, on_timeou
 
 async def test_rearming_timeout_without_new_external_messages_does_not_poll_model(social):
     ctx = context(social)
-    social.wait(ctx, 30, on_timeout=True)
+    social.waiting.wait(ctx, 30, on_timeout=True)
     finish(social, ctx)
     clock(social).advance(31)
     await social.run_due()
@@ -237,8 +237,8 @@ async def test_rearming_timeout_without_new_external_messages_does_not_poll_mode
     followup = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                               turn_id="followup", metadata=inbound.metadata,
                               attributes={"context_version": social.store.scopes.state(A.session_key)["version"]})
-    social.admit_request(followup)
-    social.wait(followup, 30, on_timeout=True)
+    social.waiting.admit_request(followup)
+    social.waiting.wait(followup, 30, on_timeout=True)
     finish(social, followup)
     await social.observe(replace(observed(social), is_self=True, is_bot=True), directed=False)
     clock(social).advance(31)
@@ -249,7 +249,7 @@ async def test_rearming_timeout_without_new_external_messages_does_not_poll_mode
 
 async def test_missed_wait_deadline_does_not_create_a_fresh_stale_wake(social):
     ctx = context(social)
-    social.wait(ctx, 30, on_timeout=True)
+    social.waiting.wait(ctx, 30, on_timeout=True)
     finish(social, ctx)
     clock(social).advance(300)
     await social.run_due()
@@ -262,12 +262,12 @@ async def test_missed_wait_deadline_does_not_create_a_fresh_stale_wake(social):
 def test_wait_cannot_exceed_operator_limits(social, seconds):
     ctx = context(social)
     with pytest.raises(ValueError):
-        social.wait(ctx, seconds)
+        social.waiting.wait(ctx, seconds)
 
 
 async def test_wait_blocks_later_sends_in_the_same_turn(social):
     ctx = context(social)
-    social.wait(ctx, 30)
+    social.waiting.wait(ctx, 30)
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
     with pytest.raises(PermissionError, match="yielded"):
@@ -277,7 +277,7 @@ async def test_wait_blocks_later_sends_in_the_same_turn(social):
 
 async def test_model_conditions_are_scoped_and_operator_can_forbid_them(social):
     ctx = context(social)
-    social.set_wake(ctx, keywords=["python"], senders=[], on_messages=False)
+    social.waiting.set_wake(ctx, keywords=["python"], senders=[], on_messages=False)
     finish(social, ctx)
     await social.observe(observed(social, scope=B, text="python"), directed=False)
     assert social.bus.inbound.empty()
@@ -288,13 +288,13 @@ async def test_model_conditions_are_scoped_and_operator_can_forbid_them(social):
     social.config.scopes[1].allow_ambient_wake = False
     other = context(social, scope=B, turn="other")
     with pytest.raises(PermissionError):
-        social.set_wake(other, keywords=[], senders=[], on_messages=True)
+        social.waiting.set_wake(other, keywords=[], senders=[], on_messages=True)
 
 
 @pytest.mark.parametrize("keywords,senders", [([""], []), (["x" * 81], []), ([], ["*"]), (["x"] * 21, [])])
 def test_model_wake_configuration_is_validated(social, keywords, senders):
     with pytest.raises(ValidationError):
-        social.set_wake(context(social), keywords=keywords, senders=senders, on_messages=False)
+        social.waiting.set_wake(context(social), keywords=keywords, senders=senders, on_messages=False)
 
 
 async def test_busy_addresses_merge_and_survive_a_simultaneous_sleep(social):
@@ -304,7 +304,7 @@ async def test_busy_addresses_merge_and_survive_a_simultaneous_sleep(social):
     clock(social).advance(2)
     await social.run_due()
     assert social.bus.inbound.empty()
-    social.wait(ctx, 300, sleeping=True)
+    social.waiting.wait(ctx, 300, sleeping=True)
     finish(social, ctx)
     clock(social).advance(10)
     await social.run_due()
@@ -344,7 +344,7 @@ async def test_sleep_discards_an_unseen_ambient_trigger_but_preserves_direct_add
     social.config.scopes[0].wake_on_messages = True
     ctx = context(social)
     await social.observe(observed(social), directed=False)
-    social.wait(ctx, 300, sleeping=True)
+    social.waiting.wait(ctx, 300, sleeping=True)
     finish(social, ctx)
     clock(social).advance(20)
     await social.run_due()
@@ -387,12 +387,12 @@ async def test_expired_execution_lease_does_not_leave_a_permanently_busy_scope(s
     await social.run_due()
     assert social.bus.inbound.qsize() == 1
     with pytest.raises(PermissionError):
-        social.validate_context(old)
+        social.bindings.validate_context(old)
 
 
 async def test_pause_invalidates_running_tools_timers_and_pending_addresses(social):
     ctx = context(social)
-    social.wait(ctx, 30, on_timeout=True)
+    social.waiting.wait(ctx, 30, on_timeout=True)
     await social.observe(observed(social), directed=True)
     social.config.scopes[0].paused = True
     social.configure(social.config)
@@ -401,7 +401,7 @@ async def test_pause_invalidates_running_tools_timers_and_pending_addresses(soci
     assert social.bus.inbound.empty()
     assert social.store.scopes.state(A.session_key)["mode"] == "paused"
     with pytest.raises(PermissionError):
-        social.validate_context(ctx)
+        social.bindings.validate_context(ctx)
     social.config.scopes[0].paused = False
     social.configure(social.config)
     await social.observe(observed(social, 2), directed=True)
@@ -412,7 +412,7 @@ async def test_pause_invalidates_running_tools_timers_and_pending_addresses(soci
 
 async def test_restart_restores_wait_deadline_once_without_replaying_provider_state(social):
     ctx = context(social)
-    social.wait(ctx, 30, on_timeout=True)
+    social.waiting.wait(ctx, 30, on_timeout=True)
     finish(social, ctx)
     config, root, now = social.config, social.root, social.now
     social.close()
@@ -431,7 +431,7 @@ async def test_restart_restores_wait_deadline_once_without_replaying_provider_st
 
 async def test_restart_after_wait_decision_does_not_replay_the_unfinished_old_turn(social):
     ctx = context(social)
-    social.wait(ctx, 30, on_timeout=True)
+    social.waiting.wait(ctx, 30, on_timeout=True)
     # Crash before finish(): the persisted decision must still yield the old run.
     config, root, now = social.config, social.root, social.now
     social.close()
