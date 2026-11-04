@@ -1,6 +1,7 @@
 import shlex
 import subprocess
 import sys
+from copy import deepcopy
 from typing import Any
 
 import pytest
@@ -15,7 +16,7 @@ from nanobot.agent.tools import (
     tool_parameters,
     tool_parameters_schema,
 )
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, _strip_schema_titles
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool, ExecToolConfig
 from nanobot.security.network import configure_ssrf_whitelist
@@ -75,6 +76,26 @@ class DecoratedSampleTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         return f"ok:{kwargs['count']}"
+
+
+@pytest.mark.parametrize("mapping", ["properties", "$defs", "definitions", "patternProperties"])
+def test_strip_schema_titles_preserves_names_and_copies_nested_values(mapping: str) -> None:
+    source = {
+        "title": "Request",
+        mapping: {"title": {"type": "string", "title": "Title"}},
+        "anyOf": [{"title": "Branch", "items": {"title": "Item", "type": "string"}}],
+        "other": {"title": 3},
+    }
+    original = deepcopy(source)
+    stripped = _strip_schema_titles(source)
+    assert stripped == {
+        mapping: {"title": {"type": "string"}},
+        "anyOf": [{"items": {"type": "string"}}],
+        "other": {"title": 3},
+    }
+    stripped[mapping]["title"]["type"] = "integer"
+    stripped["anyOf"].append({})
+    assert source == original
 
 
 def test_schema_validate_value_matches_tool_validate_params() -> None:

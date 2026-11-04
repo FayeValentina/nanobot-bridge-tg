@@ -27,6 +27,22 @@ _JSON_TYPE_MAP: dict[str, type | tuple[type, ...]] = {
 }
 
 
+def _strip_schema_titles(node: Any) -> Any:
+    if isinstance(node, dict):
+        result: dict[str, Any] = {}
+        for key, value in cast(dict[str, Any], node).items():
+            if key == "title" and isinstance(value, str):
+                continue
+            if key in {"properties", "$defs", "definitions", "patternProperties"}:
+                result[key] = {name: _strip_schema_titles(schema) for name, schema in value.items()}
+            else:
+                result[key] = _strip_schema_titles(value)
+        return result
+    if isinstance(node, list):
+        return [_strip_schema_titles(item) for item in cast(list[Any], node)]
+    return node
+
+
 class Schema(ABC):
     """Abstract base for JSON Schema fragments describing tool parameters.
 
@@ -310,7 +326,7 @@ class Tool(ABC):
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": _strip_schema_titles(self.parameters),
             },
         }
 

@@ -130,9 +130,10 @@ async def test_compaction_rebuild_keeps_trusted_protocol_and_injects_only_live_i
         await hook.before_iteration(iteration)
         assert item["pending_thought"] in str(iteration.messages)
         edit(social, item["id"], followup_state="dropped", state_reason="not relevant now")
-        # Same hook/turn after a live update must withdraw the stale suggestion.
-        await hook.before_iteration(iteration)
+        # Later iterations restore the raw transcript without injecting updated state.
+        await hook.before_iteration(AgentHookContext(iteration=1, messages=rebuilt))
         assert item["pending_thought"] not in str(iteration.messages)
+        assert "Live group memory index" not in str(iteration.messages)
         assert SOCIAL_PROTOCOL in iteration.messages[0]["content"]
 
 

@@ -43,6 +43,8 @@ class SocialExposureHook(AgentHook):
 
     async def before_iteration(self, context: AgentHookContext) -> None:
         self._restore_memory_context()
+        if context.iteration > 0:
+            return
         ctx = current_request_context()
         if ctx is None or ctx.session_key is None or not self.store.scopes.owns(ctx.session_key):
             return

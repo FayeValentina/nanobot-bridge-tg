@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 import time
+from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -272,6 +273,62 @@ async def test_tool_send_is_scope_checked_confirmed_and_final_is_silent(tmp_path
     assert tuple(row) == ("sent", "[501]")
     assert social.store.messages.has_message(A.session_key, 501)
     assert social.bus.outbound.empty()
+
+
+async def test_live_memory_is_sent_once_per_request_and_never_persisted(tmp_path, social):
+    responses = iter([
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(
+            id="stickers", name="social_sticker", arguments={"action": "list"},
+        )]),
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(
+            id="send", name="social_send", arguments={"text": "public hello"},
+        )]),
+        LLMResponse(content=""),
+    ])
+    requests = []
+
+    async def model(**kwargs):
+        requests.append(deepcopy(kwargs["messages"]))
+        return next(responses)
+
+    loop = agent(tmp_path, social, [])
+    loop.provider.chat_stream_with_retry = AsyncMock(side_effect=model)
+    social.set_sender(AsyncMock(return_value=501))
+    await loop._dispatch(await wake(social))
+    assert len(requests) == 3
+    assert [json.dumps(messages).count("Live group memory index") for messages in requests] == [1, 1, 1]
+    persisted = loop.sessions.read_session_file(A.session_key)
+    assert persisted is not None
+    assert "Live group memory index" not in json.dumps(persisted)
+
+
+def test_registered_tool_schemas_strip_titles_and_preserve_validation(tmp_path, social):
+    loop = agent(tmp_path, social, [])
+
+    def check(node):
+        if isinstance(node, dict):
+            assert not isinstance(node.get("title"), str)
+            for key, value in node.items():
+                if key in {"properties", "$defs", "definitions", "patternProperties"}:
+                    for schema in value.values():
+                        check(schema)
+                else:
+                    check(value)
+        elif isinstance(node, list):
+            for item in node:
+                check(item)
+
+    memory = loop.tools.get("social_memory")
+    original = deepcopy(memory.parameters)
+    invalid = {"action": "clear", "admin": True}
+    errors = memory.validate_params(invalid)
+    assert errors
+    for name in loop.tools.tool_names:
+        check(loop.tools.get(name).to_schema())
+    activity = loop.tools.get("social_activity").to_schema()["function"]["parameters"]
+    assert activity["properties"]["title"]["type"] == "string"
+    assert memory.parameters == original
+    assert memory.validate_params(invalid) == errors
 
 
 async def test_exec_is_available_and_social_send_keeps_its_current_topic_interface(tmp_path, social):

@@ -13,7 +13,7 @@ from nanobot.channels.telegram.social.models import ConversationScope
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.tests.test_social_proactive import claim, enable, tick, view
-from nanobot.channels.telegram.tests.test_social_runtime import A, agent
+from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent
 from nanobot.channels.telegram.tests.test_social_scheduler import clock, social
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
@@ -35,6 +35,40 @@ def start(runtime, scope=A):
         action="start", title="试做一份小谜题", goal="制作并核对一个三线索谜题，保存谜底",
         motivation="自己喜欢推理，群里也聊过谜题", next_step="写下三个线索并检查是否有唯一解",
     ))["activity"]
+
+
+@pytest.mark.parametrize("activity_turn,has_active", [(False, True), (True, True), (True, False)])
+async def test_live_activity_index_and_current_record(social, activity_turn, has_active):
+    activity_mode(social)
+    entries = social.store.activities
+    for _ in range(6):
+        start(social)
+        clock(social).advance(1)
+    active = start(social)
+    active = entries.apply(A.session_key, "notes", ActivityRequest(
+        action="progress", activity_id=active["id"], expected_revision=active["revision"],
+        checkpoint="完整笔记仅在活动 turn 注入", artifacts=["activities/puzzle.md"],
+    ))["activity"]
+    if not has_active:
+        entries.apply(A.session_key, "pause", ActivityRequest(
+            action="pause", activity_id=active["id"], expected_revision=active["revision"],
+        ))
+    start(social, B)
+    await tick(social)
+    ctx = claim(social, social.bus.inbound.get_nowait())
+    blocks = await social.context_builder.build(A.session_key, ctx.turn_id if activity_turn else "ordinary", "")
+    body = json.loads(blocks[0].content.split("\n", 1)[1])
+    expected = [{key: item[key] for key in ("id", "status", "title", "next_step")}
+                for item in entries.context(A.session_key)]
+    assert len(body["autonomous_activities"]) == 5
+    assert body["autonomous_activities"] == expected
+    assert all(set(item) == {"id", "status", "title", "next_step"} for item in body["autonomous_activities"])
+    if activity_turn:
+        assert body["current_activity"] == (active if has_active else None)
+        assert blocks[1].source == "telegram_autonomous_work"
+    else:
+        assert "current_activity" not in body
+        assert len(blocks) == 1
 
 
 async def test_work_runs_without_speech_probability_or_send_budget(social):

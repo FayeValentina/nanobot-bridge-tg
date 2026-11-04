@@ -37,6 +37,16 @@ class SocialActivity:
                                (scope,)).fetchall()
         return [{**dict(row), "artifacts": json.loads(row["artifacts"])} for row in rows]
 
+    def index(self, scope: str) -> list[dict[str, object]]:
+        rows = self.db.execute("SELECT id,status,title,next_step FROM activities WHERE scope=? "
+                               "ORDER BY status='active' DESC,updated DESC LIMIT 5", (scope,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def current(self, scope: str) -> dict[str, object] | None:
+        row = self.db.execute("SELECT * FROM activities WHERE scope=? AND status='active'",
+                              (scope,)).fetchone()
+        return {**dict(row), "artifacts": json.loads(row["artifacts"])} if row is not None else None
+
     def apply(self, scope: str, turn: str, request: ActivityRequest) -> dict[str, object]:
         if request.action == "list":
             return {"activities": self.context(scope)}
