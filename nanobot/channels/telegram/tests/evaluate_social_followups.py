@@ -13,7 +13,7 @@ from loguru import logger
 
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.message import MessageTool
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.judge import make_judge_provider
@@ -74,7 +74,7 @@ async def evaluate(args):
 
             runtime.set_sender(sender)
             tools = {tool.name: tool for tool in [
-                *[TelegramSocialTool(runtime, key) for key in ("social_memory", "social_send", "social_wait", "social_get_state")],
+                *[SOCIAL_TOOL_CLASSES[key](runtime) for key in ("social_memory", "social_send", "social_wait", "social_get_state")],
                 MessageTool(send_callback=runtime.bus.publish_outbound, delivery_callback=ordinary_send),
             ]}
             tool_schemas = [{"type":"function", "function":{"name":tool.name,"description":tool.description,

@@ -8,12 +8,13 @@ import time
 import unicodedata
 from collections.abc import Callable
 from difflib import SequenceMatcher
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 from uuid import uuid4
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
+from nanobot.channels.telegram.social.bindings import ScopeBindings
 from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.learning import LearningKind
 from nanobot.channels.telegram.social.models import ConversationScope
@@ -22,9 +23,6 @@ from nanobot.config.schema import Config, ModelPresetConfig, TelegramSocialLearn
 from nanobot.providers.base import LLMProvider, LLMResponse
 from nanobot.providers.factory import make_provider
 from nanobot.utils.prompt_templates import render_template
-
-if TYPE_CHECKING:
-    from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 
 Intent = Literal["irony", "playful_exaggeration", "self_mockery", "ellipsis", "closing", "teasing", "playful_challenge", "reaction"]
 Scene = Literal["banter", "sharing", "complaint", "correction", "praise", "disagreement", "embarrassment", "ending", "guessing", "surprise"]
@@ -253,9 +251,11 @@ def make_expression_provider(config: Config, settings: TelegramSocialLearningMod
 
 class ExpressionLearner:
     kind: LearningKind = "expression"
-    def __init__(self, runtime: TelegramSocialRuntime) -> None:
-        self.runtime = runtime
-        self.store = runtime.store
+    def __init__(self, store: SocialStore, bindings: ScopeBindings, judge_busy: Callable[[], bool]) -> None:
+        self.store = store
+        self.bindings = bindings
+        self.judge_busy = judge_busy
+        self.peer: ExpressionLearner | None = None
         self.library = ExpressionLibrary(self.store)
         self.provider: LLMProvider | None = None
         self.model = ""
@@ -281,12 +281,12 @@ class ExpressionLearner:
             self.task.cancel()
 
     def busy(self) -> bool:
-        return bool(self.main_busy() or self.runtime.judging.tasks or self.store.wakes.any_active()
+        return bool(self.main_busy() or self.judge_busy() or self.store.wakes.any_active()
                     or self.store.judge.any_pending())
 
     def start_due(self, scopes: list[str]) -> None:
         if (self.provider is None or not scopes or not self.store.learning.config.enabled
-                or (self.runtime.learning_task is not None and not self.runtime.learning_task.done()) or self.busy()):
+                or any(task is not None and not task.done() for task in (self.task, self.peer.task if self.peer else None)) or self.busy()):
             return
         # Durable global start interval also covers failed/cancelled requests and restarts.
         last = self.store.learning.last_batch_due()[0]
@@ -296,7 +296,6 @@ class ExpressionLearner:
             settings = getattr(self.store.learning.config, self.kind)
             if row["scope"] in scopes and row["attempts"] < 1 + settings.max_retries:
                 self.task = asyncio.create_task(self.run(str(row["id"])), name=f"social-{self.kind}-learning")
-                self.runtime.learning_task = self.task
                 return
 
     async def run(self, batch: str) -> None:
@@ -309,7 +308,7 @@ class ExpressionLearner:
             if row is None or self.provider is None:
                 return
             scope = ConversationScope.from_session_key(str(row["scope"]))
-            if scope is None or (binding := self.runtime.binding(scope)) is None or binding.paused or self.busy():
+            if scope is None or (binding := self.bindings.binding(scope)) is None or binding.paused or self.busy():
                 return
             settings = self.store.learning.config.expression.model_copy(deep=True)
             if row["attempts"] >= 1 + settings.max_retries:
@@ -333,7 +332,7 @@ class ExpressionLearner:
             if response.finish_reason != "stop" or response.tool_calls or response.content is None or len(response.content) > 24000:
                 raise ValueError("invalid extraction response")
             result = ExtractionResult.model_validate_json(response.content)
-            binding = self.runtime.binding(scope)
+            binding = self.bindings.binding(scope)
             if binding is None or binding.paused:
                 raise ValueError("scope revoked or paused")
             self.library.commit(batch, result, generation)

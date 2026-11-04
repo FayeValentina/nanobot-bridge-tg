@@ -20,7 +20,7 @@ from nanobot.agent.context_governance import ContextCompactionState, ContextGove
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tools.context import RequestContext
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.outbound_events import StreamDeltaEvent
 from nanobot.bus.queue import MessageBus
@@ -73,6 +73,10 @@ def message(scope=A, *, seq=1, text="member text", **kwargs):
     )
 
 
+def test_social_tool_classes_match_runtime_tools():
+    assert set(SOCIAL_TOOL_CLASSES) == SOCIAL_TOOLS
+
+
 def agent(tmp_path, social, responses, *, tools_config=None):
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
@@ -84,7 +88,7 @@ def agent(tmp_path, social, responses, *, tools_config=None):
     provider.chat_stream_with_retry = AsyncMock(side_effect=responses)
     tools = ToolRegistry()
     for name in SOCIAL_TOOLS:
-        tools.register(TelegramSocialTool(social, name))
+        tools.register(SOCIAL_TOOL_CLASSES[name](social))
     loop = AgentLoop(
         bus=social.bus, provider=provider, workspace=workspace,
         context_window_tokens=32000, model="m1-offline", cron_service=MagicMock(),

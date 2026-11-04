@@ -26,7 +26,7 @@ from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.context import RequestContext, current_request_context, request_context
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import DeliveryReceipt, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social import runtime as runtime_module
@@ -385,7 +385,7 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
         runtime.media.loader=loader
         registry=ToolRegistry()
         for name in sorted(SOCIAL_TOOLS if arm.startswith('full') else SOCIAL_TOOLS-{'social_jargon','social_expression'}):
-            registry.register(RecordedTool(TelegramSocialTool(runtime,name),trace))
+            registry.register(RecordedTool(SOCIAL_TOOL_CLASSES[name](runtime),trace))
         async def ordinary_send(message: OutboundMessage) -> DeliveryReceipt:
             ctx=current_request_context()
             assert ctx and ctx.turn_id

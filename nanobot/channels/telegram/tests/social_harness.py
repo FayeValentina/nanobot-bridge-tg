@@ -22,7 +22,7 @@ from PIL import Image
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.runtime import TelegramChannel, TelegramConfig
@@ -108,7 +108,7 @@ class SocialHarness:
         self._runtime.set_media_services(self._load_image, self._send_sticker, self._load_pack)
         registry = ToolRegistry()
         for name in SOCIAL_TOOLS:
-            registry.register(TelegramSocialTool(self._runtime, name))
+            registry.register(SOCIAL_TOOL_CLASSES[name](self._runtime))
         results = self._results
 
         class Observer(AgentHook):

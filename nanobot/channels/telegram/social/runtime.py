@@ -18,6 +18,7 @@ from nanobot.agent.hook import (
 from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.channels.telegram.social.activity import ActivityRequest
 from nanobot.channels.telegram.social.bindings import SOCIAL_PROTOCOL as SOCIAL_PROTOCOL
 from nanobot.channels.telegram.social.bindings import ScopeBindings
 from nanobot.channels.telegram.social.context import (
@@ -26,7 +27,7 @@ from nanobot.channels.telegram.social.context import (
     snapshot_text,
 )
 from nanobot.channels.telegram.social.delivery import SocialDelivery, SocialSender
-from nanobot.channels.telegram.social.expressions import ExpressionLearner
+from nanobot.channels.telegram.social.expressions import ExpressionEdit, ExpressionLearner
 from nanobot.channels.telegram.social.hook import SocialExposureHook
 from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.jargon_learning import JargonLearner
@@ -86,10 +87,11 @@ class TelegramSocialRuntime:
         self._closed = False
         self._recovered = False
         self._epoch = uuid4().hex
-        self.learning_task: asyncio.Task[None] | None = None
-        self.expressions = ExpressionLearner(self)
-        self.jargon = JargonLearner(self)
-        self.selector = ContextSelector(self)
+        self.expressions = ExpressionLearner(self.store, self.bindings, lambda: bool(self.judging.tasks))
+        self.jargon = JargonLearner(self.store, self.bindings, lambda: bool(self.judging.tasks))
+        self.expressions.peer = self.jargon
+        self.jargon.peer = self.expressions
+        self.selector = ContextSelector(self.store, lambda: self.config, self.now)
         self.delivery = SocialDelivery(self.store, self.bindings, self.proactive, self.waiting,
                                        self.selector, self.scheduler.notify, lambda: self.config, self.now)
         self.context_builder = SocialContextBuilder(self.store, self.memory, self.selector)
@@ -120,6 +122,15 @@ class TelegramSocialRuntime:
         result = self.memory.apply(scope.session_key, ctx.turn_id, request)
         self.scheduler.notify()
         return result
+
+    def activity_action(self, ctx: RequestContext, request: ActivityRequest) -> dict[str, object]:
+        scope = self.bindings.validate_context(ctx)
+        assert ctx.turn_id is not None
+        return self.store.activities.apply(scope.session_key, ctx.turn_id, request)
+
+    def expression_action(self, ctx: RequestContext, edit: ExpressionEdit) -> dict[str, object]:
+        scope = self.bindings.validate_context(ctx)
+        return self.expressions.library.change(scope.session_key, edit)
 
     def jargon_action(self, ctx: RequestContext, request: JargonRequest) -> dict[str, object]:
         scope = self.bindings.validate_context(ctx)

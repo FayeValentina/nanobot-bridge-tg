@@ -480,7 +480,7 @@ def _run_gateway(
     cron = CronService(cron_store_path)
     trigger_store = LocalTriggerStore(config.workspace_path)
 
-    from nanobot.agent.tools.telegram_social import TelegramSocialTool
+    from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
     from nanobot.channels.telegram.social.judge import make_judge_provider
     from nanobot.channels.telegram.social.runtime import SOCIAL_TOOLS, TelegramSocialRuntime
     from nanobot.config.schema import TelegramSocialConfig
@@ -507,7 +507,7 @@ def _run_gateway(
 
     tools = ToolRegistry()
     for name in sorted(SOCIAL_TOOLS):
-        tools.register(TelegramSocialTool(telegram_social, name))
+        tools.register(SOCIAL_TOOL_CLASSES[name](telegram_social))
     mcp_provider = MCPProvider.from_config(config, tools)
 
     recovery = RecoveryCoordinator(

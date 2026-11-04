@@ -52,6 +52,9 @@ class SocialDelivery:
         self._send_locks: dict[str, asyncio.Lock] = {}
         self._send_rechecked: dict[str, str] = {}
 
+    def followup_status(self, followup_id: str) -> dict[str, object]:
+        return self.store.followups.describe(followup_id).model_dump()
+
     async def send_sticker(self, ctx: RequestContext, sticker_id: str, reply_to: int | None) -> DeliveryResult:
         scope = self.bindings.validate_context(ctx)
         ref = self.store.stickers.get(scope.session_key, sticker_id)

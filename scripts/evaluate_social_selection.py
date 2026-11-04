@@ -13,7 +13,7 @@ from pathlib import Path
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.expressions import make_expression_provider
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
@@ -77,7 +77,7 @@ async def evaluate(config_path: Path, source_db: Path, output: Path) -> None:
                     ('synthetic-old-plan',scope.session_key,'pending','旧行程：周末去海边，需要催问进度','["member"]','candidate','inference',1,now-86400,now-86400))
             registry=ToolRegistry()
             for name in SOCIAL_TOOLS:
-                registry.register(TelegramSocialTool(runtime,name))
+                registry.register(SOCIAL_TOOL_CLASSES[name](runtime))
             capture=Capture()
             preset=config.resolve_preset()
             provider=make_provider(config,preset=preset)

@@ -293,9 +293,9 @@ async def test_expression_and_jargon_share_one_task_and_durable_interval(env):
     provider.chat.return_value = response()
     runtime.store.learning.collect_due([A.session_key])
     runtime.expressions.start_due([A.session_key])
-    first = runtime.learning_task
+    first = runtime.expressions.task
     runtime.jargon.start_due([A.session_key])
-    assert runtime.learning_task is first and runtime.jargon.task is None
+    assert runtime.expressions.task is first and runtime.jargon.task is None
     await first
     runtime.jargon.start_due([A.session_key])
     assert runtime.jargon.task is None

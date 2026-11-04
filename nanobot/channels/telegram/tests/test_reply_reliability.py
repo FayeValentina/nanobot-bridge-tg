@@ -10,7 +10,7 @@ from telegram.error import BadRequest, TimedOut
 
 from nanobot.agent.tools.context import RequestContext, ToolContext, request_context
 from nanobot.agent.tools.message import MessageTool
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.events import OutboundMessage
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime, encode_view
@@ -365,7 +365,7 @@ async def test_interrupted_ordinary_send_is_not_reawakened_after_restart(social)
 async def test_ambiguous_social_send_is_rejected_before_any_queue_or_budget(social, payload):
     sender = AsyncMock(return_value=800)
     social.set_sender(sender)
-    tool = TelegramSocialTool(social, "social_send")
+    tool = SOCIAL_TOOL_CLASSES["social_send"](social)
     ctx = context(social)
     assert any("exactly one" in error for error in tool.validate_params(payload))
     with request_context(ctx):
@@ -381,7 +381,7 @@ async def test_parts_is_the_complete_sequence_and_repeated_call_reuses_receipts(
     social.config.send_cooldown_seconds = 0
     sender = AsyncMock(side_effect=range(800, 803))
     social.set_sender(sender)
-    tool = TelegramSocialTool(social, "social_send")
+    tool = SOCIAL_TOOL_CLASSES["social_send"](social)
     ctx = context(social)
     assert tool.validate_params({"parts": texts}) == []
     assert tool.parameters["oneOf"] == [{"required": ["text"]}, {"required": ["parts"]}]

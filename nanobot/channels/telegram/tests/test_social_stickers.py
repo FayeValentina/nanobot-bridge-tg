@@ -11,7 +11,7 @@ import pytest
 from PIL import Image
 
 from nanobot.agent.tools.context import request_context
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.channels.telegram.social.models import StickerSet
 from nanobot.channels.telegram.social.stickers import sticker_set_name
 from nanobot.channels.telegram.tests.test_social_media import loader_for, reference
@@ -91,7 +91,7 @@ async def test_view_annotate_search_and_send_through_tool(social):
     tg = channel(social)
     loader_for(tg)
     social.stickers.loader = AsyncMock(return_value=pack())
-    tool = TelegramSocialTool(social, "social_sticker")
+    tool = SOCIAL_TOOL_CLASSES["social_sticker"](social)
     ctx = context(social)
     with request_context(ctx):
         assert json.loads(await tool.execute(action="import_set", set_name="LLM_Moe"))["imported"] == 3

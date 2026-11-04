@@ -6,8 +6,9 @@ import json
 import re
 import time
 from collections import Counter, OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,12 +19,10 @@ from nanobot.channels.telegram.social.expressions import (
     redacted_error_detail,
 )
 from nanobot.channels.telegram.social.models import MediaReference
-from nanobot.config.schema import Config
+from nanobot.channels.telegram.social.store import SocialStore
+from nanobot.config.schema import Config, TelegramSocialConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.utils.prompt_templates import render_template
-
-if TYPE_CHECKING:
-    from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 
 
 class TurnMessage(BaseModel):
@@ -102,8 +101,10 @@ def retrieval_terms(text: str) -> list[str]:
 
 
 class ContextSelector:
-    def __init__(self, runtime: TelegramSocialRuntime) -> None:
-        self.runtime = runtime
+    def __init__(self, store: SocialStore, config: Callable[[], TelegramSocialConfig], now: Callable[[], float]) -> None:
+        self.store = store
+        self.config = config
+        self.now = now
         self.provider: LLMProvider | None = None
         self.model = ""
         self.prompt = render_template("telegram/social_expression_selection.md")
@@ -113,7 +114,7 @@ class ContextSelector:
 
     def configure_provider(self, config: Config) -> None:
         try:
-            self.provider, self.model = make_expression_provider(config, self.runtime.config.learning.selection)
+            self.provider, self.model = make_expression_provider(config, self.config().learning.selection)
         except Exception as exc:
             logger.warning("Social selector provider configuration failed: {}", redacted_error_detail(exc))
             self.provider, self.model = None, ""
@@ -124,7 +125,7 @@ class ContextSelector:
             task.cancel()
 
     def input(self, scope: str, turn: str, model_text: str = "") -> list[TurnMessage]:
-        rows = self.runtime.store.views.turn_bodies(scope, turn)
+        rows = self.store.views.turn_bodies(scope, turn)
         ids = complete_view_ids(model_text)
         for row in rows:
             if model_text and row["id"] not in ids:
@@ -136,13 +137,13 @@ class ContextSelector:
                 # Already learned notes for the exact displayed sticker provide
                 # visual context without another model/image call. Never borrow
                 # another scope's notes or describe an unseen/unknown image.
-                notes = self.runtime.store.messages.sticker_notes(scope, message.message_id, message.revision)
+                notes = self.store.messages.sticker_notes(scope, message.message_id, message.revision)
                 message.known_sticker_notes = [str(note[0])[:400] for note in notes]
             return messages
         return []
 
     def candidates(self, scope: str, messages: list[TurnMessage]) -> list[Candidate]:
-        config = self.runtime.config.learning
+        config = self.config().learning
         text = " ".join(m.text + " " + " ".join(m.known_sticker_notes) + " " + json.dumps(m.reply or {}, ensure_ascii=False)
                         for m in messages[-4:] if not m.is_self).casefold()[-2400:]
         terms = retrieval_terms(text)
@@ -169,9 +170,9 @@ class ContextSelector:
             revision = "revision" if kind != "sticker" else "0 AS revision"
             args: list[str | int | float] = [*needles, scope]
             if kind == "jargon":
-                args.append(self.runtime.now())
+                args.append(self.now())
             args.append(limit)
-            rows = self.runtime.store.db.execute(
+            rows = self.store.db.execute(
                 f"SELECT * FROM (SELECT id,{revision},{','.join(fields)},({score}) AS relevance,"
                 f"ROW_NUMBER() OVER (PARTITION BY {partition} ORDER BY updated DESC,id) AS variety "
                 f"FROM {table} WHERE scope=? AND {condition}) ORDER BY relevance DESC,variety,id LIMIT ?", args,
@@ -183,17 +184,17 @@ class ContextSelector:
 
     def current(self, scope: str, candidate: Candidate) -> bool:
         table = {"expression": "expressions", "jargon": "jargon", "sticker": "stickers"}[candidate.kind]
-        row = self.runtime.store.db.execute(f"SELECT * FROM {table} WHERE scope=? AND id=?", (scope, candidate.entry_id)).fetchone()
+        row = self.store.db.execute(f"SELECT * FROM {table} WHERE scope=? AND id=?", (scope, candidate.entry_id)).fetchone()
         if row is None:
             return False
         if candidate.kind != "sticker" and (row["revision"] != candidate.revision or row["status"] not in {"usable", "available", "understand_only"}):
             return False
-        if candidate.kind == "jargon" and row["expires"] is not None and row["expires"] <= self.runtime.now():
+        if candidate.kind == "jargon" and row["expires"] is not None and row["expires"] <= self.now():
             return False
         return all(str(row[name])[:400] == value for name, value in candidate.data.items())
 
     def messages_current(self, scope: str, messages: list[TurnMessage]) -> bool:
-        return all(self.runtime.store.messages.current_revision(scope, m.message_id, m.revision) is not None for m in messages)
+        return all(self.store.messages.current_revision(scope, m.message_id, m.revision) is not None for m in messages)
 
     async def select(self, scope: str, turn: str, model_text: str = "") -> list[Candidate]:
         # Every hook iteration reuses this direct ID/revision/value comparison.
@@ -201,7 +202,7 @@ class ContextSelector:
         # one-call budget; a new turn can select against the new input.
         async with self.locks.setdefault(scope, asyncio.Lock()):
             source = self.input(scope, turn, model_text)
-            store = self.runtime.store
+            store = self.store
             version = store.scopes.state(scope)["version"]
             key = (scope, turn)
             previous = self.cache.get(key)
@@ -228,7 +229,7 @@ class ContextSelector:
             reason = ""
             task = None
             try:
-                if not self.runtime.config.learning.enabled or self.provider is None or not source:
+                if not self.config().learning.enabled or self.provider is None or not source:
                     cached.status = "disabled_or_unavailable"
                 else:
                     pool = self.candidates(scope, source)
@@ -243,14 +244,14 @@ class ContextSelector:
                             messages=[{"role": "system", "content": self.prompt}, {"role": "user", "content": payload}],
                             tools=None, tool_choice="none", model=self.model, temperature=0,
                             reasoning_effort="none",
-                            max_tokens=min(768, self.runtime.config.learning.selection.max_tokens)))
+                            max_tokens=min(768, self.config().learning.selection.max_tokens)))
                         self.tasks.add(task)
                         def finished(done: asyncio.Task[object]) -> None:
                             self.tasks.discard(done)
                             if not done.cancelled():
                                 done.exception()
                         task.add_done_callback(finished)
-                        remaining = self.runtime.config.learning.selection_timeout_seconds - (time.monotonic() - started)
+                        remaining = self.config().learning.selection_timeout_seconds - (time.monotonic() - started)
                         done, _ = await asyncio.wait({task}, timeout=max(0, remaining))
                         if not done:
                             task.cancel()
@@ -263,9 +264,9 @@ class ContextSelector:
                         choice = Choice.model_validate_json(response.content)
                         reason = choice.reason
                         selected: list[Candidate] = []
-                        for kind, ids, limit in [("expression", choice.expressions, self.runtime.config.learning.selection_expressions),
-                                                 ("jargon", choice.jargon, self.runtime.config.learning.selection_jargon),
-                                                 ("sticker", choice.stickers, self.runtime.config.learning.selection_stickers)]:
+                        for kind, ids, limit in [("expression", choice.expressions, self.config().learning.selection_expressions),
+                                                 ("jargon", choice.jargon, self.config().learning.selection_jargon),
+                                                 ("sticker", choice.stickers, self.config().learning.selection_stickers)]:
                             choices: list[Candidate] = []
                             for identity in dict.fromkeys(ids):
                                 item = references.get(identity)
@@ -305,7 +306,7 @@ class ContextSelector:
             return cached.selected
 
     def context(self, selected: list[Candidate]) -> dict[str, list[dict[str, str | int]]]:
-        budget = self.runtime.config.learning.selection_chars
+        budget = self.config().learning.selection_chars
         groups: dict[str, list[dict[str, str | int]]] = {"expressions": [], "jargon": [], "stickers": []}
         for item in selected:
             group = {"expression": "expressions", "jargon": "jargon", "sticker": "stickers"}[item.kind]
@@ -321,11 +322,11 @@ class ContextSelector:
     def recent_usage(self, scope: str) -> dict[str, object]:
         # Only sent receipts from the unified send journal;
         # unconfirmed/queued/unknown and generated-but-unsent drafts never qualify.
-        rows = self.runtime.store.deliveries.recent_usage(scope)
+        rows = self.store.deliveries.recent_usage(scope)
         turns: dict[str, UsageTurn] = {}
         for row in rows:
             key = str(row["turn_id"] or row["id"])
-            if key not in turns and len(turns) >= self.runtime.config.learning.recent_usage_turns:
+            if key not in turns and len(turns) >= self.config().learning.recent_usage_turns:
                 continue
             item = turns.setdefault(key, UsageTurn())
             text_list, sticker_list = item.texts, item.stickers
@@ -357,6 +358,6 @@ class ContextSelector:
     def confirm_sticker(self, scope: str, turn: str | None, delivery: str, sticker_id: str) -> None:
         if turn is None:
             return
-        row = self.runtime.store.learning.selected_sticker(scope, turn, sticker_id)
+        row = self.store.learning.selected_sticker(scope, turn, sticker_id)
         if row:
-            self.runtime.store.learning.confirm_use(scope, turn, "sticker", sticker_id, int(row[0]), delivery)
+            self.store.learning.confirm_use(scope, turn, "sticker", sticker_id, int(row[0]), delivery)

@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from nanobot.agent.hook import AgentHookContext, AgentRunHookContext
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.hook import SocialExposureHook
@@ -392,7 +392,7 @@ async def test_disable_refreshes_live_index_on_next_iteration_and_next_wake(tmp_
 
 
 async def test_memory_tool_is_in_shared_catalog_and_errors_are_clear(social):
-    tool = TelegramSocialTool(social, "social_memory")
+    tool = SOCIAL_TOOL_CLASSES["social_memory"](social)
     assert tool.parameters["additionalProperties"] is False
     ctx = expose(social)
     with bound(ctx):
@@ -401,7 +401,7 @@ async def test_memory_tool_is_in_shared_catalog_and_errors_are_clear(social):
 
 
 async def test_memory_tool_rejects_slang_kind_as_parameter_validation_error(social):
-    tool = TelegramSocialTool(social, "social_memory")
+    tool = SOCIAL_TOOL_CLASSES["social_memory"](social)
     ctx = expose(social)
     with bound(ctx):
         result = await tool.execute(action="record", kind="slang", content="乌龙指乌龙茶", message_ids=[1])

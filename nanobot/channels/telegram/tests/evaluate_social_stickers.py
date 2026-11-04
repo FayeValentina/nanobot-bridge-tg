@@ -13,7 +13,7 @@ from loguru import logger
 from telegram import Bot
 
 from nanobot.agent.tools.context import RequestContext, request_context
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.runtime import TelegramChannel, TelegramConfig
 from nanobot.channels.telegram.social.models import ConversationScope
@@ -50,7 +50,7 @@ async def evaluate(args):
             # No updater, polling, message handler or real send endpoint is started.
             runtime.set_sender(sender)
             runtime.set_media_services(channel._download_social_media, sender, channel._load_social_sticker_set)
-            tools = {name: TelegramSocialTool(runtime, name) for name in ("social_sticker", "social_send", "social_wait")}
+            tools = {name: SOCIAL_TOOL_CLASSES[name](runtime) for name in ("social_sticker", "social_send", "social_wait")}
             schemas = [{"type": "function", "function": {"name": tool.name,
                 "description": tool.description, "parameters": tool.parameters}} for tool in tools.values()]
             messages = [{"role": "system", "content": SOCIAL_PROTOCOL + "\n" + runtime.roles.joinpath("friend.md").read_text()},

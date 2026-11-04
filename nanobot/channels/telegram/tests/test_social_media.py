@@ -17,7 +17,7 @@ from telegram import Update
 from telegram.error import BadRequest, RetryAfter, TimedOut
 
 from nanobot.agent.tools.context import request_context
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.media import SocialMediaCache
 from nanobot.channels.telegram.social.models import MediaReference
@@ -450,9 +450,9 @@ async def test_real_agent_cannot_reset_image_budget_between_tool_rounds(tmp_path
 
 
 async def test_tools_reject_arbitrary_file_ids_targets_and_missing_inputs(social):
-    tool = TelegramSocialTool(social, "social_sticker")
+    tool = SOCIAL_TOOL_CLASSES["social_sticker"](social)
     assert tool.validate_params({"action": "send", "file_id": "arbitrary", "chat_id": -99})
-    assert TelegramSocialTool(social, "social_get_media").validate_params({"message_id": 1, "path": "/tmp/private"})
+    assert SOCIAL_TOOL_CLASSES["social_get_media"](social).validate_params({"message_id": 1, "path": "/tmp/private"})
     with request_context(context(social)):
         result = await tool.execute(action="send")
     assert result.is_error

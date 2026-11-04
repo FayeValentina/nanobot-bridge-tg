@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from nanobot.agent.tools.context import request_context
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
 from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 from nanobot.channels.telegram.social.store import SocialStore
@@ -310,11 +310,11 @@ async def test_scope_coalescing_and_model_override_obey_operator_ceiling(v2b):
 async def test_tools_accept_infinite_wait_and_new_temporary_conditions(v2b):
     ctx = context(v2b)
     with request_context(ctx):
-        wake = json.loads(await TelegramSocialTool(v2b, "social_set_wake").execute(
+        wake = json.loads(await SOCIAL_TOOL_CLASSES["social_set_wake"](v2b).execute(
             on_question=True, sleep_interrupts={"question": True}, coalesce_seconds=1,
         ))
         assert wake["probability"] == 0 and wake["on_question"]
-        wait = json.loads(await TelegramSocialTool(v2b, "social_wait").execute(infinite=True, sleeping=True))
+        wait = json.loads(await SOCIAL_TOOL_CLASSES["social_wait"](v2b).execute(infinite=True, sleeping=True))
         assert wait["infinite"] and wait["wake_at"] is None
 
 

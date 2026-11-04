@@ -6,13 +6,15 @@ import json
 import re
 import sqlite3
 import time
-from typing import TYPE_CHECKING, cast
+from collections.abc import Callable
+from typing import cast
 from uuid import uuid4
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.channels.telegram.social.bindings import ScopeBindings
 from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.expressions import (
     ExpressionLearner,
@@ -28,11 +30,9 @@ from nanobot.channels.telegram.social.jargon import (
 )
 from nanobot.channels.telegram.social.learning import LearningKind
 from nanobot.channels.telegram.social.models import ConversationScope
+from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import TelegramSocialLearningModelConfig
 from nanobot.utils.prompt_templates import render_template
-
-if TYPE_CHECKING:
-    from nanobot.channels.telegram.social.runtime import TelegramSocialRuntime
 
 
 class FetchedBody(BaseModel):
@@ -48,8 +48,8 @@ class FetchedBody(BaseModel):
 class JargonLearner(ExpressionLearner):
     kind: LearningKind = "jargon"
 
-    def __init__(self, runtime: TelegramSocialRuntime) -> None:
-        super().__init__(runtime)
+    def __init__(self, store: SocialStore, bindings: ScopeBindings, judge_busy: Callable[[], bool]) -> None:
+        super().__init__(store, bindings, judge_busy)
         self.jargon = JargonLibrary(self.store)
         self.tools: ToolRegistry | None = None
         self.prompt = render_template("telegram/social_jargon_discovery.md")
@@ -155,7 +155,7 @@ class JargonLearner(ExpressionLearner):
                 return
             scope = ConversationScope.from_session_key(str(row["scope"]))
             settings = self.store.learning.config.jargon.model_copy(deep=True)
-            if scope is None or (binding := self.runtime.binding(scope)) is None or binding.paused or self.busy() or row["attempts"] >= 1 + settings.max_retries:
+            if scope is None or (binding := self.bindings.binding(scope)) is None or binding.paused or self.busy() or row["attempts"] >= 1 + settings.max_retries:
                 return
             sources = [ExpressionSource.model_validate(s) for s in json.loads(row["sources"])]
             with transaction(self.store.db):
@@ -191,7 +191,7 @@ class JargonLearner(ExpressionLearner):
                 findings = ResearchResult.model_validate_json(result)
                 if len({normalized(f.term) for f in findings.findings}) != len(findings.findings):
                     raise ValueError("duplicate research finding")
-            binding = self.runtime.binding(scope)
+            binding = self.bindings.binding(scope)
             if binding is None or binding.paused or self.jargon.generation(scope.session_key) != generation:
                 raise ValueError("jargon/scope changed during extraction")
             with transaction(self.store.db):

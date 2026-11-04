@@ -27,7 +27,7 @@ from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.telegram_social import TelegramSocialTool
+from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import DeliveryReceipt, InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
@@ -250,7 +250,7 @@ async def evaluate_case(name: str, args: argparse.Namespace, config: Config, pro
             runtime.set_sender(sender)
             registry = ToolRegistry()
             for key in ("social_memory", "social_send", "social_wait", "social_set_wake", "social_get_state", "social_read_messages", "social_mark_read"):
-                registry.register(TelegramSocialTool(runtime, key))
+                registry.register(SOCIAL_TOOL_CLASSES[key](runtime))
 
             async def ordinary_send(message: OutboundMessage) -> DeliveryReceipt:
                 ctx = registry_context[0]
