@@ -5,7 +5,7 @@
 
 ## 交接：当前状态与下一步（新对话从这里开始读）
 
-**最后更新：2026-11-04，线上版本 `b7f8bf3f`（P5-b），social schema 21。**
+**最后更新：2026-11-04，线上版本 `5174ea59`（P5-c，Phase 5 完成，待 owner 群内体验发送），social schema 21。**
 
 - **已完成**：Phase 0、0.5、1、2、3，以及追加项 A1。测试 982 个（社交目录 + 契约 + gateway），场景测试 21 个，全部通过，零 xfail。
 - **Phase 3 结果**（P3-0 只读清单 + P3-a～P3-d，明细见下表）：`social/db/` 有 connection、schema 和 8 个仓储
@@ -26,7 +26,7 @@
     发布“尝试”而非回执决定 unsent 修复；Q5（wake 过期后 mode 仍为 active）经核实只在 turn 运行期间存在，finish 时会复位，不是 bug；
     但 wake 在调度 120 秒后过期、长 turn 中 social 工具会因此被拒，留给 Phase 6/8 评估；
     `scripts/evaluate_social_selection.py`、`evaluate_social_v5.py` 仍调用已不存在的 `store.wake(...)`，评估脚本迁移时修。
-- **进行中：Phase 5**（owner 2026-11-04 确认开始）。只读清单 P5-0 已完成（`.agent/tasks/P5-0.report.md`：两表字段/状态、21 个读取点、
+- **Phase 5 已完成**（owner 2026-11-04 确认开始；待 owner 在群内体验普通回复、多段、贴纸、message 工具）。只读清单 P5-0 已完成（`.agent/tasks/P5-0.report.md`：两表字段/状态、21 个读取点、
   发送检查矩阵与 10 类差异、四种发送的生命周期、Telegram 7 处接入点、22 条疑点）。线上数据（11-04 副本）：actions 333 行
   （text sent 295、sticker sent 28、failed 10、88 组多段），message_deliveries 9 行（sent 6、failed 3），每行在 actions 中都有同 turn 的预约行但 ID 不同。
   Claude 的设计：不新建表，把 message_deliveries 并入 `actions`（表名不变，避免测试大量改 SQL），kind 增加 `message`，`message_id`→`message_ids` JSON 数组，
@@ -38,6 +38,8 @@
     多段整组返回、message 工具拒绝重复）属于工具语义，保留不动。
   - **P5-c**（已完成）：Telegram 只保留 group=-1 一个 social 入口（P5-0 确认 /start、/help、命令队列、编辑分支、普通 worker 的 5 处调用在稳定配置下都被 group=-1 覆盖）。
   - 评估脚本 `scripts/` 中读取 message_deliveries 的部分会随 schema 21 失效，与已失效的 `store.wake` 一起留给评估脚本迁移。
+- **下一步：Phase 6**（runtime 拆分并去掉组件对 runtime 的反向引用 P0-1；wiring.py P2-3；工具一类一个 P2-1），风险中。开始前先问 owner，照例先派只读分析。
+  `tests/cli/test_commands.py` 9 个既有失败计划在 Phase 6 修；`tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。
 - **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
   `Wakes._check_trigger_source` 读 judge_batches 的只读例外（Phase 7 judge 简化时重看）；P3-0 疑点 Q4/Q5（Phase 4）、Q6（Phase 7）、
   Q10/Q11/Q13–Q15（按所属 Phase）。P3-0 清单 `.agent/tasks/P3-0.report.md` 的行号已过时，只作线索。
@@ -80,4 +82,4 @@
 | P4-b `SocialContextBuilder`，hook 只负责注入/恢复/登记（纯重构） | 4 | `64a4d33d` | 2026-11-04 healthy，日志无异常栈 | 社交目录 + 契约 + gateway 983 passed（Claude 复跑）；场景测试未改；ruff 干净；basedpyright social/ 0 errors；注入文本逐字未改（diff 核对） | 新增 `social/context.py`（`transcript_text` 合并了 hook 中两段相同的文本提取；`SocialContextBuilder.build` 不持有 runtime）；删除无人读取的 `_last_memory_body`；social/runtime.py 990→938 行。唯一差别：找不到注入目标时多一次只读的 running_activity 查询（Codex 如实指出，可忽略） |
 | P5-a 投递日志合并为一张表（schema 21）【小幅行为变更】 | 5 | `7b9fe9d2` | 2026-11-04 healthy；线上库已迁移到 schema 21（message_deliveries 已删除，actions 348 行），日志无异常栈 | 社交目录 + 契约 + gateway 984 passed（新增 schema 20→21 合并迁移测试）；场景测试未改；ruff 干净；basedpyright 0 errors；channel 中 `social.store` 0 处；**线上库副本迁移演练**：actions 333→342（+9 条 message），message_deliveries 已删除，323 个 message_id 全部转入 message_ids，9 条 message 行的 id/status/message_ids 与原表逐条一致，3 个 followup 引用 ID 均可解析，recover 正常，quick_check ok，外键检查无问题 | **返工 1 轮**：简报遗漏跨工具 kind 条件（合并后普通 message 的 kind 不再是 text），Codex 停下上报；Claude 决定 `unknown_content` 不再按 kind 区分、`latest_content` 对 text 同时匹配 message。**Claude 补修**：终态保护使 `queue_retry` 越界分支先写 failed、随后 `store.delivery(failed)` 被拒、跟进回执停在 queued（Codex 复现并上报），改为越界时只返回 False，由调用方经 `store.delivery` 记失败。生产代码净减少约 10 行。scripts/ 中 evaluate_social_v5、freeze_social_v5_baseline 受影响，留给评估脚本迁移 |
 | P5-b 单一发送许可检查【小幅行为变更：文案统一】 | 5 | `b7f8bf3f` | 2026-11-04 healthy，日志无异常栈 | 社交目录 + 契约 + gateway 984 passed（Claude 复跑）；场景测试未改；ruff 干净；basedpyright 0 errors；暂停/冷却/排队/unknown/预算五条文案在生产代码中只剩 `_check_send_allowed` 一处（暂停另见 validate_context） | `TelegramSocialRuntime._check_send_allowed` 按“暂停→proactive→冷却→排队→unknown（逐段）→预算”检查；reserve_send/enqueue_parts 只写不判（删除恒为真的 version 比较与 limit 参数）；删除重复查询 `unknown_part`。各工具的幂等语义保留在入口。生产代码净减 13 行。测试只改 1 处文案断言和若干 limit 实参 |
-| P5-c Telegram 只保留一个 social 观察入口（P2-2） | 5 | 待填 | 待填 | 社交目录 + 契约 + gateway 984 passed（Claude 复跑）；ruff 干净；basedpyright telegram/runtime.py 0 errors；`_observe_social` 只剩定义与 group=-1 入口两处；tests/channels 有 4 failed + 1 error，改动前后名单完全一致（既有问题，与本改动无关） | 删除 `_on_start`/`_on_help`/`_process_forward_command`/`_on_message` 编辑分支/`_process_message_update` 中的 5 处拦截，生产代码净减 10 行。测试只把 4 处直接调用普通 worker 改为调用真实入口 `_on_social_update`，断言不变 |
+| P5-c Telegram 只保留一个 social 观察入口（P2-2） | 5 | `5174ea59` | 2026-11-04 healthy，日志无异常栈 | 社交目录 + 契约 + gateway 984 passed（Claude 复跑）；ruff 干净；basedpyright telegram/runtime.py 0 errors；`_observe_social` 只剩定义与 group=-1 入口两处；tests/channels 有 4 failed + 1 error，改动前后名单完全一致（既有问题，与本改动无关） | 删除 `_on_start`/`_on_help`/`_process_forward_command`/`_on_message` 编辑分支/`_process_message_update` 中的 5 处拦截，生产代码净减 10 行。测试只把 4 处直接调用普通 worker 改为调用真实入口 `_on_social_update`，断言不变 |
