@@ -13,7 +13,9 @@ activity 笔记本有 28 条活动（鲸咔哒、沙堆、SOFAR 等），笔记�
 ### A. 提示：主动机会默认开口
 - 根因：protocol（`nanobot/templates/telegram/social_protocol.md`）“Silence is a normal outcome”“If nothing natural is ready, end silently”“Do not chase old plans”；
   角色文件第 5 条“没话说就安静听着”；工作区 SOUL.md 第 19 条、MEMORY/USER 中 “silence is acceptance… never resend”。模型推理里反复引用这些。
-- 方向：idle/activity 段改为“机会到来时默认分享一件事，沉默需要具体理由”；角色第 5 条限定在回复场景；SOUL 第 19 条限定“同一话题”。
+- 约束（AGENTS.md owner 2026-11-01）：闲时自主是休闲，不能变成“找东西发”、提高发言概率或发进度报告，也不能设分享配额。
+  因此 A 只去掉过强的沉默倾向，不要求必须发言。
+- 方向：idle/activity 段改为“手头有真实的发现、吐槽或群友关心的话题时自然地说出来，不必等到‘完美时机’”；角色第 5 条限定在回复场景；SOUL 第 19 条限定“同一话题”。
 - 涉及：protocol（代码仓库）、角色文件与 SOUL（线上数据，Claude 手工改并备份）。
 
 ### B. idle turn 注入“可分享素材”
