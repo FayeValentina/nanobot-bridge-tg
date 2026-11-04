@@ -1783,8 +1783,6 @@ class TelegramChannel(BaseChannel):
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
-        if await self._observe_social(update):
-            return
         if not update.message or not update.effective_user:
             return
 
@@ -1801,8 +1799,6 @@ class TelegramChannel(BaseChannel):
 
     async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command for allowed users only."""
-        if await self._observe_social(update):
-            return
         if not update.message or not update.effective_user:
             return
         user = update.effective_user
@@ -2257,8 +2253,6 @@ class TelegramChannel(BaseChannel):
 
     async def _process_forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Process a queued slash command."""
-        if await self._observe_social(update):
-            return
         message = update.message
         user = update.effective_user
         if message is None or user is None:
@@ -2288,8 +2282,6 @@ class TelegramChannel(BaseChannel):
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
-        if self.social is not None and update.edited_message is not None and await self._observe_social(update):
-            return
         if not update.message or not update.effective_user:
             return
         if not self._running:
@@ -2299,8 +2291,6 @@ class TelegramChannel(BaseChannel):
 
     async def _process_message_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Process a queued Telegram message update."""
-        if await self._observe_social(update):
-            return
 
         message = update.message
         user = update.effective_user

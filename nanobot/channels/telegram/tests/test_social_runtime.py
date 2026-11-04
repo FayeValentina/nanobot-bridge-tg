@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 from telegram import Update
 from telegram.error import TimedOut
+from telegram.ext import ApplicationHandlerStop
 
 from nanobot.agent.context import ContextBuilder, TranscriptInput
 from nanobot.agent.context_governance import ContextCompactionState, ContextGovernor
@@ -153,7 +154,8 @@ async def test_plain_messages_are_observed_without_llm_or_media_download(tmp_pat
     loop = agent(tmp_path, social, [])
     tg = channel(social)
     tg._download_message_media = AsyncMock(side_effect=AssertionError("must not download"))
-    await tg._process_message_update(telegram_update(text="ordinary group conversation"), None)
+    with pytest.raises(ApplicationHandlerStop):
+        await tg._on_social_update(telegram_update(text="ordinary group conversation"), None)
     assert social.store.scopes.state(A.session_key)["next_seq"] == 2
     assert social.bus.inbound.empty()
     loop.provider.chat_stream_with_retry.assert_not_awaited()
@@ -220,7 +222,8 @@ async def test_request_budget_and_stale_mentions_do_not_call_model(social):
 async def test_mentions_and_replies_wake_even_when_group_policy_is_open(tmp_path, social, reply):
     loop = agent(tmp_path, social, [LLMResponse(content="internal final")])
     tg = channel(social)
-    await tg._process_message_update(telegram_update(text="hello" if reply else "@bot hello", reply=reply), None)
+    with pytest.raises(ApplicationHandlerStop):
+        await tg._on_social_update(telegram_update(text="hello" if reply else "@bot hello", reply=reply), None)
     inbound = social.bus.inbound.get_nowait()
     assert inbound.session_key == A.session_key
     await loop._dispatch(inbound)
@@ -794,7 +797,8 @@ async def test_group_wide_binding_observes_and_replies_in_each_actual_topic(tmp_
     target = ConversationScope("telegram", A.chat_id, thread)
     tg = channel(social)
     tg._handle_message = AsyncMock(side_effect=AssertionError("must use social routing"))
-    await tg._process_message_update(telegram_update(thread=thread, text="ordinary conversation"), None)
+    with pytest.raises(ApplicationHandlerStop):
+        await tg._on_social_update(telegram_update(thread=thread, text="ordinary conversation"), None)
     assert social.bus.inbound.empty()
     loop = agent(tmp_path, social, [
         LLMResponse(content=None, tool_calls=[ToolCallRequest(
@@ -802,7 +806,8 @@ async def test_group_wide_binding_observes_and_replies_in_each_actual_topic(tmp_
         )]),
         LLMResponse(content="internal"),
     ])
-    await tg._process_message_update(telegram_update(thread=thread, seq=2, text="@bot hello", reply=True), None)
+    with pytest.raises(ApplicationHandlerStop):
+        await tg._on_social_update(telegram_update(thread=thread, seq=2, text="@bot hello", reply=True), None)
     inbound = social.bus.inbound.get_nowait()
     assert inbound.session_key == target.session_key
     await loop._dispatch(inbound)
