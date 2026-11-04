@@ -44,7 +44,13 @@
   代价：单条消息回复约慢 8.5 秒。**owner 实测通过**（14:22:54–14:23:24 每 10 秒一条共 4 条 → 两个 judge wake 并入同一 turn、一次 3 段回复覆盖全部、发送前收取触发 1 次）。
   **之后 owner 要求窗口改为 20 秒**：Claude 小修 `90abae4a`（schema 中 coalesceSeconds、dynamicWait.quietSeconds 上限 10→60），线上配置改为 coalesceSeconds 20、maxCoalesceSeconds 20、quietSeconds 20 / unfinishedSeconds 20 / maxSeconds 45（备份 `config.json.before-burst20-20261104`）；单条消息回复约慢 18.5 秒。
   观察项：同日 14:22 一次 proactive turn 的 V5 selector 报 `ValidationError ... Choice string_type`（selection 降级为空，不影响回复），来源未查；已知未覆盖：judge 批次含未曝光新消息时仍可能另起 turn；普通 message 工具不做检查。
-- **下一步：Phase 6**（runtime 拆分并去掉组件对 runtime 的反向引用 P0-1；wiring.py P2-3；工具一类一个 P2-1），风险中。开始前先问 owner，照例先派只读分析。
+- **Phase 6 进行中**（owner 2026-11-04 确认开始）。只读清单 P6-0 已完成（`.agent/tasks/P6-0.report.md`：runtime 46 个方法的归属、6 个持 runtime 的组件及其访问面、gateway 装配、test_commands 9 个失败的原因、工具层、测试面、19 条疑点）。
+  Claude 的设计约定：组件接收 `config: Callable[[], TelegramSocialConfig]`、`now`、`notify` 回调和具体仓储/服务；runtime 不保留被移走方法的转发，调用方直接改用新位置（测试机械改名）。拆为：
+  - **P6-a**（已完成）：`waiting.py`（SocialWaiting）、`media.py` 的 SocialMedia、`validate_context` 移入 ScopeBindings；judge/stickers 不再持 runtime，`reportPrivateUsage` 抑制全部删除。
+  - **P6-b**：`delivery.py`（全部发送路径 + send_sticker + 普通 message 记账）、`hook.py`。
+  - **P6-c**：Expression/Jargon learner、ContextSelector 去反向引用；工具一个类一个（名字/参数/语义不变，基类保留捕获 RuntimeError）。
+  - **P6-d**：`wiring.py`（gateway 唯一入口、热重载复用、main_busy 回调、disabled 时的处理待定）；修 `tests/cli/test_commands.py`（替身需过 Codex OAuth 类型检查，不放宽生产检查）。
+  P6-0 疑点中暂不处理、已记录：recover 标记提前写入、close 只取消不等待、set_wake 普通分支不 notify、文件 watcher 不刷新 social、channel 构造时用自身 social config 覆盖 gateway 补的 OAuth 路径。
   `tests/cli/test_commands.py` 9 个既有失败计划在 Phase 6 修；`tests/channels` 的 4 failed + 1 error 是既有问题，尚未安排。
 - **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
   `Wakes._check_trigger_source` 读 judge_batches 的只读例外（Phase 7 judge 简化时重看）；P3-0 疑点 Q4/Q5（Phase 4）、Q6（Phase 7）、
@@ -91,3 +97,4 @@
 | P5-c Telegram 只保留一个 social 观察入口（P2-2） | 5 | `5174ea59` | 2026-11-04 healthy，日志无异常栈 | 社交目录 + 契约 + gateway 984 passed（Claude 复跑）；ruff 干净；basedpyright telegram/runtime.py 0 errors；`_observe_social` 只剩定义与 group=-1 入口两处；tests/channels 有 4 failed + 1 error，改动前后名单完全一致（既有问题，与本改动无关） | 删除 `_on_start`/`_on_help`/`_process_forward_command`/`_on_message` 编辑分支/`_process_message_update` 中的 5 处拦截，生产代码净减 10 行。测试只把 4 处直接调用普通 worker 改为调用真实入口 `_on_social_update`，断言不变 |
 | B1-a 发送前收取新到消息，连发合并回复【小幅行为变更】 | 追加 | `eb913c04` | 2026-11-04 healthy，日志无异常；同时生效配置 coalesceSeconds 1.5→10、dynamicWait quiet 1.5→10 / unfinished 4→10 / max 12→30 | 社交目录 957 passed（Claude 复跑）；场景 22 passed（新增连发场景）；契约 + gateway 83 passed；ruff 干净；basedpyright 0 errors；新配置经 `TelegramSocialConfig` 校验通过 | 生产代码 +28 行。Codex 确认：judge 稍后对已曝光的消息返回 wake 时，`Judge._handoff` 复用原 wake，不另起 turn（有测试）。待 owner 体验 |
 | 窗口上限放宽（Claude 小修） | 追加 | `90abae4a` | 2026-11-04 healthy，日志无异常；配置 coalesce 20 / maxCoalesce 20 / quiet 20 / unfinished 20 / max 45 | 社交目录 + config + 契约 1087 passed；ruff 干净；新配置经 `TelegramSocialConfig` 校验通过 | 只改两个 `le=` 上限 |
+| P6-a waiting/media 拆出，judge/stickers 去反向引用（纯重构） | 6 | `8d50aa77` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway 1040 passed（Claude 复跑）；场景测试未改；ruff 全仓干净；basedpyright social/ 0 errors；judge_runtime/stickers/jargon 中 `self.runtime`、`reportPrivateUsage` 0 处 | runtime.py 960→727；生产代码净增约 59 行（构造与签名）。**Claude 修正简报设计缺陷**：`save_preview` 放在 SocialMedia 会跨类访问 cache 私有方法（Codex 如实上报未绕过），改为 `SocialMediaCache.save_preview(scope, raw, limit)`。删除死方法 `JudgeCoordinator.enqueue` |
