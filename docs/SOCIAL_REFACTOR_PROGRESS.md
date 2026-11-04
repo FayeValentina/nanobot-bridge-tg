@@ -5,7 +5,7 @@
 
 ## 交接：当前状态与下一步（新对话从这里开始读）
 
-**最后更新：2026-11-05，线上版本 `22b4d960`（P8-b，**Phase 8 完成**），social schema 22。** owner 已体验 Phase 5、B1、P7-a、B2-a，反馈正常；P8-a/P8-b 待 owner 群内体验（P8-a 后 owner 反馈回复偏慢，合并窗口已改回 10 秒）。
+**最后更新：2026-11-05，线上版本 `448f2eca`（P8-b + 引用修正，**Phase 8 完成**），social schema 22。** owner 已体验 Phase 5、B1、P7-a、B2-a，反馈正常；P8-a/P8-b 待 owner 群内体验（P8-a 后 owner 反馈回复偏慢，合并窗口已改回 10 秒）。
 
 - **已完成**：Phase 0、0.5、1、2、3，以及追加项 A1。测试 982 个（社交目录 + 契约 + gateway），场景测试 21 个，全部通过，零 xfail。
 - **Phase 3 结果**（P3-0 只读清单 + P3-a～P3-d，明细见下表）：`social/db/` 有 connection、schema 和 8 个仓储
@@ -126,3 +126,4 @@
 | P7-d selection 容错、一 turn 一次、SQL 回归拥有者【小幅行为变更】 | 7 | `b620709c` | 2026-11-04 healthy，日志无异常 | 社交目录 + 契约 + gateway + cli 1542 passed（Claude 复跑）；场景 22 passed；ruff 干净；basedpyright 0 errors；selection.py 中 `db.execute` 0 处；两次线上 ValidationError 的原始输出回放后都保留贴纸选择 | 生产代码净增 30 行（新增 Library 方法 15 个）。provider 重配不再清缓存（缓存按 turn 结束清除）。首次派发因 Codex CLI 凭证失效未执行，owner 重新登录后重派 |
 | P8-a protocol 外置与去重、角色口头禅改为配置【行为变更】 | 8 | `64b201a1` | 2026-11-04 healthy；配置加 `learning.catchphrases` 后重启仍 healthy | 社交目录 949 passed、契约 + gateway + config 144 passed（Claude 复跑）；场景测试未改；ruff 干净；basedpyright 0 errors；模板与简报正文 cmp 一致；生产代码中“本大爷/白饭/算力/肥鱼/嘴硬摸鱼” 0 处 | 生产 Python 净减 174 行。Codex 按简报停在一处未列出的旧文案断言（test_social_runtime.py:333），Claude 改为新句子。部署顺序：先发布、再改配置并重启（learning 配置 extra=forbid，旧代码不认新字段） |
 | P8-b 工具 12→9 合并、描述精简【行为变更】 | 8 | `22b4d960` | 2026-11-05 healthy，日志无异常 | 社交目录 958 passed、契约 + gateway + config 144 passed（Claude 复跑）；场景测试只改简报允许的 6 处调用，22 passed；ruff 干净；basedpyright 0 errors；protocol 与简报 cmp 一致；生产代码中旧工具名 0 处 | 生产 Python 净减 48 行。新增 6 类测试（混合 parts、贴纸 followup、until_condition 写入/清除、ambient 关闭下暂停、工具集合与描述长度、state 键集合）。旧工具名只剩 evaluate_* 与冻结 fixture |
+| 追加：首条回复默认不引用（owner 2026-11-05 反馈“第一条必引用最后一条消息，太刻意”）【小幅行为变更】 | 8 | `448f2eca` | 2026-11-05 healthy | 社交目录 958 passed；描述 371 字符；protocol 9,112 字符（-40.2%） | Claude 小修，未派 Codex。根因：reply_to 全由模型传（代码不自动补，replyToMessage=false），最近 55 次发送 38 次首段引用；protocol 与 social_send 描述把引用写成每段的常规选项。改为默认不引用、仅目标不清时引用。为守住 40% 目标删去两处已由默认值/角色文件覆盖的句子（unlearned_only=true、不要逐张投喂） |
