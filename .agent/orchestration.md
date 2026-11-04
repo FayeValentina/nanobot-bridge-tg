@@ -66,6 +66,8 @@ Codex 的短处：
    注意 `resume` 不接受 `-C`/`-s`/`--color`，沙箱模式只能用 `-c sandbox_mode=...` 传入（P4-a 教训）。
    最多返工 2 轮；仍不合格的，Claude 自己修正小问题，或者把阻塞点带着证据报告给用户。
 5. **提交与部署**：验收通过后由 Claude 提交（提交信息说明阶段、任务和验收证据）。
+   **推送到 origin**（owner 2026-11-04 指定）：由 Codex 执行，简报模板见 `.agent/tasks/push-1.md`（只允许快进推送，禁止强推和改写历史），
+   用 `-s danger-full-access` 运行（需要网络和可写的 .git）；派发前先把简报提交，否则 Codex 会因工作区不干净而停下。推送后 Claude 核对 HEAD 与 origin/main 一致。
    - Codex 不在施工时：在主仓库直接执行 `./scripts/pipeline.sh release`。
    - Codex 正在主工作区施工时：先在干净的 worktree 里**只构建**，再回到**主仓库**部署：
      ```bash
