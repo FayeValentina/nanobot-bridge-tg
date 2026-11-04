@@ -194,9 +194,10 @@ async def test_failed_send_does_not_count_and_unknown_send_blocks_resending(soci
     clock(social).advance(3)
     with pytest.raises(PermissionError, match="unknown send"):
         await social.send(ordinary("no-resend"), "换写法也不能重发", None, followup_id=item["id"])
-    social.store.delivery(result["action_id"], "sent", message_id=501)
-    social.store.delivery(result["action_id"], "sent", message_id=501)
-    assert social.store.followups.describe(item["id"]).confirmed_attempts == 1
+    assert not social.store.delivery(result["action_id"], "sent", message_ids=(501,))
+    assert not social.store.delivery(result["action_id"], "sent", message_ids=(501,))
+    info = social.store.followups.describe(item["id"])
+    assert info.confirmed_attempts == 0 and info.unresolved_send
 
 
 async def test_reworded_unknown_matter_stays_blocked_after_process_restart(social):
@@ -214,10 +215,10 @@ async def test_reworded_unknown_matter_stays_blocked_after_process_restart(socia
         with pytest.raises(PermissionError, match="unknown send"):
             await restored.send(ordinary("after-restart"), changed["pending_question"], None, followup_id=item["id"])
         sender.assert_not_awaited()
-        restored.store.delivery(result["action_id"], "sent", message_id=501)
-        restored.store.delivery(result["action_id"], "sent", message_id=501)
+        assert not restored.store.delivery(result["action_id"], "sent", message_ids=(501,))
+        assert not restored.store.delivery(result["action_id"], "sent", message_ids=(501,))
         info = restored.store.followups.describe(item["id"])
-        assert info.confirmed_attempts == 1 and info.remaining_attempts == 1
+        assert info.confirmed_attempts == 0 and info.remaining_attempts == 1 and info.unresolved_send
     finally:
         restored.close()
 
@@ -374,6 +375,10 @@ async def test_reply_wait_timeout_stays_local_and_other_topics_do_not_share_inte
 def test_schema_twelve_upgrade_preserves_sources(social):
     social.store.observe(observed(social), 500)
     remove_v4b_tables(social.store.db)
+    social.store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+    social.store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+    social.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+    social.store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
     social.store.db.execute("PRAGMA user_version=12")
     social.store.db.commit()
     messages = [tuple(row) for row in social.store.db.execute("SELECT * FROM messages")]
@@ -391,6 +396,10 @@ def test_schema_twelve_upgrade_preserves_sources(social):
 
 def test_schema_twelve_upgrade_failure_rolls_back(social, monkeypatch):
     remove_v4b_tables(social.store.db)
+    social.store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+    social.store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+    social.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+    social.store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
     social.store.db.execute("PRAGMA user_version=12")
     social.store.db.commit()
     social.close()
@@ -428,3 +437,42 @@ async def test_stop_contact_prevents_linked_proactive_send_but_allows_normal_ans
         await social.send(ordinary("proactive"), "追问近况", None, followup_id=item["id"])
     assert (await social.send(ordinary("answer"), "回答你的新问题", None))["status"] == "sent"
     assert social.store.followups.describe(item["id"]).confirmed_attempts == 0
+
+
+def test_schema_twenty_merges_delivery_rows_and_preserves_followup_ids(social):
+    item = own(social)
+    version = social.store.scopes.state(A.session_key)["version"]
+    action = social.store.reserve_send(A.session_key, version, "legacy reservation", 60,
+                                      kind="text", turn="legacy-turn", followup_id=item["id"])
+    social.store.delivery(action, "sent", (501,))
+    with social.store.db as db:
+        db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+        db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+        db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+        db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
+        db.execute("INSERT INTO message_deliveries VALUES('legacy-sent',?,'legacy-turn',?,'sent','[601,602]',NULL,NULL)",
+                   (A.session_key, social.now()))
+        db.execute("INSERT INTO message_deliveries VALUES('legacy-queued',?,'pending-turn',?,'queued','[]','pending receipt','old-version')",
+                   (A.session_key, social.now()))
+        db.execute("UPDATE followup_sends SET delivery_id='legacy-sent' WHERE delivery_id=?", (action,))
+        db.execute("PRAGMA user_version=20")
+    social.close()
+    restored = SocialStore(social.root, now=social.now)
+    try:
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 21
+        rows = {row["id"]: dict(row) for row in restored.db.execute("SELECT * FROM actions")}
+        assert len(rows) == 3
+        assert (rows[action]["kind"], rows[action]["status"], rows[action]["content"], rows[action]["message_ids"]) == ("text", "sent", "legacy reservation", "[501]")
+        sent, queued = rows["legacy-sent"], rows["legacy-queued"]
+        assert (sent["kind"], sent["status"], sent["version"], sent["content"], sent["message_ids"]) == ("message", "sent", version, "", "[601,602]")
+        assert (queued["kind"], queued["status"], queued["version"], queued["message_ids"], queued["error"]) == ("message", "sending", "old-version", "[]", "pending receipt")
+        assert sent["attempts"] == queued["attempts"] == 1
+        assert sent["group_id"] is None and queued["due"] is None
+        assert sent["turn_id"] == "legacy-turn" and queued["turn_id"] == "pending-turn"
+        linked = restored.db.execute("SELECT s.delivery_id,a.memory_id FROM followup_sends s JOIN followup_attempts a ON a.id=s.attempt_id").fetchone()
+        assert tuple(linked) == ("legacy-sent", item["id"])
+        assert restored.deliveries.confirmed_receipt(A.session_key, "legacy-turn", linked["delivery_id"])
+        assert restored.db.execute("SELECT name FROM sqlite_master WHERE name='message_deliveries'").fetchone() is None
+        assert "message_id" not in {row[1] for row in restored.db.execute("PRAGMA table_info(actions)")}
+    finally:
+        restored.close()

@@ -274,7 +274,7 @@ class SocialHarness:
         version = self._runtime.store.scopes.state(self._scope.session_key)["version"]
         self._runtime.store.reserve_send(
             self._scope.session_key, version, text, self._config.max_sends_per_hour,
-            turn="interrupted-scenario-turn",
+            turn="interrupted-scenario-turn", kind="text",
         )
         await self._send_text(self._scope, text, None)
 

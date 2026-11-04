@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from nanobot.channels.telegram.social.store import SocialStore
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 def initialize_social_schema(store: SocialStore) -> None:
@@ -52,7 +52,7 @@ def initialize_social_schema(store: SocialStore) -> None:
             CREATE TABLE actions (
                 id TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(key),
                 version TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL,
-                created REAL NOT NULL, message_id INTEGER, error TEXT
+                created REAL NOT NULL, message_ids TEXT NOT NULL DEFAULT '[]', error TEXT
             );
             CREATE INDEX views_scope ON views(scope, created);
             CREATE INDEX wakes_scope ON wakes(scope, created);
@@ -146,7 +146,7 @@ def initialize_social_schema(store: SocialStore) -> None:
             PRAGMA user_version=5;
             COMMIT;
         """)
-    if version < 6:
+    if 0 < version < 6:
         store.db.executescript("""
             BEGIN IMMEDIATE;
             CREATE TABLE message_deliveries (
@@ -159,9 +159,9 @@ def initialize_social_schema(store: SocialStore) -> None:
             COMMIT;
         """)
     if version < 7:
-        store.db.executescript("""
+        store.db.executescript(f"""
             BEGIN IMMEDIATE;
-            ALTER TABLE message_deliveries ADD COLUMN version TEXT;
+            {"ALTER TABLE message_deliveries ADD COLUMN version TEXT;" if version else ""}
             CREATE TABLE dialogue_state (
                 scope TEXT PRIMARY KEY REFERENCES scopes(key), last_at REAL,
                 observed_at REAL, observed_seq INTEGER NOT NULL DEFAULT 0, last_sent REAL
@@ -320,6 +320,23 @@ def initialize_social_schema(store: SocialStore) -> None:
             store.db.execute("DROP TABLE IF EXISTS dialogue_attention")
             store.db.execute("DROP TABLE IF EXISTS wake_samples")
             store.db.execute("PRAGMA user_version=20")
+
+    if 0 < version < 21:
+        store.db.executescript("""
+            BEGIN IMMEDIATE;
+            ALTER TABLE actions ADD COLUMN message_ids TEXT NOT NULL DEFAULT '[]';
+            UPDATE actions SET message_ids=json_array(message_id) WHERE message_id IS NOT NULL;
+            INSERT INTO actions(id,scope,version,content,status,created,message_ids,error,turn_id,kind,attempts)
+                SELECT id,scope,COALESCE(version,(SELECT version FROM scopes WHERE key=message_deliveries.scope)),
+                    '',CASE status WHEN 'queued' THEN 'sending' ELSE status END,created,message_ids,detail,
+                    turn_id,'message',1 FROM message_deliveries;
+            DROP TABLE message_deliveries;
+            ALTER TABLE actions DROP COLUMN message_id;
+            PRAGMA user_version=21;
+            COMMIT;
+        """)
+    if version == 0:
+        store.db.execute("PRAGMA user_version=21")
 
 
 def _upgrade_without_hashes(store: SocialStore) -> None:

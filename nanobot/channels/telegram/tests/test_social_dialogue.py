@@ -386,13 +386,14 @@ async def test_confirmed_context_survives_restart_without_idle_model_calls(dialo
 
 def test_ordinary_message_receipt_records_confirmed_context_once(dialogue):
     ctx = expose(dialogue)
-    delivery = dialogue.record_message_receipt(A, DeliveryReceipt(status="queued"), ctx.turn_id, [])
+    delivery = dialogue.begin_message(A, "何时出发？", ctx.turn_id, units=1, followup_id=None)
+    assert delivery is not None
     receipt = DeliveryReceipt(status="sent", message_ids=(800,))
-    dialogue.record_message_receipt(A, receipt, ctx.turn_id, [(800, "何时出发？")], delivery)
+    dialogue.finish_message(A, delivery, receipt, [(800, "何时出发？")])
     sent = dialogue.store.db.execute("SELECT last_sent FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()[0]
     assert sent is not None
     clock(dialogue).advance(3)
-    dialogue.record_message_receipt(A, receipt, ctx.turn_id, [(800, "何时出发？")], delivery)
+    dialogue.finish_message(A, delivery, receipt, [(800, "何时出发？")])
     assert dialogue.store.db.execute("SELECT last_sent FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()[0] == sent
     assert dialogue.store.db.execute("SELECT COUNT(*) FROM messages WHERE message_id=800 AND is_self=1").fetchone()[0] == 1
 
@@ -606,7 +607,9 @@ def test_schema_six_upgrade_preserves_data_and_unknown_versions_are_rejected(dia
     dialogue.store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
     dialogue.store.db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
     dialogue.store.db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
-    dialogue.store.db.execute("ALTER TABLE message_deliveries DROP COLUMN version")
+    dialogue.store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+    dialogue.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+    dialogue.store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT)")
     remove_v4_columns(dialogue.store.db)
     dialogue.store.db.execute("PRAGMA user_version=6")
     dialogue.store.db.commit()

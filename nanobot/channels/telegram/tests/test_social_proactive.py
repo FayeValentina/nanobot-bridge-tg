@@ -42,6 +42,10 @@ def test_schema_eleven_upgrade_preserves_source_values_and_rolls_back(social, mo
     social.store.observe(observed(social), 500, fresh=True)
     db = social.store.db
     remove_v4_columns(db)
+    db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+    db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+    db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+    db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
     db.execute("PRAGMA user_version=11")
     db.commit()
     messages = [tuple(row) for row in db.execute("SELECT * FROM messages")]
@@ -114,18 +118,25 @@ async def test_idle_boundary_ignores_edits_duplicates_and_bot_sends(social, elap
 async def test_probability_modifiers_and_confirmed_message_groups(social):
     binding = enable(social)
     binding.proactive.probability = 0.3
+    social.config.max_sends_per_hour = 60
     # Noon UTC is midnight in this explicitly selected zone.
     binding.proactive.timezone = "Etc/GMT-12"
     social.configure(social.config)
     receipt = DeliveryReceipt("sent", (501, 502, 503))
-    social.record_message_receipt(A, receipt, "ordinary", [(i, "confirmed") for i in receipt.message_ids])
+    delivery = social.begin_message(A, "confirmed", "ordinary", units=3, followup_id=None)
+    assert delivery is not None
+    social.finish_message(A, delivery, receipt, [(i, "confirmed") for i in receipt.message_ids])
     for i in (601, 602):
-        action = social.store.reserve_send(A.session_key, social.store.scopes.state(A.session_key)["version"], f"part {i}", 60)
+        action = social.store.reserve_send(A.session_key, social.store.scopes.state(A.session_key)["version"], f"part {i}", 60, kind="text")
         social.store.db.execute("UPDATE actions SET group_id='burst' WHERE id=?", (action,))
-        social.store.delivery(action, "sent", message_id=i)
+        social.store.delivery(action, "sent", message_ids=(i,))
         social.store.observe(replace(observed(social, i, is_self=True), message_id=i), 500)
-    for status in ("queued", "failed", "unknown"):
-        social.record_message_receipt(A, DeliveryReceipt(status), "ordinary", [])
+    for status in ("sending", "failed", "unknown"):
+        clock(social).advance(3)
+        delivery = social.begin_message(A, status, "ordinary", units=1, followup_id=None)
+        assert delivery is not None
+        if status != "sending":
+            social.finish_message(A, delivery, DeliveryReceipt(status), [])
     social.proactive.random_value = lambda: 0.02
     await tick(social)
     result = social.proactive.status(A.session_key)
@@ -448,7 +459,9 @@ async def test_known_budget_exhaustion_skips_model_calls(social, budget):
     limit = social.config.max_requests_per_hour if budget == "requests" else social.config.max_sends_per_hour
     if budget == "confirmed":
         ids = tuple(range(501, 501 + limit))
-        social.record_message_receipt(A, DeliveryReceipt("sent", ids), "ordinary", [(i, "sent") for i in ids])
+        delivery = social.begin_message(A, "sent", "ordinary", units=limit, followup_id=None)
+        assert delivery is not None
+        social.finish_message(A, delivery, DeliveryReceipt("sent", ids), [(i, "sent") for i in ids])
     else:
         with social.store.db:
             social.store.db.executemany(f"INSERT INTO {budget} VALUES(?,?)", [(A.session_key, social.now())] * limit)
@@ -673,7 +686,9 @@ def test_schema_four_upgrade_preserves_memory_watermarks_and_history(tmp_path):
     store.db.execute("UPDATE scopes SET next_seq=7,read_through=4,seen_through=5 WHERE key=?", (A.session_key,))
     store.db.execute("DROP TABLE proactive_state")
     store.db.execute("ALTER TABLE wakes DROP COLUMN proactive_source")
-    store.db.execute("DROP TABLE message_deliveries")
+    store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+    store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+    store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
     for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
         store.db.execute(f"DROP TABLE {table}")
     store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")

@@ -147,13 +147,12 @@ class SocialFollowups:
     def sync_receipts(self, scope: str | None = None) -> None:
         # Native journals own cancellation/recovery. Pruning a source does not erase
         # a final receipt already retained with the matter.
-        query = ("SELECT s.delivery_id,COALESCE(a.status,d.status) AS status "
+        query = ("SELECT s.delivery_id,a.status AS status "
                  "FROM followup_sends s LEFT JOIN actions a ON a.id=s.delivery_id "
-                 "LEFT JOIN message_deliveries d ON d.id=s.delivery_id "
-                 "WHERE COALESCE(a.status,d.status) IS NOT NULL AND COALESCE(a.status,d.status)<>s.status")
+                 "WHERE a.status IS NOT NULL AND a.status<>s.status")
         if scope is not None:
-            query += " AND (a.scope=? OR d.scope=?)"
-        for row in self.db.execute(query, (scope,scope) if scope is not None else ()).fetchall():
+            query += " AND a.scope=?"
+        for row in self.db.execute(query, (scope,) if scope is not None else ()).fetchall():
             self.receipt(str(row["delivery_id"]), str(row["status"]))
 
     def has_pending_thought(self, scope: str) -> bool:

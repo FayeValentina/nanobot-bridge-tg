@@ -76,7 +76,6 @@ class SocialProactive:
                     "wake_id": wake["id"], "main_status": wake["status"], "turn_id": wake["turn_id"],
                     "source": json.loads(wake["proactive_source"]),
                     "sends": [dict(item) for item in self.store.deliveries.turn_actions(key, wake["turn_id"])],
-                    "message_deliveries": [dict(item) for item in self.store.deliveries.turn_messages(key, wake["turn_id"])],
                 }
         return result
 

@@ -115,10 +115,9 @@ class Messages:
         return self.db.execute("SELECT 1 FROM messages WHERE scope=? AND seq>? AND json_extract(judge_facts,'$.eligible')=1", (key,after)).fetchone()
 
     def participation(self, key: str) -> list[sqlite3.Row]:
-        return self.db.execute("SELECT m.message_id,MAX(m.at) AS at,COALESCE(a.group_id,d.id,CAST(m.message_id AS TEXT)) AS send_group "
-                               "FROM messages m LEFT JOIN actions a ON a.scope=m.scope AND a.message_id=m.message_id AND a.status='sent' "
-                               "LEFT JOIN message_deliveries d ON d.scope=m.scope AND d.status='sent' "
-                               "AND m.message_id IN (SELECT value FROM json_each(d.message_ids)) "
+        return self.db.execute("SELECT m.message_id,MAX(m.at) AS at,COALESCE(a.group_id,a.id,CAST(m.message_id AS TEXT)) AS send_group "
+                               "FROM messages m LEFT JOIN actions a ON a.scope=m.scope AND a.status='sent' "
+                               "AND m.message_id IN (SELECT value FROM json_each(a.message_ids)) "
                                "WHERE m.scope=? AND m.is_self=1 GROUP BY m.message_id", (key,)).fetchall()
 
     def first(self, key: str) -> sqlite3.Row | None:

@@ -664,7 +664,7 @@ def test_schema_v1_migration_preserves_watermarks_and_delivery_journal(tmp_path)
         state = store.scopes.state(A.session_key)
         assert (state["next_seq"], state["read_through"], state["seen_through"]) == (7, 4, 5)
         assert state["mode"] == "observing"
-        assert store.db.execute("SELECT content,message_id FROM actions").fetchone()[:] == ("hello", 501)
+        assert store.db.execute("SELECT content,message_ids FROM actions").fetchone()[:] == ("hello", "[501]")
     finally:
         store.close()
 

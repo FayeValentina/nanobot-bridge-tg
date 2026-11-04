@@ -156,17 +156,22 @@ async def test_inflight_revision_or_scope_change_discards_result(social):
 
 def test_recent_usage_is_sent_only_all_paths_grouped_by_turn(social):
     seed(social)
+    social.config.send_cooldown_seconds = 0
     db=social.store.db
     for index,(turn,status,text) in enumerate([('one','sent','本大爷吃白饭'),('one','sent','Token 没花多少'),('bad','unknown','没发出去算力'),('two','sent','换个句式')]):
         with db:
             db.execute('INSERT INTO actions(id,scope,version,content,status,created,turn_id) VALUES(?,?,?,?,?,?,?)',
-                       (f'a{index}',A.session_key,social.store.scopes.state(A.session_key)['version'],text,status,social.now()+index,turn))
+                       (f'a{index}',A.session_key,social.store.scopes.state(A.session_key)['version'],text,status,social.now()-10+index,turn))
     ref=social.store.stickers.get(A.session_key,'s-124')
     with db:
         db.execute("INSERT INTO actions(id,scope,version,content,status,created,turn_id,kind,media_ref) VALUES(?,?,?,?,?,?,?,?,?)",
-                   ('st',A.session_key,social.store.scopes.state(A.session_key)['version'],'file-124','sent',social.now()+5,'one','sticker',ref.model_dump_json()))
-    social.record_message_receipt(A,DeliveryReceipt(status='sent',message_ids=[100]),'three',[(100,'普通 message：Token 计费')])
-    social.record_message_receipt(A,DeliveryReceipt(status='unknown',message_ids=[101]),'uncertain',[(101,'不能算已发送的口头禅')])
+                   ('st',A.session_key,social.store.scopes.state(A.session_key)['version'],'file-124','sent',social.now()-5,'one','sticker',ref.model_dump_json()))
+    delivery = social.begin_message(A, '普通 message：Token 计费', 'three', units=1, followup_id=None)
+    assert delivery is not None
+    social.finish_message(A, delivery, DeliveryReceipt('sent', (100,)), [(100, '普通 message：Token 计费')])
+    delivery = social.begin_message(A, '不能算已发送的口头禅', 'uncertain', units=1, followup_id=None)
+    assert delivery is not None
+    social.finish_message(A, delivery, DeliveryReceipt('unknown', (101,)), [(101, '不能算已发送的口头禅')])
     usage=social.selector.recent_usage(A.session_key)
     assert len(usage['turns'])==3
     assert usage['catchphrases']=={'本大爷':1,'白饭':1,'Token':2}

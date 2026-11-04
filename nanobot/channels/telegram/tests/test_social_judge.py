@@ -424,6 +424,10 @@ def test_schema_eight_upgrade_preserves_main_data(case, tmp_path):
         for table in ("judge_attempts", "judge_batches", "judge_state"):
             store.db.execute(f"DROP TABLE {table}")
         remove_v4_columns(store.db)
+        store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+        store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+        store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+        store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
         store.db.execute("PRAGMA user_version=8")
     store.close()
     upgraded = SocialStore(tmp_path)

@@ -52,6 +52,10 @@ def test_schema_ten_upgrade_removes_keys_and_preserves_journals(case, tmp_path):
         store.db.execute("ALTER TABLE messages DROP COLUMN revision")
         store.db.execute("DROP TABLE runtime_settings")
         remove_v4_columns(store.db)
+        store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+        store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+        store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+        store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
         store.db.execute("PRAGMA user_version=10")
     messages = [tuple(row) for row in store.db.execute("SELECT * FROM messages ORDER BY seq")]
     memory = tuple(store.db.execute("SELECT * FROM memories").fetchone())

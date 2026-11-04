@@ -252,6 +252,10 @@ def test_upgrade_schema_thirteen_preserves_all_existing_source_values(store, tmp
                   if row[0].startswith(("learning_", "expression", "jargon"))]
         for table in sorted(tables, key=lambda name: name in {"expressions", "jargon", "expression_turns"}):
             store.db.execute(f"DROP TABLE {table}")
+        store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+        store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+        store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+        store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
         store.db.execute("PRAGMA user_version=13")
     store.close()
     restored = SocialStore(tmp_path, now=lambda: 1000.)
@@ -314,10 +318,7 @@ def test_interrupted_attempt_is_charged_before_restart(store, tmp_path):
 def test_usage_requires_real_receipt_and_keeps_human_occurrences_unchanged(store, ordinary, status, ids, confirmed):
     with store.db:
         store.db.execute("INSERT INTO expressions(id,scope,situation,expression,revision,created,updated) VALUES('chosen',?,'s','e',2,1000,1000)", (A.session_key,))
-        if ordinary:
-            store.db.execute("INSERT INTO message_deliveries VALUES('delivery',?,'turn',1000,?,?,NULL,'1')", (A.session_key, status, json.dumps(ids)))
-        else:
-            store.db.execute("INSERT INTO actions(id,scope,version,content,status,created,turn_id,message_id) VALUES('delivery',?,'1','text',?,1000,'turn',?)", (A.session_key, status, ids[0] if ids else None))
+        store.db.execute("INSERT INTO actions(id,scope,version,content,status,created,turn_id,message_ids,kind) VALUES('delivery',?,'1','text',?,1000,'turn',?,?)", (A.session_key, "sending" if ordinary and status == "queued" else status, json.dumps(ids), "message" if ordinary else "text"))
     store.learning.record_selection(A.session_key, "turn", target_message_id=1, candidates=1,
                                     selected=[("expression", "chosen", 2)], explanation={})
     if not confirmed:
@@ -408,6 +409,10 @@ def test_upgrade_seventeen_retains_learning_batches_and_adds_nullable_detail(sto
     with store.db:
         if not column_exists:
             store.db.execute("ALTER TABLE learning_batches DROP COLUMN error_detail")
+        store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+        store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+        store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+        store.db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
         store.db.execute("PRAGMA user_version=17")
     store.close()
     restored = SocialStore(tmp_path, now=lambda: 1000.)

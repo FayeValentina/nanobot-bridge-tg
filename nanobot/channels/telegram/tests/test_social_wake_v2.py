@@ -258,6 +258,10 @@ def test_schema_seven_upgrade_preserves_an_existing_wait_and_watermarks(v2b):
     db.execute("ALTER TABLE wakes DROP COLUMN source_seq")
     db.execute("ALTER TABLE wakes DROP COLUMN condition_config")
     remove_v4_columns(db)
+    db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+    db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+    db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+    db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
     db.executescript("""
         CREATE TABLE dialogue_waits_v7 (
             scope TEXT PRIMARY KEY REFERENCES scopes(key), purpose TEXT NOT NULL,

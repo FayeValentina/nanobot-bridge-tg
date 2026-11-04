@@ -1114,7 +1114,6 @@ class TelegramChannel(BaseChannel):
         message_ids: list[int] = []
         sent_texts: list[tuple[int, str]] = []
         delivery_id: str | None = None
-        action_id: str | None = None
         chat, metadata = self._resolve_topic_target(msg.chat_id, msg.metadata)
         thread = int(metadata.get("message_thread_id") or 0)
         scope = ConversationScope(self.name, int(chat), thread)
@@ -1135,11 +1134,10 @@ class TelegramChannel(BaseChannel):
             if self.social is not None and self.social.binding(scope) is not None:
                 # Reserve the whole envelope before any delivery, charging each text
                 # chunk/attachment. A long message must not bypass the shared quota.
-                action_id = self.social.reserve_message_send(
+                delivery_id = self.social.begin_message(
                     scope, msg.content or json.dumps(msg.media, ensure_ascii=False), metadata.get("_delivery_turn_id"),
-                    units=max(1, len(chunks)+len(msg.media)),
+                    units=max(1, len(chunks)+len(msg.media)), followup_id=metadata.get("_social_followup_id"),
                 )
-            delivery_id = self._record_message_receipt(scope, metadata, DeliveryReceipt("queued", detail="Prepared for platform delivery; outcome pending."), [])
             for path in msg.media:
                 kind = self._get_media_type(path)
                 param = kind if kind in {"photo", "video", "voice", "audio"} else "document"
@@ -1175,36 +1173,26 @@ class TelegramChannel(BaseChannel):
         except (TimedOut, NetworkError, asyncio.TimeoutError):
             receipt = DeliveryReceipt("unknown", tuple(message_ids), "Platform outcome unknown; do not resend. IDs listed are the confirmed prefix.")
         except asyncio.CancelledError:
-            if action_id is not None and self.social is not None:
-                self.social.store.delivery(action_id, "unknown", error="interrupted ordinary delivery")
-            self._record_message_receipt(scope, metadata, DeliveryReceipt("unknown", tuple(message_ids), "Cancelled during delivery; do not resend."), sent_texts, delivery_id)
+            self._record_message_receipt(scope, delivery_id, DeliveryReceipt("unknown", tuple(message_ids), "Cancelled during delivery; do not resend."), sent_texts)
             raise
         except Exception as exc:
             receipt = DeliveryReceipt("failed", tuple(message_ids), f"{type(exc).__name__}; do not repeat the confirmed prefix.")
-        if action_id is not None and self.social is not None:
-            self.social.store.delivery(action_id, receipt.status, message_ids[0] if message_ids else None, receipt.detail)
-        self._record_message_receipt(scope, metadata, receipt, sent_texts, delivery_id)
+        self._record_message_receipt(scope, delivery_id, receipt, sent_texts)
         followup_id = metadata.get("_social_followup_id")
         if self.social is not None and isinstance(followup_id, str) and self.social.binding(scope) is not None:
-            info = self.social.store.followups.describe(followup_id)
             receipt = DeliveryReceipt(receipt.status, receipt.message_ids,
-                                      f"{receipt.detail or ''} remaining_attempts={info.remaining_attempts}; unresolved_send={info.unresolved_send}")
+                                      f"{receipt.detail or ''} {self.social.followup_note(followup_id)}")
         return receipt
 
-    def _record_message_receipt(self, scope: ConversationScope, metadata: dict[str, Any],
-                                receipt: DeliveryReceipt, texts: list[tuple[int, str]],
-                                delivery_id: str | None = None) -> str | None:
+    def _record_message_receipt(self, scope: ConversationScope, delivery_id: str | None,
+                                receipt: DeliveryReceipt, texts: list[tuple[int, str]]) -> None:
         self.logger.info("Message delivery {} to {}: {}", receipt.status, scope.session_key, receipt.message_ids)
-        if self.social is not None:
+        if delivery_id is not None and self.social is not None:
             try:
-                return self.social.record_message_receipt(scope, receipt, metadata.get("_delivery_turn_id"), texts, delivery_id,
-                                                          followup_id=metadata.get("_social_followup_id"))
+                self.social.finish_message(scope, delivery_id, receipt, texts)
             except Exception:
-                if receipt.status == "queued" and metadata.get("_social_followup_id") is not None:
-                    raise
                 # A journal failure must never turn an accepted send into an invitation to resend.
                 self.logger.exception("Failed to journal ordinary Telegram delivery; platform status is {}", receipt.status)
-        return None
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""

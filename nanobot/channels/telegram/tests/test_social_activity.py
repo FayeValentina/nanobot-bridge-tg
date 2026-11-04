@@ -173,6 +173,10 @@ def test_schema_sixteen_migration_preserves_data_and_rolls_back(social, monkeypa
     with db:
         db.execute("DROP TABLE activity_steps")
         db.execute("DROP TABLE activities")
+        db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+        db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+        db.execute("ALTER TABLE actions DROP COLUMN message_ids")
+        db.execute("CREATE TABLE message_deliveries (id TEXT PRIMARY KEY,scope TEXT NOT NULL REFERENCES scopes(key),turn_id TEXT,created REAL NOT NULL,status TEXT NOT NULL,message_ids TEXT NOT NULL,detail TEXT,version TEXT)")
         db.execute("PRAGMA user_version=16")
     scopes = [tuple(row) for row in db.execute("SELECT * FROM scopes")]
     social.close()

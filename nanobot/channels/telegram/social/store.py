@@ -251,18 +251,18 @@ class SocialStore:
                 self.deliveries.fail_queued_for_turn(row["scope"], row["turn_id"], f"opportunity skipped: {reason}")
                 self.followups.sync_receipts(str(row["scope"]))
 
-    def reserve_send(self, key: str, version: str, text: str, limit: int, *, turn: str | None = None,
+    def reserve_send(self, key: str, version: str, text: str, limit: int, *, kind: str, turn: str | None = None,
                      sticker: MediaReference | None = None, followup_id: str | None = None, units: int = 1) -> str:
         with transaction(self.db):
             if self.scopes.state(key)["version"] != version:
                 raise PermissionError("conversation configuration changed")
-            if self.deliveries.unknown_content(key, version, "sticker" if sticker else "text", text, self.now() - 86400):
+            if self.deliveries.unknown_content(key, version, text, self.now() - 86400):
                 raise PermissionError("delivery of this text is unknown; do not blindly repeat it")
             count = self.deliveries.attempt_count(key, self.now() - 3600)
             if count + units > limit:
                 raise PermissionError("hourly send budget exhausted")
             action = uuid4().hex
-            self.deliveries.insert_action(action, key, version, text, "sending", self.now(), turn, "sticker" if sticker else "text", sticker.model_dump_json() if sticker else None)
+            self.deliveries.insert_action(action, key, version, text, "sending", self.now(), turn, kind, sticker.model_dump_json() if sticker else None)
             if followup_id is not None:
                 if turn is None:
                     raise ValueError("a proactive follow-up requires a source turn")
@@ -272,18 +272,33 @@ class SocialStore:
             self.deliveries.prune_attempts(self.now() - 3600)
             return action
 
-    def delivery(self, action: str, status: str, message_id: int | None = None, error: str | None = None) -> None:
+    def delivery(self, action: str, status: str, message_ids: tuple[int, ...] = (), error: str | None = None) -> bool:
         with transaction(self.db):
             previous = self.deliveries.get(action)
-            if status == "sent" and previous is not None and previous["status"] != "sent" and previous["kind"] == "sticker":
+            changed = self.deliveries.record_delivery(status, json.dumps(list(message_ids)), error[:200] if error else None, self.now(), action)
+            if changed != 1:
+                return False
+            if status == "sent" and previous is not None and previous["kind"] == "sticker":
                 ref = MediaReference.model_validate_json(previous["media_ref"])
                 self.stickers.count_use(previous["scope"], ref.unique_id)
-            self.deliveries.record_delivery(status, message_id, error[:200] if error else None, self.now(), action)
-            self.followups.receipt(action, status)
+            self.followups.receipt(action, status, confirmed=bool(message_ids))
             if status in ("failed", "unknown"):
                 self.deliveries.fail_later_parts(action)
                 for child in self.deliveries.failed_parts(action):
                     self.followups.receipt(str(child[0]), "failed")
+            return True
+
+    def claim_retry(self, action: str, limit: int) -> bool:
+        with transaction(self.db):
+            row = self.deliveries.queued_action(action)
+            if row is None:
+                return False
+            count = self.deliveries.attempt_count(row["scope"], self.now() - 3600)
+            if row["expires"] <= self.now() or count >= limit:
+                self.delivery(action, "failed", error="budget or expiry")
+                return False
+            self.deliveries.claim(action, row["scope"])
+            return True
 
     def pause(self, key: str) -> None:
         with transaction(self.db):

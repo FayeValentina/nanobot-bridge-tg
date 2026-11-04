@@ -26,9 +26,18 @@
     发布“尝试”而非回执决定 unsent 修复；Q5（wake 过期后 mode 仍为 active）经核实只在 turn 运行期间存在，finish 时会复位，不是 bug；
     但 wake 在调度 120 秒后过期、长 turn 中 social 工具会因此被拒，留给 Phase 6/8 评估；
     `scripts/evaluate_social_selection.py`、`evaluate_social_v5.py` 仍调用已不存在的 `store.wake(...)`，评估脚本迁移时修。
-- **下一步：Phase 5**（统一投递日志 P0-5：actions 与 message_deliveries 合并为一个 journal，冷却/预算/去重/unknown 保护集中到一个
-  `check_send_allowed`；telegram channel 只保留单一接入点 P2-2），风险高、涉及 schema 迁移和线上数据。开始前先问 owner，
-  然后照例先派只读分析（穷举两张表的全部写入点、状态值、回执流程、六处重复的发送策略检查及其差异）。
+- **进行中：Phase 5**（owner 2026-11-04 确认开始）。只读清单 P5-0 已完成（`.agent/tasks/P5-0.report.md`：两表字段/状态、21 个读取点、
+  发送检查矩阵与 10 类差异、四种发送的生命周期、Telegram 7 处接入点、22 条疑点）。线上数据（11-04 副本）：actions 333 行
+  （text sent 295、sticker sent 28、failed 10、88 组多段），message_deliveries 9 行（sent 6、failed 3），每行在 actions 中都有同 turn 的预约行但 ID 不同。
+  Claude 的设计：不新建表，把 message_deliveries 并入 `actions`（表名不变，避免测试大量改 SQL），kind 增加 `message`，`message_id`→`message_ids` JSON 数组，
+  一次发送一行；投递终态不可改。拆为：
+  - **P5-a**（已完成）：schema 21 合并两表 + 全部读取方 + 普通 message 改为 `begin_message`/`finish_message` 两个方法（channel 不再碰 `social.store`）
+    + 疑点 7（claim 失败同步跟进回执）、疑点 8（终态保护）。【小幅行为变更】
+  - **P5-b**：单一 `check_send_allowed`，替换 reserve_message_send/send/send_parts/reserve_send/enqueue_parts 中重复的检查；
+    统一 queued 文案与 unknown 保护（不再区分 kind，贴纸内容为 `[sticker:id]` 不会与文字冲突）。各工具的幂等语义（social_send 返回旧回执、
+    多段整组返回、message 工具拒绝重复）属于工具语义，保留不动。
+  - **P5-c**：Telegram 只保留 group=-1 一个 social 入口（P5-0 确认 /start、/help、命令队列、编辑分支、普通 worker 的 5 处调用在稳定配置下都被 group=-1 覆盖）。
+  - 评估脚本 `scripts/` 中读取 message_deliveries 的部分会随 schema 21 失效，与已失效的 `store.wake` 一起留给评估脚本迁移。
 - **留给后续 Phase 的已知事项**：learning.py 直接读写 expressions/jargon 表、selection 动态候选查询（Phase 7）；
   `Wakes._check_trigger_source` 读 judge_batches 的只读例外（Phase 7 judge 简化时重看）；P3-0 疑点 Q4/Q5（Phase 4）、Q6（Phase 7）、
   Q10/Q11/Q13–Q15（按所属 Phase）。P3-0 清单 `.agent/tasks/P3-0.report.md` 的行号已过时，只作线索。
@@ -69,3 +78,4 @@
 | P3-d Phase 3 收尾：单一归属、schema 集中、事务统一、SQL 归属测试 | 3 | `5e484184` | 2026-11-04 healthy，schema 20，日志无异常栈 | 社交目录 + 契约 + gateway 982 passed（新增 `test_social_sql_ownership.py`）；ruff 全仓干净；basedpyright social/ 0 errors；store/runtime/proactive/judge_runtime/jargon_learning 中 0 处 SQL；db/ 之外旧式 `with db:`/nullcontext 0 处；Codex 先逐条核对了全部块外写语句，均有调用方事务包住，没有依赖“顺带提交”的路径；**线上库副本演练**：打开（经迁入 db/schema.py 的升级函数）、recover、judge/learning recover、consume_timers、ready 后 `in_transaction` 均为 False | memory↔jargon 循环解开（`MemoryEvidence` 移到 models，`displayed_evidence` 移到 `Views`）；新增 `db/proactive_state.py`；4 个 schema 升级函数迁入 db/schema.py；`savepoint()` 取代手写 SAVEPOINT。**Claude 退回一处迎合测试的改动**：Codex 为了躲过子串扫描，把 jargon_learning 中两处 `self.tools.execute(...)` 改成局部变量绑定；已恢复原代码，并把测试的匹配串收窄为 `db.execute(` 等（social 代码中所有连接变量均名为 db，已 grep 核实）。生产代码净增 140 行（超出预期 80 行，均为方法签名）。**留给 Phase 7**：learning.py 对 expressions/jargon 表的读写、selection 的动态候选查询 |
 | P4-a 快照曝光改为按 view_id 首尾标记识别【小幅行为变更】 | 4 | `a4dcb52b` | 2026-11-04 healthy，日志无异常栈；待 owner 群内体验 | 社交目录 + 契约 + gateway 983 passed（新增：默认分隔符重新编码的快照仍能登记并 mark_read）；场景测试未改；ruff 全仓干净；basedpyright social/ 0 errors；`in model_text` 子串判断全仓 0 处；手工核对 `complete_view_ids`：完整快照识别、只有开头的截断快照不识别、带空格的重新编码识别 | 行为变化：快照 JSON 末尾多一个 `view_end` 字段；Q4 已修（曝光收取的 wake 也执行 `_enter_running`）。**返工 1 轮**：简报自相矛盾（识别正则只认紧凑分隔符，验收测试却用默认分隔符），Codex 停下来上报，Claude 修订正则容许冒号两侧空白。顺带发现 `codex exec resume` 不接受 `-C`/`-s`，已更正 orchestration.md |
 | P4-b `SocialContextBuilder`，hook 只负责注入/恢复/登记（纯重构） | 4 | `64a4d33d` | 2026-11-04 healthy，日志无异常栈 | 社交目录 + 契约 + gateway 983 passed（Claude 复跑）；场景测试未改；ruff 干净；basedpyright social/ 0 errors；注入文本逐字未改（diff 核对） | 新增 `social/context.py`（`transcript_text` 合并了 hook 中两段相同的文本提取；`SocialContextBuilder.build` 不持有 runtime）；删除无人读取的 `_last_memory_body`；social/runtime.py 990→938 行。唯一差别：找不到注入目标时多一次只读的 running_activity 查询（Codex 如实指出，可忽略） |
+| P5-a 投递日志合并为一张表（schema 21）【小幅行为变更】 | 5 | 待填 | 待填 | 社交目录 + 契约 + gateway 984 passed（新增 schema 20→21 合并迁移测试）；场景测试未改；ruff 干净；basedpyright 0 errors；channel 中 `social.store` 0 处；**线上库副本迁移演练**：actions 333→342（+9 条 message），message_deliveries 已删除，323 个 message_id 全部转入 message_ids，9 条 message 行的 id/status/message_ids 与原表逐条一致，3 个 followup 引用 ID 均可解析，recover 正常，quick_check ok，外键检查无问题 | **返工 1 轮**：简报遗漏跨工具 kind 条件（合并后普通 message 的 kind 不再是 text），Codex 停下上报；Claude 决定 `unknown_content` 不再按 kind 区分、`latest_content` 对 text 同时匹配 message。**Claude 补修**：终态保护使 `queue_retry` 越界分支先写 failed、随后 `store.delivery(failed)` 被拒、跟进回执停在 queued（Codex 复现并上报），改为越界时只返回 False，由调用方经 `store.delivery` 记失败。生产代码净减少约 10 行。scripts/ 中 evaluate_social_v5、freeze_social_v5_baseline 受影响，留给评估脚本迁移 |

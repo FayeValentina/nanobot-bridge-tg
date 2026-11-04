@@ -324,7 +324,7 @@ class Wakes:
 
     def recover(self) -> None:
         with transaction(self.db):
-            self._move(WakeStatus.CANCELLED, "status IN ('scheduled','queued','running') AND EXISTS (SELECT 1 FROM message_deliveries d WHERE d.scope=wakes.scope AND d.turn_id=wakes.turn_id AND d.status='unknown')", ())
+            self._move(WakeStatus.CANCELLED, "status IN ('scheduled','queued','running') AND EXISTS (SELECT 1 FROM actions d WHERE d.scope=wakes.scope AND d.turn_id=wakes.turn_id AND d.kind='message' AND d.status='unknown')", ())
             # Refund even expired queued opportunities before status recovery;
             # no model claimed these reservations before the restart.
             for opportunity in self.db.execute("SELECT * FROM wakes WHERE reason='proactive' AND status='queued'").fetchall():
@@ -339,7 +339,7 @@ class Wakes:
             # recreate a send whose platform result was lost during shutdown.
             self._move(WakeStatus.CANCELLED, "status IN ('scheduled','queued','running') "
                        "AND EXISTS (SELECT 1 FROM actions WHERE actions.scope=wakes.scope "
-                       "AND actions.version=wakes.version AND actions.status='unknown' AND actions.created>=wakes.created)", ())
+                       "AND actions.version=wakes.version AND actions.kind<>'message' AND actions.status='unknown' AND actions.created>=wakes.created)", ())
             self._move(WakeStatus.EXPIRED, "expires<=? AND status IN ('scheduled','queued','running')", (self.now(),))
             rows = self.db.execute( "SELECT * FROM wakes WHERE status IN ('scheduled','queued','running') ORDER BY created DESC", ).fetchall()
             seen: set[str] = set()

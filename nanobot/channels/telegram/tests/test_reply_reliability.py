@@ -171,11 +171,18 @@ async def test_ordinary_message_gets_platform_ids_and_a_durable_receipt(tmp_path
     assert result["status"] == "sent"
     assert result["message_ids"] == ([802, 501] if attachment else [501])
     assert tg.bus.outbound.empty()
-    row = social.store.db.execute("SELECT status,message_ids,turn_id FROM message_deliveries").fetchone()
+    assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 1
+    row = social.store.db.execute("SELECT status,message_ids,turn_id FROM actions WHERE kind='message'").fetchone()
     assert row[0] == "sent" and json.loads(row[1]) == result["message_ids"] and row[2] == "normal-send"
     assert social.store.db.execute("SELECT COUNT(*) FROM send_attempts").fetchone()[0] == (2 if attachment else 1)
     assert social.store.db.execute("SELECT text FROM messages WHERE is_self=1").fetchone()[0] == "ordinary public answer"
     assert tg._app.bot.send_message.call_args.kwargs["message_thread_id"] == A.thread_id
+    ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
+                         turn_id="normal-send", metadata={"message_thread_id": A.thread_id})
+    repeated = await social.send(ctx, kwargs["content"], None)
+    assert repeated["status"] == "sent" and repeated["message_id"] == result["message_ids"][0]
+    assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 1
+    tg._app.bot.send_message.assert_awaited_once()
 
 
 async def test_ordinary_timeout_is_unknown_and_never_retried(social):
@@ -185,7 +192,7 @@ async def test_ordinary_timeout_is_unknown_and_never_retried(social):
     receipt = await tg.send_confirmed(OutboundMessage("telegram", str(A.chat_id), "one attempt", metadata={"message_thread_id": A.thread_id}))
     assert receipt.status == "unknown" and receipt.message_ids == ()
     assert tg._app.bot.send_message.await_count == 1
-    assert social.store.db.execute("SELECT status FROM message_deliveries").fetchone()[0] == "unknown"
+    assert social.store.db.execute("SELECT status FROM actions WHERE kind='message'").fetchone()[0] == "unknown"
 
 
 @pytest.mark.parametrize("first", ["social", "message"])
@@ -257,6 +264,7 @@ async def test_ordinary_envelope_reserves_every_chunk_before_any_platform_send(s
     assert result.status == "failed" and "budget" in result.detail
     tg._app.bot.send_message.assert_not_awaited()
     assert not social.store.db.execute("SELECT 1 FROM send_attempts").fetchone()
+    assert not social.store.db.execute("SELECT 1 FROM actions").fetchone()
 
 
 async def test_partial_ordinary_send_reports_confirmed_prefix(social):
@@ -283,7 +291,9 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
     social.close()
     import sqlite3
     with sqlite3.connect(root / "social.sqlite3") as db:
-        db.execute("DROP TABLE message_deliveries")
+        db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+        db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+        db.execute("ALTER TABLE actions DROP COLUMN message_ids")
         for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
             db.execute(f"DROP TABLE {table}")
         db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
@@ -295,7 +305,7 @@ def test_schema_five_upgrade_adds_receipts_without_losing_history(social):
     try:
         assert upgraded.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert upgraded.scopes.state(A.session_key)["next_seq"] == 2
-        assert upgraded.db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()[0] == 0
+        assert upgraded.db.execute("SELECT COUNT(*) FROM actions WHERE kind='message'").fetchone()[0] == 0
     finally:
         upgraded.close()
 
@@ -320,7 +330,7 @@ async def test_confirmed_ordinary_delivery_keeps_cross_chat_permissions(social, 
     kwargs = tg._app.bot.send_message.call_args.kwargs
     assert kwargs["chat_id"] == chat
     assert kwargs.get("message_thread_id", 0) == thread
-    assert social.store.db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()[0] == 0
+    assert social.store.db.execute("SELECT COUNT(*) FROM actions WHERE kind='message'").fetchone()[0] == 0
 
 
 async def test_interrupted_ordinary_send_is_not_reawakened_after_restart(social):
@@ -333,13 +343,13 @@ async def test_interrupted_ordinary_send_is_not_reawakened_after_restart(social)
     with pytest.raises(ProcessInterrupted):
         await tg.send_confirmed(OutboundMessage("telegram", str(A.chat_id), "accepted before process exit",
                                                 metadata={"message_thread_id": A.thread_id, "_delivery_turn_id": ctx.turn_id}))
-    assert social.store.db.execute("SELECT status FROM message_deliveries").fetchone()[0] == "queued"
+    assert social.store.db.execute("SELECT status FROM actions WHERE kind='message'").fetchone()[0] == "sending"
     root, config, bus, now = social.root, social.config, social.bus, social.now
     social.close()
     restored = TelegramSocialRuntime(config, root, bus, now=now)
     try:
         restored.store.recover()
-        assert restored.store.db.execute("SELECT status FROM message_deliveries").fetchone()[0] == "unknown"
+        assert restored.store.db.execute("SELECT status FROM actions WHERE kind='message'").fetchone()[0] == "unknown"
         assert restored.store.db.execute("SELECT status FROM wakes WHERE turn_id=?", (ctx.turn_id,)).fetchone()[0] == "cancelled"
         await restored.run_due()
         assert bus.inbound.empty()

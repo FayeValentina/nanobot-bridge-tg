@@ -319,7 +319,7 @@ class ContextSelector:
         return groups
 
     def recent_usage(self, scope: str) -> dict[str, object]:
-        # Only sent receipts. message IDs join to the observed SELF text/media;
+        # Only sent receipts from the unified send journal;
         # unconfirmed/queued/unknown and generated-but-unsent drafts never qualify.
         rows = self.runtime.store.deliveries.recent_usage(scope)
         turns: dict[str, UsageTurn] = {}

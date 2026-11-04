@@ -284,6 +284,10 @@ async def test_static_sticker_collect_search_dedup_and_receipt(social):
     assert kwargs["sticker"] == "fresh-file-id"  # file_unique_id is only the collection key.
     assert kwargs["chat_id"] == A.chat_id and kwargs["message_thread_id"] == A.thread_id
     assert kwargs["reply_parameters"].message_id == 1
+    assert not social.store.delivery(result["action_id"], "sent", (999,))
+    assert not social.store.delivery(result["action_id"], "unknown", error="late receipt")
+    row = social.store.deliveries.get(result["action_id"])
+    assert row["status"] == "sent" and json.loads(row["message_ids"]) == [result["message_id"]]
     assert social.list_stickers(ctx, "")[0]["uses"] == 1
     tg._app.bot.send_sticker.assert_awaited_once()
     tg._app.bot.send_message.assert_not_awaited()
@@ -493,8 +497,8 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     store = SocialStore(root)
     store.bind(A, "version")
     store.observe(message(text="old photo", media=("photo",)), 100)
-    action = store.reserve_send(A.session_key, "version", "old text", 6)
-    store.delivery(action, "sent", message_id=501)
+    action = store.reserve_send(A.session_key, "version", "old text", 6, kind="text")
+    store.delivery(action, "sent", message_ids=(501,))
     # Recreate the actual schema-2 shape, retaining existing data.
     for table in ("proactive_state", "memory_evidence", "memories", "memory_suppressions", "memory_resets"):
         store.db.execute(f"DROP TABLE {table}")
@@ -505,7 +509,9 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     for column in ("kind", "media_ref"):
         store.db.execute(f"ALTER TABLE actions DROP COLUMN {column}")
     store.db.execute("UPDATE scopes SET read_through=1,seen_through=1")
-    store.db.execute("DROP TABLE message_deliveries")
+    store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+    store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+    store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
     for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
         store.db.execute(f"DROP TABLE {table}")
     store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")
@@ -519,8 +525,8 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     try:
         assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert reopened.scopes.state(A.session_key)["read_through"] == 1
-        row = reopened.db.execute("SELECT content,status,message_id,kind FROM actions").fetchone()
-        assert tuple(row) == ("old text", "sent", 501, "text")
+        row = reopened.db.execute("SELECT content,status,message_ids,kind FROM actions").fetchone()
+        assert tuple(row) == ("old text", "sent", "[501]", "text")
         assert reopened.messages.media_for_message(A.session_key, 1) == []
         assert reopened.db.execute("SELECT text FROM messages").fetchone()[0] == "old photo"
     finally:

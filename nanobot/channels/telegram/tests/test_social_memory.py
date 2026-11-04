@@ -283,7 +283,9 @@ def test_schema_three_upgrade_preserves_observations_views_and_watermarks(social
     for table in ("proactive_state", "memory_evidence", "memories", "memory_suppressions", "memory_resets"):
         social.store.db.execute(f"DROP TABLE {table}")
     social.store.db.execute("ALTER TABLE wakes DROP COLUMN proactive_source")
-    social.store.db.execute("DROP TABLE message_deliveries")
+    social.store.db.execute("ALTER TABLE actions ADD COLUMN message_id INTEGER")
+    social.store.db.execute("UPDATE actions SET message_id=json_extract(message_ids,'$[0]')")
+    social.store.db.execute("ALTER TABLE actions DROP COLUMN message_ids")
     for table in ("dialogue_jobs", "dialogue_waits", "dialogue_state"):
         social.store.db.execute(f"DROP TABLE {table}")
     social.store.db.execute("ALTER TABLE scopes DROP COLUMN wait_infinite")

@@ -259,8 +259,8 @@ async def test_tool_send_is_scope_checked_confirmed_and_final_is_silent(tmp_path
     sender.assert_awaited_once_with(A, "public hello", 1)
     assert loop.provider.chat_stream_with_retry.await_count == 2
     assert social.store.scopes.state(A.session_key)["read_through"] == 1
-    row = social.store.db.execute("SELECT status,message_id FROM actions").fetchone()
-    assert tuple(row) == ("sent", 501)
+    row = social.store.db.execute("SELECT status,message_ids FROM actions").fetchone()
+    assert tuple(row) == ("sent", "[501]")
     assert social.store.messages.has_message(A.session_key, 501)
     assert social.bus.outbound.empty()
 
@@ -564,7 +564,7 @@ async def test_uncertain_send_cancels_recovery_of_the_old_question(social):
     await social.observe(message(A), directed=True)
     social.bus.inbound.get_nowait()
     version = social.store.scopes.state(A.session_key)["version"]
-    social.store.reserve_send(A.session_key, version, "interrupted", 6)
+    social.store.reserve_send(A.session_key, version, "interrupted", 6, kind="text")
     await social.recover()
     assert social.bus.inbound.empty()
     assert social.store.db.execute("SELECT status FROM actions").fetchone()[0] == "unknown"
