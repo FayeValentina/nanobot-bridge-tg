@@ -179,7 +179,7 @@ async def test_ordinary_message_gets_platform_ids_and_a_durable_receipt(tmp_path
     assert tg._app.bot.send_message.call_args.kwargs["message_thread_id"] == A.thread_id
     ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                          turn_id="normal-send", metadata={"message_thread_id": A.thread_id})
-    repeated = await social.send(ctx, kwargs["content"], None)
+    repeated = await social.delivery.send(ctx, kwargs["content"], None)
     assert repeated["status"] == "sent" and repeated["message_id"] == result["message_ids"][0]
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 1
     tg._app.bot.send_message.assert_awaited_once()
@@ -209,13 +209,13 @@ async def test_switching_publishers_cannot_bypass_shared_limits(social, first, l
     outbound = OutboundMessage("telegram", str(A.chat_id), "ordinary text",
                                metadata={"message_thread_id": A.thread_id})
     if first == "social":
-        assert (await social.send(ctx, "social text", None))["status"] == "sent"
+        assert (await social.delivery.send(ctx, "social text", None))["status"] == "sent"
         result = await tg.send_confirmed(outbound)
         assert result.status == "failed" and limit in result.detail
     else:
         assert (await tg.send_confirmed(outbound)).status == "sent"
         with pytest.raises(PermissionError, match=limit):
-            await social.send(ctx, "social text", None)
+            await social.delivery.send(ctx, "social text", None)
     assert tg._app.bot.send_message.await_count == 1
     assert social.store.db.execute("SELECT COUNT(*) FROM send_attempts").fetchone()[0] == 1
 
@@ -236,7 +236,7 @@ async def test_ordinary_unknown_survives_restart_and_blocks_cross_tool_retry(soc
         ctx = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                              turn_id="later-turn", metadata={"message_thread_id": A.thread_id})
         with pytest.raises(PermissionError, match="unknown"):
-            await restored.send(ctx, outbound.content, None)
+            await restored.delivery.send(ctx, outbound.content, None)
         sender.assert_not_awaited()
         assert restored.store.deliveries.uncertain_send(A.session_key)["text"] == outbound.content
     finally:

@@ -166,12 +166,12 @@ def test_recent_usage_is_sent_only_all_paths_grouped_by_turn(social):
     with db:
         db.execute("INSERT INTO actions(id,scope,version,content,status,created,turn_id,kind,media_ref) VALUES(?,?,?,?,?,?,?,?,?)",
                    ('st',A.session_key,social.store.scopes.state(A.session_key)['version'],'file-124','sent',social.now()-5,'one','sticker',ref.model_dump_json()))
-    delivery = social.begin_message(A, '普通 message：Token 计费', 'three', units=1, followup_id=None)
+    delivery = social.delivery.begin_message(A, '普通 message：Token 计费', 'three', units=1, followup_id=None)
     assert delivery is not None
-    social.finish_message(A, delivery, DeliveryReceipt('sent', (100,)), [(100, '普通 message：Token 计费')])
-    delivery = social.begin_message(A, '不能算已发送的口头禅', 'uncertain', units=1, followup_id=None)
+    social.delivery.finish_message(A, delivery, DeliveryReceipt('sent', (100,)), [(100, '普通 message：Token 计费')])
+    delivery = social.delivery.begin_message(A, '不能算已发送的口头禅', 'uncertain', units=1, followup_id=None)
     assert delivery is not None
-    social.finish_message(A, delivery, DeliveryReceipt('unknown', (101,)), [(101, '不能算已发送的口头禅')])
+    social.delivery.finish_message(A, delivery, DeliveryReceipt('unknown', (101,)), [(101, '不能算已发送的口头禅')])
     usage=social.selector.recent_usage(A.session_key)
     assert len(usage['turns'])==3
     assert usage['catchphrases']=={'本大爷':1,'白饭':1,'Token':2}
@@ -195,7 +195,7 @@ def test_pending_is_separate_and_does_not_rank_from_member_or_active_bonus(socia
 async def test_end_to_end_sticker_without_search_receipt_and_transient_prompt(tmp_path,social):
     selector=seed(social)
     calls=[]
-    social._sticker_sender=AsyncMock(return_value=500)
+    social.delivery.sticker_sender=AsyncMock(return_value=500)
     loop=agent(tmp_path,social,[])
     async def model(**kwargs):
         calls.append(deepcopy(kwargs))
@@ -208,7 +208,7 @@ async def test_end_to_end_sticker_without_search_receipt_and_transient_prompt(tm
     first=str(calls[0]['messages'])
     assert 'optional_expression_references' in first and 's-124' in first
     assert 'pending_matters' in first and 'recent_confirmed_usage' in first
-    assert social._sticker_sender.await_count==1
+    assert social.delivery.sticker_sender.await_count==1
     row=social.store.db.execute("SELECT delivery_id FROM expression_selections WHERE kind='sticker'").fetchone()
     assert row and row[0]
     assert social.store.db.execute('SELECT status FROM actions WHERE id=?',(row[0],)).fetchone()[0]=='sent'
@@ -228,8 +228,8 @@ async def test_timeout_and_provider_error_do_not_block_main_text_generation(tmp_
     ])
     await loop._dispatch(await wake(social,text='Token 用量在哪看？'))
     assert selector.chat.await_count==1
-    assert social._sender.await_count==1
-    assert 'Token' in social._sender.call_args.args[1]
+    assert social.delivery.sender.await_count==1
+    assert 'Token' in social.delivery.sender.call_args.args[1]
     assert social.store.db.execute('SELECT status FROM expression_turns').fetchone()[0]=='error'
     assert social.selector.recent_usage(A.session_key)['catchphrases']=={'Token':1}
 

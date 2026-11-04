@@ -51,7 +51,7 @@ async def test_work_runs_without_speech_probability_or_send_budget(social):
     ctx = claim(social, inbound)
     social.set_sender(AsyncMock(return_value=601))
     with pytest.raises(PermissionError):
-        await social.send(ctx, "发言额度仍然有效", None)
+        await social.delivery.send(ctx, "发言额度仍然有效", None)
 
 
 async def test_work_still_respects_request_budget_stop_and_new_member_priority(social):

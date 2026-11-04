@@ -7,10 +7,24 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from nanobot.channels.telegram.social.memory import SocialMemory
+from nanobot.channels.telegram.social.models import ConversationScope, Snapshot
 from nanobot.channels.telegram.social.selection import ContextSelector
 from nanobot.channels.telegram.social.store import SocialStore
+from nanobot.config.schema import TelegramSocialConfig
 from nanobot.runtime_context import RuntimeContextBlock
 from nanobot.utils.prompt_templates import render_template
+
+
+def encode_view(view: Snapshot) -> str:
+    return json.dumps(view, ensure_ascii=False, separators=(",", ":"))
+
+
+def snapshot_text(store: SocialStore, config: TelegramSocialConfig, scope: ConversationScope,
+                  turn: str | None) -> str:
+    return encode_view(store.view(
+        scope.session_key, count=config.snapshot_messages,
+        chars=config.snapshot_chars, turn_id=turn,
+    ))
 
 
 def transcript_text(messages: Sequence[Mapping[str, Any]]) -> str:

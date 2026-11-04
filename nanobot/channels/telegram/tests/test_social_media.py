@@ -143,7 +143,7 @@ async def test_media_failure_is_explicit_and_text_still_sends(social, failure):
     blocks = await social.media.get(ctx, 1)
     assert all(block["type"] == "text" for block in blocks)
     assert "unavailable" in blocks[0]["text"]
-    assert (await social.send(ctx, "text still works", None))["status"] == "sent"
+    assert (await social.delivery.send(ctx, "text still works", None))["status"] == "sent"
     if failure in {"large_bytes", "large_pixels"}:
         tg._app.bot.get_file.assert_not_awaited()
 
@@ -208,7 +208,7 @@ async def test_reply_identifies_member_and_can_view_old_quoted_photo(social):
     quoted = view["messages"][0]["reply"]
     assert quoted["sender_id"] == "456" and not quoted["is_bot"]
     assert (await social.media.get(ctx, 99))[0]["type"] == "image_url"
-    result = await social.send(ctx, "reply to the right member", 99)
+    result = await social.delivery.send(ctx, "reply to the right member", 99)
     assert result["status"] == "sent"
     kwargs = tg._app.bot.send_message.call_args.kwargs
     assert kwargs["message_thread_id"] == 42 and kwargs["reply_parameters"].message_id == 99
@@ -224,7 +224,7 @@ async def test_cross_topic_quoted_message_does_not_grant_media_or_reply(social):
     with pytest.raises(PermissionError):
         await social.media.get(ctx, 99)
     with pytest.raises(PermissionError):
-        await social.send(ctx, "wrong topic", 99)
+        await social.delivery.send(ctx, "wrong topic", 99)
 
 
 async def test_long_quote_fits_small_snapshot_without_losing_current_message(social):
@@ -276,9 +276,9 @@ async def test_static_sticker_collect_search_dedup_and_receipt(social):
     await observe_sticker(social, seq=2, file_id="fresh-file-id")
     assert social.stickers.collect(ctx, 2, None) == sticker_id
     assert social.stickers.search(ctx, "greeting") == [{"sticker_id": "unique", "note": "happy greeting", "uses": 0, "emoji": "🙂"}]
-    result = await social.send_sticker(ctx, sticker_id, 1)
+    result = await social.delivery.send_sticker(ctx, sticker_id, 1)
     assert result["status"] == "sent"
-    repeated = await social.send_sticker(ctx, sticker_id, 1)
+    repeated = await social.delivery.send_sticker(ctx, sticker_id, 1)
     assert repeated["action_id"] == result["action_id"] and repeated["status"] == "sent"
     kwargs = tg._app.bot.send_sticker.call_args.kwargs
     assert kwargs["sticker"] == "fresh-file-id"  # file_unique_id is only the collection key.
@@ -300,7 +300,7 @@ async def test_sticker_library_and_notes_do_not_cross_scopes(social):
     other = context(social, B, turn="other-group")
     assert social.stickers.search(other, "") == []
     with pytest.raises(PermissionError):
-        await social.send_sticker(other, "unique", None)
+        await social.delivery.send_sticker(other, "unique", None)
     with pytest.raises(PermissionError):
         social.stickers.collect(other, 1, "cross group")
 
@@ -332,13 +332,13 @@ async def test_sticker_failure_does_not_count_use_or_block_later_text(social, fa
     await observe_sticker(social)
     ctx = context(social)
     social.stickers.collect(ctx, 1, None)
-    assert (await social.send_sticker(ctx, "unique", None))["status"] == status
+    assert (await social.delivery.send_sticker(ctx, "unique", None))["status"] == status
     assert social.stickers.search(ctx, "")[0]["uses"] == 0
-    assert (await social.send(ctx, "still here", None))["status"] == "sent"
+    assert (await social.delivery.send(ctx, "still here", None))["status"] == "sent"
     if status == "unknown":
         social.store.wakes.finish(ctx.turn_id, "completed")
         with pytest.raises(PermissionError, match="unknown"):
-            await social.send_sticker(context(social, turn="next"), "unique", None)
+            await social.delivery.send_sticker(context(social, turn="next"), "unique", None)
     tg._app.bot.send_sticker.assert_awaited_once()
 
 
@@ -349,12 +349,12 @@ async def test_stickers_share_text_budget_and_pause_gate(social):
     await observe_sticker(social)
     ctx = context(social)
     social.stickers.collect(ctx, 1, None)
-    await social.send(ctx, "one send", None)
+    await social.delivery.send(ctx, "one send", None)
     with pytest.raises(PermissionError, match="budget"):
-        await social.send_sticker(ctx, "unique", None)
+        await social.delivery.send_sticker(ctx, "unique", None)
     social.store.pause(A.session_key)
     with pytest.raises(PermissionError):
-        await social.send_sticker(ctx, "unique", None)
+        await social.delivery.send_sticker(ctx, "unique", None)
     tg._app.bot.send_sticker.assert_not_awaited()
 
 
@@ -365,7 +365,7 @@ async def test_sticker_429_reuses_action_and_counts_only_success(social):
     await observe_sticker(social)
     ctx = context(social)
     social.stickers.collect(ctx, 1, None)
-    result = await social.send_sticker(ctx, "unique", 1)
+    result = await social.delivery.send_sticker(ctx, "unique", 1)
     assert result["status"] == "queued" and social.stickers.search(ctx, "")[0]["uses"] == 0
     with social.store.db:
         social.store.db.execute("UPDATE actions SET due=? WHERE id=?", (social.now() - 1, result["action_id"]))
@@ -384,7 +384,7 @@ async def test_restart_cancels_sticker_retry_without_resending(social):
     await observe_sticker(social)
     ctx = context(social)
     social.stickers.collect(ctx, 1, None)
-    action = await social.send_sticker(ctx, "unique", None)
+    action = await social.delivery.send_sticker(ctx, "unique", None)
     social.store.recover()
     row = social.store.db.execute("SELECT status FROM actions WHERE id=?", (action["action_id"],)).fetchone()
     assert row[0] == "unknown"
@@ -399,7 +399,7 @@ async def test_pause_cancels_queued_sticker_without_use_count(social):
     await observe_sticker(social)
     ctx = context(social)
     social.stickers.collect(ctx, 1, None)
-    result = await social.send_sticker(ctx, "unique", None)
+    result = await social.delivery.send_sticker(ctx, "unique", None)
     social.store.pause(A.session_key)
     await social.run_due()
     assert social.store.db.execute("SELECT status FROM actions WHERE id=?", (result["action_id"],)).fetchone()[0] == "failed"

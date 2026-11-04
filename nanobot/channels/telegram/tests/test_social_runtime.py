@@ -411,7 +411,7 @@ async def test_role_edit_can_be_confirmed_in_the_same_turn_and_reloads_next_turn
     (social.roles / "a.md").write_text("NEW PERSONA", encoding="utf-8")
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
-    assert (await social.send(ctx, "role updated", None))["status"] == "sent"
+    assert (await social.delivery.send(ctx, "role updated", None))["status"] == "sent"
     changed = loop.sessions.get_or_create(A.session_key)
     assert changed.get_history()[0]["content"] == "older role conversation"
     assert changed.messages[0]["content"] == "older role conversation"
@@ -459,11 +459,11 @@ async def test_reply_target_and_send_budget_and_timeout_are_enforced(social):
     sender = AsyncMock(side_effect=TimeoutError("ambiguous outcome"))
     social.set_sender(sender)
     with pytest.raises(PermissionError):
-        await social.send(ctx, "wrong reply", 2)
-    result = await social.send(ctx, "one public message", 1)
+        await social.delivery.send(ctx, "wrong reply", 2)
+    result = await social.delivery.send(ctx, "one public message", 1)
     assert result["status"] == "unknown" and result["retry"] is False
     with pytest.raises(PermissionError):
-        await social.send(ctx, "do not retry", 1)
+        await social.delivery.send(ctx, "do not retry", 1)
     assert sender.await_count == 1
 
 
@@ -471,7 +471,7 @@ async def test_dedicated_telegram_sender_does_not_retry_ambiguous_timeout(social
     tg = channel(social)
     tg._app.bot.send_message = AsyncMock(side_effect=TimedOut("outcome unknown"))
     ctx = context(social)
-    result = await social.send(ctx, "public text", None)
+    result = await social.delivery.send(ctx, "public text", None)
     assert result["status"] == "unknown"
     assert tg._app.bot.send_message.await_count == 1
     await tg.send_delta("-1001", "old ordinary stream", {"message_thread_id": 42})
@@ -579,12 +579,12 @@ async def test_uncertain_text_cannot_be_blindly_repeated_in_a_new_action(social)
     sender = AsyncMock(side_effect=TimeoutError())
     social.set_sender(sender)
     ctx = context(social)
-    first = await social.send(ctx, "uncertain public text", None)
+    first = await social.delivery.send(ctx, "uncertain public text", None)
     assert first["status"] == "unknown"
-    assert (await social.send(ctx, "uncertain public text", None))["action_id"] == first["action_id"]
+    assert (await social.delivery.send(ctx, "uncertain public text", None))["action_id"] == first["action_id"]
     new_ctx = context(social, turn="new-attempt")
     with pytest.raises(PermissionError, match="blindly repeat"):
-        await social.send(new_ctx, "uncertain public text", None)
+        await social.delivery.send(new_ctx, "uncertain public text", None)
     assert sender.await_count == 1
 
 
@@ -594,7 +594,7 @@ async def test_budget_configuration_change_keeps_an_admitted_turn(social):
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
     social.configure(social.config)
-    assert (await social.send(ctx, "old turn", None))["status"] == "sent"
+    assert (await social.delivery.send(ctx, "old turn", None))["status"] == "sent"
     sender.assert_awaited_once_with(A, "old turn", None)
 
 
@@ -695,7 +695,7 @@ async def test_concurrent_sends_reserve_one_shared_budget(social):
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
     results = await asyncio.gather(
-        social.send(first, "one", None), social.send(second, "two", None), return_exceptions=True,
+        social.delivery.send(first, "one", None), social.delivery.send(second, "two", None), return_exceptions=True,
     )
     assert sum(isinstance(result, PermissionError) for result in results) == 1
     assert sender.await_count == 1

@@ -31,6 +31,7 @@ from nanobot.bus.events import DeliveryReceipt, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social import runtime as runtime_module
 from nanobot.channels.telegram.social.expressions import make_expression_provider
+from nanobot.channels.telegram.social.hook import SocialExposureHook
 from nanobot.channels.telegram.social.memory import MemoryRequest
 from nanobot.channels.telegram.social.models import (
     ConversationScope,
@@ -42,7 +43,6 @@ from nanobot.channels.telegram.social.runtime import (
     SOCIAL_PROTOCOL,
     SOCIAL_TOOLS,
     TelegramSocialRuntime,
-    _SocialExposureHook,
     encode_view,
 )
 from nanobot.config.loader import load_config
@@ -154,9 +154,10 @@ class RecordedTool(Tool):
         return result
 
 
-class ReplayHook(_SocialExposureHook):
+class ReplayHook(SocialExposureHook):
     def __init__(self, runtime: TelegramSocialRuntime, arm: str, frozen: dict[str, Any]):
-        super().__init__(runtime)
+        super().__init__(runtime.store, runtime.bindings, runtime.context_builder, runtime.waiting,
+                         runtime.scheduler.notify, lambda: runtime.config)
         self.arm = arm
         self.frozen_before = compile_frozen_method(frozen['before_iteration'], 'before_iteration', vars(runtime_module))
         self.exposures: list[dict[str, Any]] = []
@@ -372,7 +373,7 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
             published.append({'content':content,'reply_to':reply_to})
             return 800000+len(published)
         runtime.set_sender(sender)
-        runtime._sticker_sender=sender
+        runtime.delivery.sticker_sender=sender
         async def loader(ref: MediaReference, limit: int) -> bytes:
             for item in prefix:
                 for known,path in raw_media(assets,item['message_id'],args.source_db):
@@ -419,7 +420,7 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
                 max_tool_result_chars=8000,hook=hook,workspace=root,session_key=scope.session_key)),90)
             hook._restore_memory_context()
         for _ in range(4):
-            await runtime._retry_sends()
+            await runtime.delivery.retry_due()
         actions=[dict(r) for r in runtime.store.db.execute('SELECT id,kind,content,status,message_id FROM actions WHERE turn_id=? ORDER BY created,rowid',(turn,))]
         ordinary=[dict(r) for r in runtime.store.db.execute('SELECT id,status,message_ids FROM message_deliveries WHERE turn_id=?',(turn,))]
         selections=[dict(r) for r in runtime.store.db.execute('SELECT * FROM expression_turns WHERE turn_id=?',(turn,))]

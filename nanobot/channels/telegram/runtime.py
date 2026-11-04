@@ -1106,7 +1106,7 @@ class TelegramChannel(BaseChannel):
             chat, metadata = self._resolve_topic_target(msg.chat_id, msg.metadata)
             scope = ConversationScope(self.name, int(chat), int(metadata.get("message_thread_id") or 0))
             if self.social is not None and self.social.binding(scope) is not None:
-                async with self.social.send_lock(scope):
+                async with self.social.delivery.send_lock(scope):
                     return await self._send_confirmed(msg)
             return await self._send_confirmed(msg)
 
@@ -1134,7 +1134,7 @@ class TelegramChannel(BaseChannel):
             if self.social is not None and self.social.binding(scope) is not None:
                 # Reserve the whole envelope before any delivery, charging each text
                 # chunk/attachment. A long message must not bypass the shared quota.
-                delivery_id = self.social.begin_message(
+                delivery_id = self.social.delivery.begin_message(
                     scope, msg.content or json.dumps(msg.media, ensure_ascii=False), metadata.get("_delivery_turn_id"),
                     units=max(1, len(chunks)+len(msg.media)), followup_id=metadata.get("_social_followup_id"),
                 )
@@ -1181,7 +1181,7 @@ class TelegramChannel(BaseChannel):
         followup_id = metadata.get("_social_followup_id")
         if self.social is not None and isinstance(followup_id, str) and self.social.binding(scope) is not None:
             receipt = DeliveryReceipt(receipt.status, receipt.message_ids,
-                                      f"{receipt.detail or ''} {self.social.followup_note(followup_id)}")
+                                      f"{receipt.detail or ''} {self.social.delivery.followup_note(followup_id)}")
         return receipt
 
     def _record_message_receipt(self, scope: ConversationScope, delivery_id: str | None,
@@ -1189,7 +1189,7 @@ class TelegramChannel(BaseChannel):
         self.logger.info("Message delivery {} to {}: {}", receipt.status, scope.session_key, receipt.message_ids)
         if delivery_id is not None and self.social is not None:
             try:
-                self.social.finish_message(scope, delivery_id, receipt, texts)
+                self.social.delivery.finish_message(scope, delivery_id, receipt, texts)
             except Exception:
                 # A journal failure must never turn an accepted send into an invitation to resend.
                 self.logger.exception("Failed to journal ordinary Telegram delivery; platform status is {}", receipt.status)

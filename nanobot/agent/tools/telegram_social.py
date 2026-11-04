@@ -156,7 +156,7 @@ class TelegramSocialTool(Tool):
                 elif action == "collect" and "message_id" in kwargs:
                     result = {"sticker_id": self.runtime.stickers.collect(ctx, kwargs["message_id"], kwargs.get("note"))}
                 elif action == "send" and "sticker_id" in kwargs:
-                    result = await self.runtime.send_sticker(ctx, kwargs["sticker_id"], kwargs.get("reply_to"))
+                    result = await self.runtime.delivery.send_sticker(ctx, kwargs["sticker_id"], kwargs.get("reply_to"))
                 elif action == "import_set" and "set_name" in kwargs:
                     result = await self.runtime.stickers.import_set(ctx, kwargs["set_name"])
                 elif action == "view":
@@ -191,9 +191,9 @@ class TelegramSocialTool(Tool):
                 if ("text" in kwargs) == ("parts" in kwargs):
                     raise ValueError(self._send_shape_error())
                 if "parts" in kwargs:
-                    result = {"actions": await self.runtime.send_parts(ctx, kwargs["parts"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))}
+                    result = {"actions": await self.runtime.delivery.send_parts(ctx, kwargs["parts"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))}
                 else:
-                    result = await self.runtime.send(ctx, kwargs["text"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))
+                    result = await self.runtime.delivery.send(ctx, kwargs["text"], kwargs.get("reply_to"), followup_id=kwargs.get("followup_id"))
                 if kwargs.get("followup_id"):
                     result = {**result, "followup": self.runtime.store.followups.describe(kwargs["followup_id"]).model_dump()}
             return json.dumps(result, ensure_ascii=False)

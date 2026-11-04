@@ -287,7 +287,7 @@ async def test_judge_catches_plain_answer_without_idle_model_calls(dialogue):
     provider = decide(dialogue)
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
-    await dialogue.send(ctx, "你什么时候出发？", None)
+    await dialogue.delivery.send(ctx, "你什么时候出发？", None)
     finish(dialogue, ctx)
     clock(dialogue).advance(30)
     await dialogue.run_due()
@@ -311,7 +311,7 @@ async def test_judge_catches_plain_answer_without_idle_model_calls(dialogue):
 async def test_attention_preserves_selective_conditions_and_topic_scope(dialogue):
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
-    await dialogue.send(ctx, "你什么时候出发？", None)
+    await dialogue.delivery.send(ctx, "你什么时候出发？", None)
     dialogue.waiting.set_wake(ctx, keywords=["出发"], senders=[], on_messages=False)
     finish(dialogue, ctx)
     await dialogue.observe(observed(dialogue, 2, text="下午三点"), directed=False)
@@ -328,7 +328,7 @@ async def test_reply_arriving_during_platform_send_is_not_lost(dialogue):
         await dialogue.observe(observed(dialogue, 2, text="下午三点"), directed=False)
         return 800
     dialogue.set_sender(sender)
-    await dialogue.send(ctx, "你什么时候出发？", None)
+    await dialogue.delivery.send(ctx, "你什么时候出发？", None)
     finish(dialogue, ctx)
     clock(dialogue).advance(2)
     await dialogue.run_due()
@@ -343,7 +343,7 @@ async def test_judge_observes_unrelated_participant_then_accepts_reply(dialogue)
     provider = decide(dialogue, "observe")
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
-    await dialogue.send(ctx, "你什么时候出发？", None)
+    await dialogue.delivery.send(ctx, "你什么时候出发？", None)
     finish(dialogue, ctx)
     await dialogue.observe(replace(observed(dialogue, 2, text="跟别人讨论"), sender_id="456"), directed=False)
     clock(dialogue).advance(35)
@@ -362,7 +362,7 @@ async def test_judge_observes_unrelated_participant_then_accepts_reply(dialogue)
 async def test_confirmed_context_survives_restart_without_idle_model_calls(dialogue):
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
-    await dialogue.send(ctx, "什么时候出发？", None)
+    await dialogue.delivery.send(ctx, "什么时候出发？", None)
     finish(dialogue, ctx)
     root, config, now, bus = dialogue.root, dialogue.config, dialogue.now, dialogue.bus
     dialogue.close()
@@ -386,14 +386,14 @@ async def test_confirmed_context_survives_restart_without_idle_model_calls(dialo
 
 def test_ordinary_message_receipt_records_confirmed_context_once(dialogue):
     ctx = expose(dialogue)
-    delivery = dialogue.begin_message(A, "何时出发？", ctx.turn_id, units=1, followup_id=None)
+    delivery = dialogue.delivery.begin_message(A, "何时出发？", ctx.turn_id, units=1, followup_id=None)
     assert delivery is not None
     receipt = DeliveryReceipt(status="sent", message_ids=(800,))
-    dialogue.finish_message(A, delivery, receipt, [(800, "何时出发？")])
+    dialogue.delivery.finish_message(A, delivery, receipt, [(800, "何时出发？")])
     sent = dialogue.store.db.execute("SELECT last_sent FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()[0]
     assert sent is not None
     clock(dialogue).advance(3)
-    dialogue.finish_message(A, delivery, receipt, [(800, "何时出发？")])
+    dialogue.delivery.finish_message(A, delivery, receipt, [(800, "何时出发？")])
     assert dialogue.store.db.execute("SELECT last_sent FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()[0] == sent
     assert dialogue.store.db.execute("SELECT COUNT(*) FROM messages WHERE message_id=800 AND is_self=1").fetchone()[0] == 1
 
@@ -403,7 +403,7 @@ async def test_paced_group_records_confirmed_context_after_last_child(dialogue):
     dialogue.config.send_cooldown_seconds = 2
     dialogue.configure(dialogue.config)
     dialogue.set_sender(AsyncMock(side_effect=[800, 801, 802]))
-    await dialogue.send_parts(ctx, ["第一条", "第二条", "几点出发？"], None)
+    await dialogue.delivery.send_parts(ctx, ["第一条", "第二条", "几点出发？"], None)
     await dialogue.run_due()
     for _ in range(2):
         clock(dialogue).advance(2)
@@ -492,7 +492,7 @@ def test_explicit_farewell_enters_sleep_observation(dialogue, text):
 async def test_confirmed_publication_resets_observation_evidence(dialogue):
     ctx = expose(dialogue)
     dialogue.set_sender(AsyncMock(return_value=800))
-    await dialogue.send(ctx, "好的", None)
+    await dialogue.delivery.send(ctx, "好的", None)
     row = dialogue.store.db.execute("SELECT observed_at,observed_seq FROM dialogue_state WHERE scope=?", (A.session_key,)).fetchone()
     assert tuple(row) == (None, 0)
     # Replaying the same old view cannot restore the pre-send observation credential.
@@ -506,7 +506,7 @@ async def test_new_send_resets_even_a_previously_quiet_sleep_credential(dialogue
     dialogue.store.db.execute("UPDATE wakes SET expires=expires+600")
     clock(dialogue).advance(301)
     dialogue.set_sender(AsyncMock(return_value=800))
-    await dialogue.send(ctx, "什么时候出发？", None)
+    await dialogue.delivery.send(ctx, "什么时候出发？", None)
     result = dialogue.waiting.wait(ctx, 600, sleeping=True)
     assert result["purpose"] == "observe" and result["total_due"] == dialogue.now() + 300
 

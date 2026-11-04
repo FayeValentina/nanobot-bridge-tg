@@ -123,9 +123,9 @@ async def test_probability_modifiers_and_confirmed_message_groups(social):
     binding.proactive.timezone = "Etc/GMT-12"
     social.configure(social.config)
     receipt = DeliveryReceipt("sent", (501, 502, 503))
-    delivery = social.begin_message(A, "confirmed", "ordinary", units=3, followup_id=None)
+    delivery = social.delivery.begin_message(A, "confirmed", "ordinary", units=3, followup_id=None)
     assert delivery is not None
-    social.finish_message(A, delivery, receipt, [(i, "confirmed") for i in receipt.message_ids])
+    social.delivery.finish_message(A, delivery, receipt, [(i, "confirmed") for i in receipt.message_ids])
     for i in (601, 602):
         action = social.store.reserve_send(A.session_key, social.store.scopes.state(A.session_key)["version"], f"part {i}", kind="text")
         social.store.db.execute("UPDATE actions SET group_id='burst' WHERE id=?", (action,))
@@ -133,10 +133,10 @@ async def test_probability_modifiers_and_confirmed_message_groups(social):
         social.store.observe(replace(observed(social, i, is_self=True), message_id=i), 500)
     for status in ("sending", "failed", "unknown"):
         clock(social).advance(3)
-        delivery = social.begin_message(A, status, "ordinary", units=1, followup_id=None)
+        delivery = social.delivery.begin_message(A, status, "ordinary", units=1, followup_id=None)
         assert delivery is not None
         if status != "sending":
-            social.finish_message(A, delivery, DeliveryReceipt(status), [])
+            social.delivery.finish_message(A, delivery, DeliveryReceipt(status), [])
     social.proactive.random_value = lambda: 0.02
     await tick(social)
     result = social.proactive.status(A.session_key)
@@ -459,9 +459,9 @@ async def test_known_budget_exhaustion_skips_model_calls(social, budget):
     limit = social.config.max_requests_per_hour if budget == "requests" else social.config.max_sends_per_hour
     if budget == "confirmed":
         ids = tuple(range(501, 501 + limit))
-        delivery = social.begin_message(A, "sent", "ordinary", units=limit, followup_id=None)
+        delivery = social.delivery.begin_message(A, "sent", "ordinary", units=limit, followup_id=None)
         assert delivery is not None
-        social.finish_message(A, delivery, DeliveryReceipt("sent", ids), [(i, "sent") for i in ids])
+        social.delivery.finish_message(A, delivery, DeliveryReceipt("sent", ids), [(i, "sent") for i in ids])
     else:
         with social.store.db:
             social.store.db.executemany(f"INSERT INTO {budget} VALUES(?,?)", [(A.session_key, social.now())] * limit)
@@ -509,12 +509,12 @@ async def test_quiet_beginning_cancels_active_proactive_send_but_not_ordinary_se
     ctx = claim(social, social.bus.inbound.get_nowait())
     clock(social).advance(60)
     with pytest.raises(PermissionError, match="quiet_hours"):
-        await social.send(ctx, "主动发言", None)
+        await social.delivery.send(ctx, "主动发言", None)
     sender.assert_not_awaited()
     # An ordinary/background turn is not subject to proactive tool restrictions.
     ordinary = RequestContext(channel="telegram", chat_id=str(A.chat_id), session_key=A.session_key,
                               turn_id="ordinary", metadata={"message_thread_id": A.thread_id})
-    result = await social.send(ordinary, "明确请求的消息", None)
+    result = await social.delivery.send(ordinary, "明确请求的消息", None)
     assert result["status"] == "sent"
 
 
@@ -526,7 +526,7 @@ async def test_quiet_beginning_cancels_unattempted_proactive_parts(social):
     social.set_sender(sender)
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
-    await social.send_parts(ctx, ["第一条", "第二条"], None)
+    await social.delivery.send_parts(ctx, ["第一条", "第二条"], None)
     await tick(social)
     sender.assert_not_awaited()
     assert {row[0] for row in social.store.db.execute("SELECT status FROM actions")} == {"failed"}
@@ -541,7 +541,7 @@ async def test_acknowledging_unread_before_reply_does_not_invalidate_claimed_tur
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
     social.mark_read(ctx, 1)
-    assert (await social.send(ctx, "参与这段聊天", None))["status"] == "sent"
+    assert (await social.delivery.send(ctx, "参与这段聊天", None))["status"] == "sent"
 
 
 async def test_wait_after_queuing_parts_keeps_existing_delivery_without_new_wake(social):
@@ -550,7 +550,7 @@ async def test_wait_after_queuing_parts_keeps_existing_delivery_without_new_wake
     social.set_sender(sender)
     await tick(social)
     ctx = claim(social, social.bus.inbound.get_nowait())
-    await social.send_parts(ctx, ["第一条", "第二条"], None)
+    await social.delivery.send_parts(ctx, ["第一条", "第二条"], None)
     social.waiting.wait(ctx, 300)
     social.store.wakes.finish(ctx.turn_id, "completed")
     await social.run_due()

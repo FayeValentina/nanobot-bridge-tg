@@ -15,11 +15,11 @@ from nanobot.agent.tools.context import RequestContext, bind_request_context, re
 from nanobot.agent.tools.telegram_social import TelegramSocialTool
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.db.schema import SCHEMA_VERSION
+from nanobot.channels.telegram.social.hook import SocialExposureHook
 from nanobot.channels.telegram.social.jargon import JargonRequest
 from nanobot.channels.telegram.social.memory import MemoryRequest, SocialMemory
 from nanobot.channels.telegram.social.runtime import (
     TelegramSocialRuntime,
-    _SocialExposureHook,
     encode_view,
 )
 from nanobot.channels.telegram.social.store import SocialStore
@@ -352,7 +352,8 @@ async def test_real_agent_learns_in_current_turn_and_live_context_is_not_persist
 async def test_temporary_context_is_restored_even_on_provider_failure(social):
     ctx = expose(social)
     record(social, ctx)
-    hook = _SocialExposureHook(social)
+    hook = SocialExposureHook(social.store, social.bindings, social.context_builder, social.waiting,
+                              social.scheduler.notify, lambda: social.config)
     messages = [{"role": "user", "content": [{"type": "text", "text": "original"}]}]
     original = deepcopy(messages)
     with bound(ctx):

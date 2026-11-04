@@ -153,11 +153,11 @@ async def test_pending_thought_multiplier_is_first_and_clamped(social):
 async def test_two_confirmed_attempts_survive_rewording_and_restart(social):
     item = own(social)
     social.set_sender(AsyncMock(side_effect=[501, 502]))
-    await social.send(ordinary("attempt-one"), "旅途有什么惊喜？", None, followup_id=item["id"])
+    await social.delivery.send(ordinary("attempt-one"), "旅途有什么惊喜？", None, followup_id=item["id"])
     updated = edit(social, item["id"], pending_thought="换个问法，最喜欢什么？")
     assert updated["confirmed_attempts"] == 1 and updated["remaining_attempts"] == 1
     clock(social).advance(3)
-    await social.send(ordinary("attempt-two"), "最喜欢哪段旅程？", None, followup_id=item["id"])
+    await social.delivery.send(ordinary("attempt-two"), "最喜欢哪段旅程？", None, followup_id=item["id"])
     info = social.store.followups.describe(item["id"])
     assert info.confirmed_attempts == 2 and info.followup_state == "dropped"
     trace = social.get_state(ordinary("inspect"))["followups"][0]
@@ -170,11 +170,11 @@ async def test_two_confirmed_attempts_survive_rewording_and_restart(social):
     try:
         clock(restored).advance(3)
         with pytest.raises(PermissionError, match="dropped"):
-            await restored.send(ordinary("attempt-three"), "再问一次？", None, followup_id=item["id"])
-        restored._sender.assert_not_awaited()
+            await restored.delivery.send(ordinary("attempt-three"), "再问一次？", None, followup_id=item["id"])
+        restored.delivery.sender.assert_not_awaited()
         # A member's actual reply resumes normal conversation without proactive limits.
         edit(restored, item["id"], followup_state="responded")
-        assert (await restored.send(ordinary("answer"), "听起来很棒！", None))["status"] == "sent"
+        assert (await restored.delivery.send(ordinary("answer"), "听起来很棒！", None))["status"] == "sent"
         assert restored.store.followups.describe(item["id"]).confirmed_attempts == 2
     finally:
         restored.close()
@@ -183,17 +183,17 @@ async def test_two_confirmed_attempts_survive_rewording_and_restart(social):
 async def test_failed_send_does_not_count_and_unknown_send_blocks_resending(social):
     item = own(social)
     social.set_sender(AsyncMock(side_effect=RuntimeError("rejected")))
-    assert (await social.send(ordinary("failed"), "第一问", None, followup_id=item["id"]))["status"] == "failed"
+    assert (await social.delivery.send(ordinary("failed"), "第一问", None, followup_id=item["id"]))["status"] == "failed"
     assert social.store.followups.describe(item["id"]).remaining_attempts == 2
     clock(social).advance(3)
     social.set_sender(AsyncMock(side_effect=SocialDeliveryUnknownError("maybe accepted")))
-    result = await social.send(ordinary("unknown"), "第二问", None, followup_id=item["id"])
+    result = await social.delivery.send(ordinary("unknown"), "第二问", None, followup_id=item["id"])
     assert result["status"] == "unknown"
     info = social.store.followups.describe(item["id"])
     assert info.confirmed_attempts == 0 and info.reserved_attempts == 1 and info.unresolved_send
     clock(social).advance(3)
     with pytest.raises(PermissionError, match="unknown send"):
-        await social.send(ordinary("no-resend"), "换写法也不能重发", None, followup_id=item["id"])
+        await social.delivery.send(ordinary("no-resend"), "换写法也不能重发", None, followup_id=item["id"])
     assert not social.store.delivery(result["action_id"], "sent", message_ids=(501,))
     assert not social.store.delivery(result["action_id"], "sent", message_ids=(501,))
     info = social.store.followups.describe(item["id"])
@@ -203,7 +203,7 @@ async def test_failed_send_does_not_count_and_unknown_send_blocks_resending(soci
 async def test_reworded_unknown_matter_stays_blocked_after_process_restart(social):
     item = own(social)
     social.set_sender(AsyncMock(side_effect=SocialDeliveryUnknownError("lost receipt")))
-    result = await social.send(ordinary("before-restart"), "旅行后来怎么样？", None, followup_id=item["id"])
+    result = await social.delivery.send(ordinary("before-restart"), "旅行后来怎么样？", None, followup_id=item["id"])
     changed = edit(social, item["id"], pending_question="换个说法：旅途顺利吗？")
     assert changed["id"] == item["id"] and changed["reserved_attempts"] == 1
     social.close()
@@ -213,7 +213,7 @@ async def test_reworded_unknown_matter_stays_blocked_after_process_restart(socia
     try:
         clock(restored).advance(3)
         with pytest.raises(PermissionError, match="unknown send"):
-            await restored.send(ordinary("after-restart"), changed["pending_question"], None, followup_id=item["id"])
+            await restored.delivery.send(ordinary("after-restart"), changed["pending_question"], None, followup_id=item["id"])
         sender.assert_not_awaited()
         assert not restored.store.delivery(result["action_id"], "sent", message_ids=(501,))
         assert not restored.store.delivery(result["action_id"], "sent", message_ids=(501,))
@@ -229,7 +229,7 @@ async def test_two_paced_groups_count_once_each_and_second_group_finishes(social
     social.set_sender(sender)
     for index in range(2):
         ctx = context(social, turn=f"group-{index}")
-        rows = await social.send_parts(ctx, [f"开头 {index}", f"问题 {index}"], None, followup_id=item["id"])
+        rows = await social.delivery.send_parts(ctx, [f"开头 {index}", f"问题 {index}"], None, followup_id=item["id"])
         assert {row["status"] for row in rows} == {"queued"}
         await social.run_due()
         clock(social).advance(3)
@@ -247,7 +247,7 @@ async def test_queued_parts_recheck_live_intention_before_sending(social, change
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
     ctx = context(social)
-    await social.send_parts(ctx, ["准备提问", "后续问题"], None, followup_id=item["id"])
+    await social.delivery.send_parts(ctx, ["准备提问", "后续问题"], None, followup_id=item["id"])
     if change == "delete":
         social.memory.apply(A.session_key, "delete", MemoryRequest(action="delete", memory_id=item["id"]))
     elif change == "edit":
@@ -278,14 +278,14 @@ async def test_cannot_queue_unlinked_parts_when_followup_is_invalid(social):
     edit(social, item["id"], followup_state="dropped")
     social.set_sender(AsyncMock(return_value=501))
     with pytest.raises(PermissionError):
-        await social.send_parts(context(social), ["第一条", "第二条"], None, followup_id=item["id"])
+        await social.delivery.send_parts(context(social), ["第一条", "第二条"], None, followup_id=item["id"])
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
 
 
 async def test_ordinary_message_shares_attempts_and_preserves_regular_delivery(tmp_path, social):
     item = own(social)
     social.set_sender(AsyncMock(return_value=700))
-    await social.send(ordinary("social-first"), "先主动关心一次", None, followup_id=item["id"])
+    await social.delivery.send(ordinary("social-first"), "先主动关心一次", None, followup_id=item["id"])
     tg = channel(social)
     tg._app_ready.set()
     tg._app.bot.send_message = AsyncMock(side_effect=[SimpleNamespace(message_id=501), SimpleNamespace(message_id=502)])
@@ -361,7 +361,7 @@ async def test_main_send_registers_local_wait_then_short_reply_reaches_v3(tmp_pa
 async def test_reply_wait_timeout_stays_local_and_other_topics_do_not_share_intentions(tmp_path, social):
     item = own(social)
     social.set_sender(AsyncMock(return_value=501))
-    await social.send(ordinary("ask"), "旅行怎么样？", None, followup_id=item["id"])
+    await social.delivery.send(ordinary("ask"), "旅行怎么样？", None, followup_id=item["id"])
     assert social.store.scopes.state(A.session_key)["mode"] == "waiting"
     clock(social).advance(31)
     await social.run_due()
@@ -369,7 +369,7 @@ async def test_reply_wait_timeout_stays_local_and_other_topics_do_not_share_inte
     assert social.bus.inbound.empty()
     assert social.store.followups.summary(B.session_key) == []
     with pytest.raises(PermissionError, match="missing"):
-        await social.send(ordinary("wrong-scope", B), "跨话题追问", None, followup_id=item["id"])
+        await social.delivery.send(ordinary("wrong-scope", B), "跨话题追问", None, followup_id=item["id"])
 
 
 def test_schema_twelve_upgrade_preserves_sources(social):
@@ -424,7 +424,7 @@ async def test_future_intention_is_not_weighted_or_sent_early(social):
     social.set_sender(AsyncMock(return_value=501))
     assert not social.store.followups.has_pending_thought(A.session_key)
     with pytest.raises(PermissionError, match="not due"):
-        await social.send(ordinary("too-early"), "提前追问", None, followup_id=item["id"])
+        await social.delivery.send(ordinary("too-early"), "提前追问", None, followup_id=item["id"])
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
     assert social.store.followups.describe(item["id"]).remaining_attempts == 2
 
@@ -434,8 +434,8 @@ async def test_stop_contact_prevents_linked_proactive_send_but_allows_normal_ans
     social.set_sender(AsyncMock(return_value=501))
     social.waiting.set_wake(ordinary(), keywords=[], senders=[], on_messages=False, proactive_paused=True)
     with pytest.raises(PermissionError, match="stopped"):
-        await social.send(ordinary("proactive"), "追问近况", None, followup_id=item["id"])
-    assert (await social.send(ordinary("answer"), "回答你的新问题", None))["status"] == "sent"
+        await social.delivery.send(ordinary("proactive"), "追问近况", None, followup_id=item["id"])
+    assert (await social.delivery.send(ordinary("answer"), "回答你的新问题", None))["status"] == "sent"
     assert social.store.followups.describe(item["id"]).confirmed_attempts == 0
 
 

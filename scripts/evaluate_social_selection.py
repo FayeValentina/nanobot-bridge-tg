@@ -64,7 +64,7 @@ async def evaluate(config_path: Path, source_db: Path, output: Path) -> None:
                 delivered.append({'content':content,'reply_to':reply_to})
                 return 1000+len(delivered)
             runtime.set_sender(sender)
-            runtime._sticker_sender=sender
+            runtime.delivery.sticker_sender=sender
             with runtime.store.db:
                 for row in stickers:
                     runtime.store.db.execute('INSERT INTO stickers(scope,id,media_ref,note,uses,updated) VALUES(?,?,?,?,?,?)',
@@ -101,7 +101,7 @@ async def evaluate(config_path: Path, source_db: Path, output: Path) -> None:
                 # Paced multi-bubble sends normally drain in the scheduler. This
                 # harness has no running receiver/scheduler, so drain locally.
                 for _ in range(3):
-                    await runtime._retry_sends()
+                    await runtime.delivery.retry_due()
                 stats=[dict(row) for row in runtime.store.db.execute('SELECT * FROM expression_turns')]
                 actions=[dict(row) for row in runtime.store.db.execute('SELECT kind,content,status FROM actions')]
                 reports.append({'case':label,'synthetic_input':text,'model':preset.model,'selector_model':runtime.selector.model,

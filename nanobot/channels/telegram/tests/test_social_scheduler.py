@@ -271,7 +271,7 @@ async def test_wait_blocks_later_sends_in_the_same_turn(social):
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
     with pytest.raises(PermissionError, match="yielded"):
-        await social.send(ctx, "late send", None)
+        await social.delivery.send(ctx, "late send", None)
     sender.assert_not_awaited()
 
 
@@ -467,12 +467,12 @@ async def test_same_turn_repeated_send_returns_the_same_receipt(social):
     ctx = context(social)
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
-    first = await social.send(ctx, "hello", None)
-    second = await social.send(ctx, "hello", None)
+    first = await social.delivery.send(ctx, "hello", None)
+    second = await social.delivery.send(ctx, "hello", None)
     assert first["action_id"] == second["action_id"] and second["message_id"] == 501
     sender.assert_awaited_once()
     with pytest.raises(PermissionError, match="cooldown"):
-        await social.send(ctx, "another message", None)
+        await social.delivery.send(ctx, "another message", None)
 
 
 @pytest.mark.parametrize("parts", [False, True], ids=["text", "parts"])
@@ -491,9 +491,9 @@ async def test_send_collects_new_messages_once_and_exposure_admits_their_wake(so
 
     with pytest.raises(PermissionError) as rejected:
         if parts:
-            await social.send_parts(ctx, ["reply A", "reply B/C"], None)
+            await social.delivery.send_parts(ctx, ["reply A", "reply B/C"], None)
         else:
-            await social.send(ctx, "reply A/B/C", None)
+            await social.delivery.send(ctx, "reply A/B/C", None)
     notice = str(rejected.value)
     assert notice.startswith("NOT sent: new messages arrived")
     assert "supplement B" in notice and "supplement C" in notice
@@ -509,10 +509,10 @@ async def test_send_collects_new_messages_once_and_exposure_admits_their_wake(so
     # A second new arrival cannot bounce the same turn's revised send again.
     social.store.observe(observed(social, 4, text="supplement D"), 500)
     if parts:
-        result = await social.send_parts(ctx, ["reply A", "reply B/C"], None)
+        result = await social.delivery.send_parts(ctx, ["reply A", "reply B/C"], None)
         assert [receipt["status"] for receipt in result] == ["queued", "queued"]
     else:
-        result = await social.send(ctx, "reply A/B/C", None)
+        result = await social.delivery.send(ctx, "reply A/B/C", None)
         assert result["status"] == "sent"
     finish(social, ctx)
     assert social.store.wakes.get(scheduled["id"])["status"] == "completed"
@@ -528,7 +528,7 @@ async def test_new_self_message_does_not_block_send(social):
     social.store.observe(replace(observed(social, 2, text="own message"), is_self=True), 500)
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
-    result = await social.send(ctx, "reply A", None)
+    result = await social.delivery.send(ctx, "reply A", None)
     assert result["status"] == "sent"
     sender.assert_awaited_once()
 
@@ -539,14 +539,14 @@ async def test_repeated_send_returns_old_receipt_before_checking_new_messages(so
     social.store.note_seen(A.session_key, ctx.turn_id, social.read_messages(ctx))
     sender = AsyncMock(return_value=501)
     social.set_sender(sender)
-    first = await social.send(ctx, "reply A", None)
+    first = await social.delivery.send(ctx, "reply A", None)
     social.store.observe(observed(social, 2, text="supplement B"), 500)
-    repeated = await social.send(ctx, "reply A", None)
+    repeated = await social.delivery.send(ctx, "reply A", None)
     assert repeated["action_id"] == first["action_id"]
     assert repeated["status"] == "sent" and repeated["message_id"] == first["message_id"]
     sender.assert_awaited_once()
     with pytest.raises(PermissionError, match="^NOT sent: new messages arrived"):
-        await social.send(ctx, "different reply", None)
+        await social.delivery.send(ctx, "different reply", None)
 
 
 @pytest.mark.parametrize("finished", [False, True], ids=["running-turn", "completed-turn"])
@@ -558,10 +558,10 @@ async def test_late_judge_reuses_turn_that_already_saw_and_read_new_messages(soc
     await social.observe(observed(social, 3, text="supplement C"), directed=True)
     social.set_sender(AsyncMock(return_value=501))
     with pytest.raises(PermissionError) as rejected:
-        await social.send(ctx, "reply A", None)
+        await social.delivery.send(ctx, "reply A", None)
     social.store.note_seen(A.session_key, ctx.turn_id, str(rejected.value))
     assert social.mark_read(ctx, 3) == 3
-    assert (await social.send(ctx, "reply A/B/C", None))["status"] == "sent"
+    assert (await social.delivery.send(ctx, "reply A/B/C", None))["status"] == "sent"
     if finished:
         finish(social, ctx)
     clock(social).advance(2)
@@ -582,7 +582,7 @@ async def test_platform_429_retry_uses_same_action_without_an_agent_or_new_model
     tg = channel(social)
     tg._app.bot.send_message = AsyncMock(side_effect=[RetryAfter(5), SimpleNamespace(message_id=501)])
     await social.observe(observed(social), directed=False)
-    result = await social.send(context(social), "public text", 1)
+    result = await social.delivery.send(context(social), "public text", 1)
     assert result["status"] == "queued"
     clock(social).advance(4)
     await social.run_due()
@@ -601,7 +601,7 @@ async def test_burst_sends_paced_parts_with_individual_receipts_and_no_replay(so
     sender = AsyncMock(side_effect=[501, 502, 503])
     social.set_sender(sender)
     ctx = context(social)
-    queued = await social.send_parts(ctx, ["first", "second", "third"], None)
+    queued = await social.delivery.send_parts(ctx, ["first", "second", "third"], None)
     assert [row["status"] for row in queued] == ["queued"] * 3
     await social.run_due()
     assert sender.await_count == 1
@@ -609,7 +609,7 @@ async def test_burst_sends_paced_parts_with_individual_receipts_and_no_replay(so
         clock(social).advance(2)
         await social.run_due()
     assert [call.args[1] for call in sender.await_args_list] == ["first", "second", "third"]
-    repeated = await social.send_parts(ctx, ["first", "second", "third"], None)
+    repeated = await social.delivery.send_parts(ctx, ["first", "second", "third"], None)
     assert [row["action_id"] for row in repeated] == [row["action_id"] for row in queued]
     assert [row["message_id"] for row in repeated] == [501, 502, 503]
     await social.run_due()
@@ -621,11 +621,11 @@ async def test_partial_burst_failure_never_replays_the_confirmed_part(social, er
     sender = AsyncMock(side_effect=[501, error])
     social.set_sender(sender)
     ctx = context(social)
-    await social.send_parts(ctx, ["first", "second", "third"], None)
+    await social.delivery.send_parts(ctx, ["first", "second", "third"], None)
     await social.run_due()
     clock(social).advance(2)
     await social.run_due()
-    rows = await social.send_parts(ctx, ["first", "second", "third"], None)
+    rows = await social.delivery.send_parts(ctx, ["first", "second", "third"], None)
     assert [row["status"] for row in rows] == ["sent", status, "failed"]
     clock(social).advance(10)
     await social.run_due()
@@ -635,7 +635,7 @@ async def test_partial_burst_failure_never_replays_the_confirmed_part(social, er
 async def test_rate_limited_burst_cannot_send_later_parts_first(social):
     sender = AsyncMock(side_effect=[SocialRateLimitError(5), 501, 502])
     social.set_sender(sender)
-    await social.send_parts(context(social), ["first", "second"], None)
+    await social.delivery.send_parts(context(social), ["first", "second"], None)
     await social.run_due()
     clock(social).advance(3)
     await social.run_due()
@@ -652,7 +652,7 @@ async def test_rate_limited_burst_cannot_send_later_parts_first(social):
 async def test_invalid_burst_is_rejected_before_enqueue(social, texts):
     social.set_sender(AsyncMock(return_value=501))
     with pytest.raises(ValueError):
-        await social.send_parts(context(social), texts, None)
+        await social.delivery.send_parts(context(social), texts, None)
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
 
 
@@ -660,7 +660,7 @@ async def test_burst_cannot_reserve_more_than_remaining_budget(social):
     social.config.max_sends_per_hour = 1
     social.set_sender(AsyncMock(return_value=501))
     with pytest.raises(PermissionError, match="hourly send budget exhausted"):
-        await social.send_parts(context(social), ["one", "two"], None)
+        await social.delivery.send_parts(context(social), ["one", "two"], None)
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
 
 
@@ -669,7 +669,7 @@ async def test_platform_retries_are_bounded_by_expiry_budget_and_attempts(social
     social.config.max_sends_per_hour = limit
     sender = AsyncMock(side_effect=SocialRateLimitError(after))
     social.set_sender(sender)
-    await social.send(context(social), "public", None)
+    await social.delivery.send(context(social), "public", None)
     for _ in range(4):
         clock(social).advance(3)
         await social.run_due()
@@ -681,16 +681,16 @@ async def test_send_retry_attempts_still_count_after_the_original_action_ages_ou
     social.config.max_sends_per_hour = 2
     sender = AsyncMock(side_effect=[SocialRateLimitError(100), 501, 502])
     social.set_sender(sender)
-    await social.send(context(social), "first", None)
+    await social.delivery.send(context(social), "first", None)
     clock(social).advance(100)
     await social.run_due()
     clock(social).advance(3501)
     new_ctx = context(social, turn="new-hour")
     assert social.get_state(new_ctx)["remaining_send_attempts"] == 1
-    assert (await social.send(new_ctx, "second", None))["status"] == "sent"
+    assert (await social.delivery.send(new_ctx, "second", None))["status"] == "sent"
     clock(social).advance(2)
     with pytest.raises(PermissionError, match="budget"):
-        await social.send(new_ctx, "third", None)
+        await social.delivery.send(new_ctx, "third", None)
     assert sender.await_count == 3
 
 
@@ -698,7 +698,7 @@ async def test_send_retry_attempts_still_count_after_the_original_action_ages_ou
 async def test_configuration_change_cancels_a_platform_retry(social, change):
     sender = AsyncMock(side_effect=SocialRateLimitError(5))
     social.set_sender(sender)
-    await social.send(context(social), "public", None)
+    await social.delivery.send(context(social), "public", None)
     if change == "paused":
         social.config.scopes[0].paused = True
     elif change == "binding":
@@ -716,7 +716,7 @@ async def test_configuration_change_cancels_a_platform_retry(social, change):
 async def test_unknown_platform_result_never_retries(social):
     sender = AsyncMock(side_effect=SocialDeliveryUnknownError())
     social.set_sender(sender)
-    result = await social.send(context(social), "possibly delivered", None)
+    result = await social.delivery.send(context(social), "possibly delivered", None)
     assert result["status"] == "unknown"
     clock(social).advance(10)
     await social.run_due()
@@ -726,7 +726,7 @@ async def test_unknown_platform_result_never_retries(social):
 async def test_restart_never_retries_interrupted_platform_actions(social):
     sender = AsyncMock(side_effect=SocialRateLimitError(5))
     social.set_sender(sender)
-    await social.send(context(social), "public", None)
+    await social.delivery.send(context(social), "public", None)
     await social.recover()
     clock(social).advance(6)
     await social.run_due()
