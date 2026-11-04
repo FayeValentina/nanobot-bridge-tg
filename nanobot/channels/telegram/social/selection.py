@@ -316,7 +316,7 @@ class ContextSelector:
                 if text not in text_list:
                     text_list.append(text)
         catchphrases = {word: sum(any(word.casefold() in text.casefold() for text in item.texts) for item in turns.values())
-                       for word in ("本大爷", "白饭", "Token", "算力")}
+                       for word in self.config().learning.catchphrases}
         frames: Counter[str] = Counter()
         stickers: Counter[str] = Counter()
         for item in turns.values():
@@ -326,8 +326,7 @@ class ContextSelector:
             stickers.update(set(item.stickers))
         return {"turns": [{"turn_id": key, "texts": item.texts, "stickers": item.stickers} for key, item in turns.items()], "catchphrases": {k: v for k, v in catchphrases.items() if v},
                 "repeated_sentence_frames": {k: v for k, v in frames.items() if v > 1},
-                "sticker_counts": dict(stickers),
-                "note": "这些是最近已确认发送的原话/句式和贴纸。无关话题请换种自然说法；这是软参考，不是禁词。正在讨论、引用或解释 Token/白饭等时正常接话。"}
+                "sticker_counts": dict(stickers)}
 
     def confirm_sticker(self, scope: str, turn: str | None, delivery: str, sticker_id: str) -> None:
         if turn is None:

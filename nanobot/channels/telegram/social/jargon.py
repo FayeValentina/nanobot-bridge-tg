@@ -316,9 +316,8 @@ class JargonLibrary:
             if item.explanation_quote and not (item.local_meaning and item.explanation_quote in source.text and item.local_meaning in item.explanation_quote and item.term in item.explanation_quote):
                 raise ValueError("invented explicit explanation")
 
-    @staticmethod
-    def eligible(item: JargonCandidate) -> bool:
-        return item.contextual and not item.ordinary and normalized(item.term) not in {"今天", "明天", "吃饭", "睡觉", "天气", "公交", "火车", "照片", "建议", "本大爷", "白饭", "算力", "token"}
+    def eligible(self, item: JargonCandidate) -> bool:
+        return item.contextual and not item.ordinary and normalized(item.term) not in {"今天", "明天", "吃饭", "睡觉", "天气", "公交", "火车", "照片", "建议"} and normalized(item.term) not in {normalized(c) for c in self.store.learning.config.catchphrases}
 
     def discover(self, scope: str, result: JargonDiscovery, sources: list[ExpressionSource]) -> list[str]:
         self.validate_sources(result, sources)

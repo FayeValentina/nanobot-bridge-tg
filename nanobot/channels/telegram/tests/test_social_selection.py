@@ -183,6 +183,7 @@ async def test_inflight_input_changes_keep_selection(social, change):
 
 
 def test_recent_usage_is_sent_only_all_paths_grouped_by_turn(social):
+    social.config.learning.catchphrases = ["本大爷", "白饭", "Token", "算力"]
     seed(social)
     social.config.send_cooldown_seconds = 0
     db=social.store.db
@@ -207,6 +208,16 @@ def test_recent_usage_is_sent_only_all_paths_grouped_by_turn(social):
     assert '不能算已发送' not in str(usage) and '没发出去' not in str(usage)
     assert next(t for t in usage['turns'] if t['turn_id']=='one')['texts']==['Token 没花多少','本大爷吃白饭']
     assert social.selector.recent_usage(B.session_key)['turns']==[]
+
+
+def test_recent_usage_with_empty_catchphrases_does_not_count_persona_words(social):
+    social.config.learning.catchphrases = []
+    delivery = social.delivery.begin_message(A, '本大爷来了', 'turn', units=1, followup_id=None)
+    assert delivery is not None
+    social.delivery.finish_message(A, delivery, DeliveryReceipt('sent', (100,)), [(100, '本大爷来了')])
+    usage = social.selector.recent_usage(A.session_key)
+    assert usage['turns'][0]['texts'] == ['本大爷来了']
+    assert usage['catchphrases'] == {}
 
 
 def test_pending_is_separate_and_does_not_rank_from_member_or_active_bonus(social):
@@ -249,6 +260,7 @@ async def test_end_to_end_sticker_without_search_receipt_and_transient_prompt(tm
 
 
 async def test_timeout_and_provider_error_do_not_block_main_text_generation(tmp_path,social):
+    social.config.learning.catchphrases = ["本大爷", "白饭", "Token", "算力"]
     selector=seed(social)
     selector.chat.side_effect=RuntimeError('offline')
     social.set_sender(AsyncMock(return_value=601))

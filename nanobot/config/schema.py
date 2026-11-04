@@ -272,6 +272,7 @@ class TelegramSocialLearningConfig(Base):
     selection_timeout_seconds: float = Field(default=2, ge=0.05, le=2, allow_inf_nan=False)
     selection_sticker_candidates: int = Field(default=40, ge=5, le=80)
     recent_usage_turns: int = Field(default=6, ge=1, le=10)
+    catchphrases: list[str] = Field(default_factory=list, max_length=20)
     research_max_searches: int = Field(default=3, ge=0, le=5)
     research_max_fetches: int = Field(default=3, ge=0, le=5)
     research_max_chars: int = Field(default=12000, ge=1000, le=24000)

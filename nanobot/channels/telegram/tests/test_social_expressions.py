@@ -113,6 +113,7 @@ def test_exact_evidence_validation(setup, changes):
 ])
 def test_pollution_and_noncontextual_templates_are_empty_success(setup, text, changes):
     store, library, _ = setup
+    store.learning.config.catchphrases = ["本大爷", "白饭", "Token", "算力"]
     add(store, text=text)
     excerpt = text if "遥遥领先了" not in text else "这下真是遥遥领先了"
     _, ids = commit(store, library, candidate(excerpt=excerpt, expression=excerpt, **changes))

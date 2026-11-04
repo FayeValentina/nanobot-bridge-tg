@@ -7,6 +7,7 @@ import re
 import sqlite3
 import time
 import unicodedata
+from collections.abc import Sequence
 from difflib import SequenceMatcher
 from typing import Literal, cast
 from uuid import uuid4
@@ -98,9 +99,9 @@ def similar(left: str, right: str) -> bool:
                              or (min(len(a), len(b)) >= 2 and min(len(a), len(b)) / max(len(a), len(b)) >= .6 and (a in b or b in a)))
 
 
-def forbidden(text: str) -> bool:
+def forbidden(text: str, catchphrases: Sequence[str]) -> bool:
     value = normalized(text)
-    return (any(word in value for word in ("本大爷", "白饭", "算力", "token"))
+    return (any(normalized(word) in value for word in catchphrases if normalized(word))
             or value in {"加油", "你真棒", "真棒", "好棒", "努力", "相信自己", "你可以的", "奥利给"}
             or bool(re.search(r"https?://|@\w|\d{5,}|傻[逼比]|煞笔|死全家|操你|滚你", text, re.I)))
 
@@ -160,7 +161,7 @@ class ExpressionLibrary:
                 raise ValueError("only modify accepts expression fields")
             if request.action == "modify" and not changes:
                 raise ValueError("modify requires at least one expression field")
-            if any(forbidden(str(value)) for value in changes.values()):
+            if any(forbidden(str(value), self.store.learning.config.catchphrases) for value in changes.values()):
                 raise ValueError("expression contains excluded learning content")
             revision = int(str(current["revision"])) + 1
             # Keep the OLD wording too. A corrected expression must not be recreated
@@ -244,12 +245,11 @@ class ExpressionLibrary:
             self.store.learning.finish(batch, success=True, result_count=len(ids))
             return ids
 
-    @staticmethod
-    def accept(candidate: ExpressionCandidate, source: ExpressionSource) -> bool:
+    def accept(self, candidate: ExpressionCandidate, source: ExpressionSource) -> bool:
         if (not candidate.reusable or not candidate.concrete_scene or not candidate.top_level
                 or candidate.private_or_named or candidate.abusive_or_mechanical):
             return False
-        if any(forbidden(value) for value in (candidate.expression, candidate.excerpt, candidate.situation, candidate.suitable)):
+        if any(forbidden(value, self.store.learning.config.catchphrases) for value in (candidate.expression, candidate.excerpt, candidate.situation, candidate.suitable)):
             return False
         if normalized(candidate.situation) in {"聊天时可以这样说", "群友在聊天的时候", "有人说话的时候"}:
             return False
