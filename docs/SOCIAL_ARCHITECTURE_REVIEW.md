@@ -403,6 +403,10 @@ telegram channel → runtime 公开方法 + DeliveryJournal 公开方法
 | B 确定唤醒 | 当前**没有**显式选择性等待（`wake_config` 为空，或者没有 keywords/senders/on_question） | 唤醒 | 否 |
 | C 语义判断 | 有显式选择性等待（模型调用过 `social_wait` 的等待条件，或旧的 `social_set_wake`），且新消息不是 directed | 交给 judge，判断是否满足等待条件 | 是 |
 
+- **owner 补充决定（2026-11-04，依据 P7-0 线上数据）**：其他 bot 发出的、非 directed 的消息仍交给 judge（C 层）。
+  理由：P7-0 统计最近 16 小时 judge 判 observe 的 8 条全部是另一 bot 的 /usage 用量回执，若归 B 层每条都会唤醒主模型（每次调用约 6.6 万 token）。
+  判定只用平台事实 `from_user.is_bot`：批次中只要有一条真人消息就走 B；全部新消息都来自 bot 且无 directed 才走 C。
+  仅 `on_messages=true` 不算选择性等待（走 B）；directed 走 B 时 `fulfills_intent=false`，不消费 one-shot 条件。
 - C 层是唯一必须做语义判断的地方：模型说过“等小明回来”“等有人问我 X”。这类条件只能靠模型理解，也是当初引入 judge 的初衷。
 - 普通观察、普通回复等待（`purpose=messages/reply`）、没有附加条件的 sleep，现在的 judge 提示词规则 4 本来就要求 wake，
   简化后直接走 B 层，**省掉一次 LLM 调用和 1–3 秒延迟**，行为不变。
