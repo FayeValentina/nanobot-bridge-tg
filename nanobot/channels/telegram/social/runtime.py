@@ -7,7 +7,7 @@ import json
 import math
 import sqlite3
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -583,6 +583,25 @@ class TelegramSocialRuntime:
         """All publishing tools serialize against the same scope's send journal."""
         return self._send_locks.setdefault(scope.session_key, asyncio.Lock())
 
+    def _check_send_allowed(self, scope: ConversationScope, turn: str | None, version: str,
+                            contents: Sequence[str], units: int) -> None:
+        """Every new send passes here once, inside the scope's send lock."""
+        key = scope.session_key
+        now = self.now()
+        if self.store.scopes.state(key)["mode"] == "paused":
+            raise PermissionError("social conversation is paused")
+        self.proactive.check_send(scope, turn, self.binding(scope))
+        previous = self.store.deliveries.last_send(key)
+        if previous is not None and now < previous + self.config.send_cooldown_seconds:
+            raise PermissionError("send cooldown is active")
+        if self.store.deliveries.queued(key):
+            raise PermissionError("an earlier send is awaiting delivery")
+        for content in contents:
+            if self.store.deliveries.unknown_content(key, version, content, now - 86400):
+                raise PermissionError("delivery of this text is unknown; do not blindly repeat it")
+        if self.store.deliveries.attempt_count(key, now - 3600) + units > self.config.max_sends_per_hour:
+            raise PermissionError("hourly send budget exhausted")
+
     def begin_message(self, scope: ConversationScope, content: str, turn: str | None, *, units: int,
                       followup_id: str | None) -> str | None:
         """Reserve one ordinary envelope; None when the scope has no binding."""
@@ -590,17 +609,10 @@ class TelegramSocialRuntime:
         if binding is None:
             return None
         version = self.store.scopes.state(scope.session_key)["version"]
-        if self.store.scopes.state(scope.session_key)["mode"] == "paused":
-            raise PermissionError("social conversation is paused")
-        self.proactive.check_send(scope, turn, binding)
-        previous = self.store.deliveries.last_send(scope.session_key)
-        if previous is not None and self.now() < previous + self.config.send_cooldown_seconds:
-            raise PermissionError("send cooldown is active")
-        if self.store.deliveries.queued(scope.session_key):
-            raise PermissionError("an earlier send is awaiting delivery")
         if turn is not None and self.store.deliveries.attempted_content(scope.session_key, version, turn, content):
             raise PermissionError("delivery already attempted in this turn; do not repeat it")
-        return self.store.reserve_send(scope.session_key, version, content, self.config.max_sends_per_hour, kind="message", turn=turn, units=units, followup_id=followup_id)
+        self._check_send_allowed(scope, turn, version, [content], units)
+        return self.store.reserve_send(scope.session_key, version, content, kind="message", turn=turn, units=units, followup_id=followup_id)
 
     async def send(self, ctx: RequestContext, text: str, reply_to: int | None,
                    *, sticker: MediaReference | None = None, followup_id: str | None = None) -> DeliveryResult:
@@ -613,17 +625,12 @@ class TelegramSocialRuntime:
         lock = self.send_lock(scope)
         async with lock:
             self.validate_context(ctx)
-            self.proactive.check_send(scope, ctx.turn_id, self.binding(scope))
             version = self.store.scopes.state(scope.session_key)["version"]
             previous_action = self.store.deliveries.latest_content(scope.session_key, version, ctx.turn_id, "sticker" if sticker else "text", text)
             if previous_action is not None:
                 return self._action_result(previous_action)
-            previous = self.store.deliveries.last_send(scope.session_key)
-            if previous is not None and self.now() < previous + self.config.send_cooldown_seconds:
-                raise PermissionError("send cooldown is active")
-            if self.store.deliveries.queued(scope.session_key):
-                raise PermissionError("an earlier send is awaiting a platform retry")
-            action = self.store.reserve_send(scope.session_key, version, text, self.config.max_sends_per_hour,
+            self._check_send_allowed(scope, ctx.turn_id, version, [text], 1)
+            action = self.store.reserve_send(scope.session_key, version, text,
                                              kind="sticker" if sticker else "text", turn=ctx.turn_id, sticker=sticker, followup_id=followup_id)
             with transaction(self.store.db):
                 self.store.deliveries.set_reply_expiry(reply_to, ctx.turn_id, action)
@@ -664,20 +671,15 @@ class TelegramSocialRuntime:
         lock = self.send_lock(scope)
         async with lock:
             self.validate_context(ctx)
-            self.proactive.check_send(scope, ctx.turn_id, self.binding(scope))
             version = self.store.scopes.state(scope.session_key)["version"]
             # Repeated identical calls return each child's receipt, including partial failures.
             for group in self.store.deliveries.turn_groups(scope.session_key, version, ctx.turn_id):
                 rows = self.store.deliveries.group_parts(group[0])
                 if [str(row["content"]) for row in rows] == texts and rows[0]["reply_to"] == reply_to:
                     return [self._action_result(row) for row in rows]
-            previous = self.store.deliveries.last_send(scope.session_key)
-            if previous is not None and self.now() < previous + self.config.send_cooldown_seconds:
-                raise PermissionError("send cooldown is active")
-            if self.store.deliveries.queued(scope.session_key):
-                raise PermissionError("an earlier send is awaiting delivery")
+            self._check_send_allowed(scope, ctx.turn_id, version, texts, len(texts))
             rows = self.store.enqueue_parts(scope.session_key, version, ctx.turn_id, texts,
-                                            reply_to, self.config.max_sends_per_hour, followup_id=followup_id)
+                                            reply_to, followup_id=followup_id)
             self.scheduler.notify()
             return [self._action_result(row) for row in rows]
 

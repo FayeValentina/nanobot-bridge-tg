@@ -88,7 +88,7 @@ async def evaluate(args):
             prior_count = 1 if name == "short_reply" else 2 if name == "two_unanswered" else 0
             for index in range(prior_count):
                 action = runtime.store.reserve_send(scope.session_key, runtime.store.scopes.state(scope.session_key)["version"],
-                    "明天几点出发？", 60, turn=f"prior-{index}", followup_id=memory_id)
+                    "明天几点出发？", turn=f"prior-{index}", followup_id=memory_id)
                 runtime.store.delivery(action, "sent", message_id=300+index)
                 runtime.store.observe(ObservedMessage(scope,-300-index,300+index,"bot","肥鱼",time.time()-10+index,
                                                        "明天几点出发？",is_self=True),500)

@@ -564,7 +564,7 @@ async def test_uncertain_send_cancels_recovery_of_the_old_question(social):
     await social.observe(message(A), directed=True)
     social.bus.inbound.get_nowait()
     version = social.store.scopes.state(A.session_key)["version"]
-    social.store.reserve_send(A.session_key, version, "interrupted", 6, kind="text")
+    social.store.reserve_send(A.session_key, version, "interrupted", kind="text")
     await social.recover()
     assert social.bus.inbound.empty()
     assert social.store.db.execute("SELECT status FROM actions").fetchone()[0] == "unknown"

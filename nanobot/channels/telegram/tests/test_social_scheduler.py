@@ -556,7 +556,7 @@ async def test_invalid_burst_is_rejected_before_enqueue(social, texts):
 async def test_burst_cannot_reserve_more_than_remaining_budget(social):
     social.config.max_sends_per_hour = 1
     social.set_sender(AsyncMock(return_value=501))
-    with pytest.raises(PermissionError, match="all parts"):
+    with pytest.raises(PermissionError, match="hourly send budget exhausted"):
         await social.send_parts(context(social), ["one", "two"], None)
     assert social.store.db.execute("SELECT COUNT(*) FROM actions").fetchone()[0] == 0
 

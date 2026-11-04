@@ -127,7 +127,7 @@ async def test_probability_modifiers_and_confirmed_message_groups(social):
     assert delivery is not None
     social.finish_message(A, delivery, receipt, [(i, "confirmed") for i in receipt.message_ids])
     for i in (601, 602):
-        action = social.store.reserve_send(A.session_key, social.store.scopes.state(A.session_key)["version"], f"part {i}", 60, kind="text")
+        action = social.store.reserve_send(A.session_key, social.store.scopes.state(A.session_key)["version"], f"part {i}", kind="text")
         social.store.db.execute("UPDATE actions SET group_id='burst' WHERE id=?", (action,))
         social.store.delivery(action, "sent", message_ids=(i,))
         social.store.observe(replace(observed(social, i, is_self=True), message_id=i), 500)

@@ -154,7 +154,7 @@ def seed_intention(runtime: TelegramSocialRuntime, *, thought: bool = False) -> 
 
 def seed_attempt(runtime: TelegramSocialRuntime, memory_id: str, index: int) -> None:
     action = runtime.store.reserve_send(SCOPE.session_key, runtime.store.scopes.state(SCOPE.session_key)["version"],
-        "明天几点出发、和谁一起去郊游？", 60, turn=f"prior-{index}", followup_id=memory_id)
+        "明天几点出发、和谁一起去郊游？", turn=f"prior-{index}", followup_id=memory_id)
     runtime.store.delivery(action, "sent", message_id=300+index)
     seed_message(runtime, "明天几点出发、和谁一起去郊游？", own=True)
 

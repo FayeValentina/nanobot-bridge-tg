@@ -251,16 +251,9 @@ class SocialStore:
                 self.deliveries.fail_queued_for_turn(row["scope"], row["turn_id"], f"opportunity skipped: {reason}")
                 self.followups.sync_receipts(str(row["scope"]))
 
-    def reserve_send(self, key: str, version: str, text: str, limit: int, *, kind: str, turn: str | None = None,
+    def reserve_send(self, key: str, version: str, text: str, *, kind: str, turn: str | None = None,
                      sticker: MediaReference | None = None, followup_id: str | None = None, units: int = 1) -> str:
         with transaction(self.db):
-            if self.scopes.state(key)["version"] != version:
-                raise PermissionError("conversation configuration changed")
-            if self.deliveries.unknown_content(key, version, text, self.now() - 86400):
-                raise PermissionError("delivery of this text is unknown; do not blindly repeat it")
-            count = self.deliveries.attempt_count(key, self.now() - 3600)
-            if count + units > limit:
-                raise PermissionError("hourly send budget exhausted")
             action = uuid4().hex
             self.deliveries.insert_action(action, key, version, text, "sending", self.now(), turn, kind, sticker.model_dump_json() if sticker else None)
             if followup_id is not None:
@@ -321,19 +314,14 @@ class SocialStore:
             return result
 
     def enqueue_parts(self, key: str, version: str, turn: str, texts: list[str],
-                      reply_to: int | None, limit: int, *, followup_id: str | None = None) -> list[sqlite3.Row]:
+                      reply_to: int | None, *, followup_id: str | None = None) -> list[sqlite3.Row]:
         group = uuid4().hex
         now = self.now()
         with transaction(self.db):
-            count = self.deliveries.attempt_count(key, now - 3600)
-            if count + len(texts) > limit:
-                raise PermissionError("hourly send budget cannot accommodate all parts")
             expires = self.wakes.turn_expires(turn)
             if expires is None:
                 raise PermissionError("parts require an active authorized turn")
             for index, text in enumerate(texts):
-                if self.deliveries.unknown_part(key, version, text, now - 86400):
-                    raise PermissionError("delivery is unknown; do not blindly repeat a part")
                 action = uuid4().hex
                 self.deliveries.insert_part(action, key, version, text, now, now, expires, reply_to, turn, group, index)
                 if followup_id is not None:

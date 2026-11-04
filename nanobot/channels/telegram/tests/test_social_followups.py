@@ -442,7 +442,7 @@ async def test_stop_contact_prevents_linked_proactive_send_but_allows_normal_ans
 def test_schema_twenty_merges_delivery_rows_and_preserves_followup_ids(social):
     item = own(social)
     version = social.store.scopes.state(A.session_key)["version"]
-    action = social.store.reserve_send(A.session_key, version, "legacy reservation", 60,
+    action = social.store.reserve_send(A.session_key, version, "legacy reservation",
                                       kind="text", turn="legacy-turn", followup_id=item["id"])
     social.store.delivery(action, "sent", (501,))
     with social.store.db as db:

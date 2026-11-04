@@ -497,7 +497,7 @@ def test_schema_v2_upgrade_preserves_messages_actions_and_watermarks(tmp_path):
     store = SocialStore(root)
     store.bind(A, "version")
     store.observe(message(text="old photo", media=("photo",)), 100)
-    action = store.reserve_send(A.session_key, "version", "old text", 6, kind="text")
+    action = store.reserve_send(A.session_key, "version", "old text", kind="text")
     store.delivery(action, "sent", message_ids=(501,))
     # Recreate the actual schema-2 shape, retaining existing data.
     for table in ("proactive_state", "memory_evidence", "memories", "memory_suppressions", "memory_resets"):

@@ -98,9 +98,6 @@ class Deliveries:
     def attempt_count(self, key: str, since: float) -> int:
         return self.db.execute("SELECT COUNT(*) FROM send_attempts WHERE scope=? AND at>?", (key, since)).fetchone()[0]
 
-    def unknown_part(self, key: str, version: str, text: str, since: float) -> sqlite3.Row | None:
-        return self.db.execute("SELECT 1 FROM actions WHERE scope=? AND version=? AND status='unknown' AND trim(content)=trim(?) AND created>?", (key, version, text, since)).fetchone()
-
     def queued(self, key: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT 1 FROM actions WHERE scope=? AND status='queued'", (key,)).fetchone()
 
