@@ -43,6 +43,7 @@
   线上配置已改：`coalesceSeconds 10`、`dynamicWait.quietSeconds 10 / unfinishedSeconds 10 / maxSeconds 30`（备份 `config.json.before-burst-20261104`）。
   代价：单条消息回复约慢 8.5 秒。**owner 实测通过**（14:22:54–14:23:24 每 10 秒一条共 4 条 → 两个 judge wake 并入同一 turn、一次 3 段回复覆盖全部、发送前收取触发 1 次）。
   **之后 owner 要求窗口改为 20 秒**：Claude 小修 `90abae4a`（schema 中 coalesceSeconds、dynamicWait.quietSeconds 上限 10→60），线上配置改为 coalesceSeconds 20、maxCoalesceSeconds 20、quietSeconds 20 / unfinishedSeconds 20 / maxSeconds 45（备份 `config.json.before-burst20-20261104`）；单条消息回复约慢 18.5 秒。
+  **2026-11-05 owner 觉得回复偏慢，要求改回 10 秒**：线上配置恢复 coalesceSeconds 10（去掉 maxCoalesceSeconds，用默认）、quietSeconds 10 / unfinishedSeconds 10 / maxSeconds 30（备份 `config.json.before-burst10-20261105`），重启后 healthy。protocol 中 `purpose="reply", seconds=12` 的示例在 20 秒窗口下会先于安静判定超时，回到 10 秒后重新成立；P8-b 改 protocol 时改为不写死秒数。
   观察项：同日 14:22 一次 proactive turn 的 V5 selector 报 `ValidationError ... Choice string_type`（selection 降级为空，不影响回复），来源未查；已知未覆盖：judge 批次含未曝光新消息时仍可能另起 turn；普通 message 工具不做检查。
 - **Phase 6 已完成**（owner 2026-11-04 确认开始）。只读清单 P6-0 已完成（`.agent/tasks/P6-0.report.md`：runtime 46 个方法的归属、6 个持 runtime 的组件及其访问面、gateway 装配、test_commands 9 个失败的原因、工具层、测试面、19 条疑点）。
   Claude 的设计约定：组件接收 `config: Callable[[], TelegramSocialConfig]`、`now`、`notify` 回调和具体仓储/服务；runtime 不保留被移走方法的转发，调用方直接改用新位置（测试机械改名）。拆为：
