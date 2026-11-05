@@ -51,7 +51,7 @@ class ProviderSpec:
 
     # which provider implementation to use
     # "openai_compat" | "anthropic" | "azure_openai" | "openai_codex" | "xai_grok"
-    # | "github_copilot" | "bedrock"
+    # | "github_copilot" | "antigravity" | "bedrock"
     backend: str = "openai_compat"
 
     # extra env vars / request headers supplied by the provider integration.
@@ -516,6 +516,21 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         strip_model_prefix=True,
         is_oauth=True,
         supports_max_completion_tokens=True,
+    ),
+    ProviderSpec(
+        name="antigravity",
+        keywords=("antigravity",),
+        env_key="",
+        display_name="Google Antigravity",
+        model_catalog="builtin",
+        builtin_models=(
+            ProviderModelSpec(id="antigravity/gemini-3.8-flash-medium", label="Gemini 3.8 Flash (Medium)", description="Gemini 3.8 Flash via Antigravity CLI OAuth.", context_window=1_048_576),
+            ProviderModelSpec(id="antigravity/gemini-3.8-flash-high", label="Gemini 3.8 Flash (High)", description="Gemini 3.8 Flash via Antigravity CLI OAuth.", context_window=1_048_576),
+            ProviderModelSpec(id="antigravity/gemini-3.8-flash-low", label="Gemini 3.8 Flash (Low)", description="Gemini 3.8 Flash via Antigravity CLI OAuth.", context_window=1_048_576),
+        ),
+        backend="antigravity",
+        default_api_base="https://daily-cloudcode-pa.googleapis.com",
+        is_oauth=True,
     ),
     # DeepSeek: OpenAI-compatible at api.deepseek.com
     ProviderSpec(

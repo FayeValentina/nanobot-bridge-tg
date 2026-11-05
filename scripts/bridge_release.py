@@ -241,6 +241,7 @@ class ReleaseManager:
             self._require_session_compatibility(revision)
         values = dict(BRIDGE_IMAGE=metadata["image"], BRIDGE_DATA_DIR=str(self.data),
                       BRIDGE_CHECKOUT_DIR=str(REPO),
+                      BRIDGE_AGY_DIR=str(Path.home() / ".gemini" / "antigravity-cli"),
                       BRIDGE_UID=str(os.getuid()), BRIDGE_GID=str(os.getgid()),
                       BRIDGE_WEB_PORT=str(self.settings["web_port"]),
                       BRIDGE_HEALTH_PORT=str(self.settings["health_port"]))

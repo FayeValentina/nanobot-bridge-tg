@@ -297,6 +297,11 @@ def oauth_provider_status(spec: Any) -> dict[str, Any]:
     if not getattr(spec, "is_oauth", False):
         return {"configured": False, "account": None, "expires_at": None, "login_supported": False}
 
+    if spec.name == "antigravity":
+        from nanobot.providers.antigravity_auth import antigravity_dir, login_status
+
+        return {**login_status(antigravity_dir()), "login_supported": False}
+
     if spec.name == "openai_codex":
         try:
             from oauth_cli_kit.providers import OPENAI_CODEX_PROVIDER

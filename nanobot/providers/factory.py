@@ -198,6 +198,10 @@ def _make_provider_core(
         from nanobot.providers.github_copilot_provider import GitHubCopilotProvider
 
         provider = GitHubCopilotProvider(default_model=model, provider_name=provider_name)
+    elif backend == "antigravity":
+        from nanobot.providers.antigravity_provider import AntigravityProvider
+
+        provider = AntigravityProvider(default_model=model, provider_name=provider_name)
     elif backend == "anthropic":
         from nanobot.providers.anthropic_provider import AnthropicProvider
 

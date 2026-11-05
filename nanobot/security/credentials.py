@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from nanobot.config.paths import get_config_path
+from nanobot.providers.antigravity_auth import antigravity_dir
 
 
 def protected_runtime_paths() -> tuple[Path, ...]:
@@ -13,6 +14,7 @@ def protected_runtime_paths() -> tuple[Path, ...]:
         config.parent / "telegram-social" / "oauth",
         Path.home() / ".local" / "share" / "oauth-cli-kit" / "auth",
         Path.home() / ".codex" / "auth.json",
+        antigravity_dir(),
     ))
 
 

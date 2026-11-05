@@ -8,6 +8,7 @@ services:
     stop_grace_period: 40s
     environment:
       NANOBOT_CHECKOUT_DIR: ${BRIDGE_CHECKOUT_DIR:?Set BRIDGE_CHECKOUT_DIR}
+      ANTIGRAVITY_DIR: /agy
     ports:
       - "127.0.0.1:${BRIDGE_WEB_PORT:-8765}:8765"
       - "127.0.0.1:${BRIDGE_HEALTH_PORT:-18790}:18790"
@@ -17,6 +18,11 @@ services:
         source: ${BRIDGE_CHECKOUT_DIR:?Set BRIDGE_CHECKOUT_DIR}
         target: ${BRIDGE_CHECKOUT_DIR}
         read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${BRIDGE_AGY_DIR:?Set BRIDGE_AGY_DIR}
+        target: /agy
         bind:
           create_host_path: false
     cap_drop:
