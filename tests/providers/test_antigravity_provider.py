@@ -79,11 +79,19 @@ def _success(request: httpx.Request) -> httpx.Response:
 
 @pytest.mark.parametrize(("requested", "catalog", "effort", "expected"), [
     (WIRE_MODEL, {WIRE_MODEL}, "high", (WIRE_MODEL, "high")),
+    (WIRE_MODEL, {WIRE_MODEL}, "none", (WIRE_MODEL, "low")),
+    (WIRE_MODEL, {WIRE_MODEL}, "minimal", (WIRE_MODEL, "low")),
     (WIRE_MODEL, {WIRE_MODEL}, "invalid", (WIRE_MODEL, None)),
     (WIRE_MODEL, {WIRE_MODEL}, None, (WIRE_MODEL, None)),
-    ("gemini-3.8-flash-medium", {WIRE_MODEL}, "high", (WIRE_MODEL, "medium")),
+    ("gemini-3.8-flash-medium", {WIRE_MODEL}, "high", (WIRE_MODEL, "high")),
+    ("gemini-3.8-flash-medium", {WIRE_MODEL}, "low", (WIRE_MODEL, "low")),
+    ("gemini-3.8-flash-medium", {WIRE_MODEL}, "none", (WIRE_MODEL, "low")),
+    ("gemini-3.8-flash-medium", {WIRE_MODEL}, "minimal", (WIRE_MODEL, "low")),
+    ("gemini-3.8-flash-medium", {WIRE_MODEL}, None, (WIRE_MODEL, "medium")),
+    ("gemini-3.8-flash-medium", {WIRE_MODEL}, "invalid", (WIRE_MODEL, "medium")),
     ("gemini-3.8-flash-low", {WIRE_MODEL}, None, (WIRE_MODEL, "low")),
-    ("gemini-3.8-flash-high", {WIRE_MODEL}, "low", (WIRE_MODEL, "high")),
+    ("gemini-3.8-flash-high", {WIRE_MODEL}, None, (WIRE_MODEL, "high")),
+    ("gemini-3.8-flash-high", {WIRE_MODEL}, "low", (WIRE_MODEL, "low")),
     ("gemini-3.8-flash-medium", {"gemini-3.8-flash-medium", WIRE_MODEL}, "low",
      ("gemini-3.8-flash-medium", "low")),
     ("gemini-3.8-flash-medium", set[str](), "high", ("gemini-3.8-flash-medium", None)),
@@ -136,7 +144,7 @@ async def test_full_stream_and_cached_second_chat(monkeypatch: pytest.MonkeyPatc
     assert body["userAgent"] == "antigravity"
     assert body["request"]["generationConfig"] == {
         "maxOutputTokens": 65536, "temperature": 0.2,
-        "thinkingConfig": {"thinkingLevel": "medium"},
+        "thinkingConfig": {"thinkingLevel": "high", "includeThoughts": True},
     }
     assert deltas == [("thinking", "think"), ("content", "hello "), ("content", "world")]
     assert result.content == "hello world"

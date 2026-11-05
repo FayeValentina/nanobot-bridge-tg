@@ -20,7 +20,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from nanobot.channels.telegram.social.bindings import ScopeBindings
 from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.expressions import redacted_error_detail
-from nanobot.channels.telegram.social.models import ConversationScope, QuotedMessage
+from nanobot.channels.telegram.social.models import (
+    ConversationScope,
+    QuotedMessage,
+    strip_json_fence,
+)
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import (
     Config,
@@ -195,7 +199,7 @@ class SocialJudge:
             elif not response.content or len(response.content) > 4096:
                 error = "invalid_content"
             else:
-                return JudgeVerdict.model_validate_json(response.content)
+                return JudgeVerdict.model_validate_json(strip_json_fence(response.content))
         except asyncio.CancelledError:
             error = "cancelled"
             raise

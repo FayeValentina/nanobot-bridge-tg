@@ -20,7 +20,7 @@ from nanobot.channels.telegram.social.expressions import (
     redacted_error_detail,
 )
 from nanobot.channels.telegram.social.jargon import JargonLibrary
-from nanobot.channels.telegram.social.models import MediaReference
+from nanobot.channels.telegram.social.models import MediaReference, strip_json_fence
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import Config, TelegramSocialConfig
 from nanobot.providers.base import LLMProvider
@@ -237,7 +237,7 @@ class ContextSelector:
                         output_tokens = response.usage.output_tokens if response.usage else 0
                         if response.finish_reason != "stop" or response.tool_calls or not response.content or len(response.content) > 8000:
                             raise ValueError("invalid selection")
-                        choice = Choice.model_validate_json(response.content)
+                        choice = Choice.model_validate_json(strip_json_fence(response.content))
                         reason = choice.reason
                         selected: list[Candidate] = []
                         for kind, ids, limit in [("expression", choice.ids("expressions"), self.config().learning.selection_expressions),

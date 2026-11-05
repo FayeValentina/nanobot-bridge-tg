@@ -225,3 +225,10 @@ class MemoryEvidence(BaseModel):
     timestamp: float
     excerpt: str
     revision: int = 1
+
+
+def strip_json_fence(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        return text.partition("\n")[2][:-3].strip()
+    return text

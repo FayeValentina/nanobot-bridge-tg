@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from nanobot.channels.telegram.social.bindings import ScopeBindings
 from nanobot.channels.telegram.social.db.connection import transaction
 from nanobot.channels.telegram.social.learning import LearningKind
-from nanobot.channels.telegram.social.models import ConversationScope
+from nanobot.channels.telegram.social.models import ConversationScope, strip_json_fence
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import Config, ModelPresetConfig, TelegramSocialLearningModelConfig
 from nanobot.providers.base import LLMProvider, LLMResponse
@@ -322,7 +322,7 @@ class ExpressionLearner:
                 raise LearningProviderError(f"status={response.error_status_code}")
             if response.finish_reason != "stop" or response.tool_calls or response.content is None or len(response.content) > 24000:
                 raise ValueError("invalid extraction response")
-            result = ExtractionResult.model_validate_json(response.content)
+            result = ExtractionResult.model_validate_json(strip_json_fence(response.content))
             binding = self.bindings.binding(scope)
             if binding is None or binding.paused:
                 raise ValueError("scope revoked or paused")

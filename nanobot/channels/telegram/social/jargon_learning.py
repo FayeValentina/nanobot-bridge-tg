@@ -29,7 +29,7 @@ from nanobot.channels.telegram.social.jargon import (
 )
 from nanobot.channels.telegram.social.learning import LearningKind
 from nanobot.channels.telegram.social.learning_worker import LearningProviderError
-from nanobot.channels.telegram.social.models import ConversationScope
+from nanobot.channels.telegram.social.models import ConversationScope, strip_json_fence
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.config.schema import Config, TelegramSocialLearningModelConfig
 from nanobot.providers.base import LLMProvider
@@ -180,7 +180,7 @@ class JargonLearner:
                 library = [{k: e[k] for k in ("id", "term", "aliases", "status", "authority", "revision", "local_meaning", "public_meaning")} for e in self.jargon.entries(scope.session_key)]
                 result = await self.ask(batch, self.prompt, {"sources": [s.model_dump() for s in sources], "existing": library,
                     "max_candidates": self.store.learning.config.jargon_candidates, "schema": JargonDiscovery.model_json_schema()}, settings)
-                discovery = JargonDiscovery.model_validate_json(result)
+                discovery = JargonDiscovery.model_validate_json(strip_json_fence(result))
                 self.jargon.validate_sources(discovery, sources)
                 if len(discovery.jargon) > self.store.learning.config.jargon_candidates:
                     raise ValueError("jargon candidate budget exceeded")
@@ -198,7 +198,7 @@ class JargonLearner:
             if terms and pages:
                 result = await self.ask(batch, self.research_prompt, {"terms": terms, "pages": [p.model_dump() for p in pages],
                     "schema": ResearchResult.model_json_schema()}, settings)
-                findings = ResearchResult.model_validate_json(result)
+                findings = ResearchResult.model_validate_json(strip_json_fence(result))
                 if len({normalized(f.term) for f in findings.findings}) != len(findings.findings):
                     raise ValueError("duplicate research finding")
             binding = self.bindings.binding(scope)

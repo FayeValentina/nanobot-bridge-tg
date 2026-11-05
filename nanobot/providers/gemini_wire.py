@@ -111,7 +111,7 @@ def build_request(
     if temperature is not None:
         generation["temperature"] = temperature
     if thinking_level is not None:
-        generation["thinkingConfig"] = {"thinkingLevel": thinking_level}
+        generation["thinkingConfig"] = {"thinkingLevel": thinking_level, "includeThoughts": True}
     request["generationConfig"] = generation
     return request
 

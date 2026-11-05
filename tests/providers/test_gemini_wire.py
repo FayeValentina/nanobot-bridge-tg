@@ -164,7 +164,7 @@ def test_generation_config_optional_fields(temperature, thinking_level) -> None:
     if temperature is not None:
         expected["temperature"] = temperature
     if thinking_level is not None:
-        expected["thinkingConfig"] = {"thinkingLevel": thinking_level}
+        expected["thinkingConfig"] = {"thinkingLevel": thinking_level, "includeThoughts": True}
     assert _build([], max_output_tokens=2048, temperature=temperature, thinking_level=thinking_level) == {
         "contents": [], "generationConfig": expected,
     }

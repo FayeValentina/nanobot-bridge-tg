@@ -19,6 +19,7 @@ BASE_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal"
 USER_AGENT = "antigravity/1.5.0 linux/arm64"
 CLIENT_METADATA = {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}
 THINKING_LEVELS = ("low", "medium", "high")
+NO_THINKING_EFFORTS = ("none", "minimal")
 THINKING_MAX_OUTPUT_TOKENS = 65536
 
 _PROJECTS: dict[str, str] = {}
@@ -44,11 +45,15 @@ class AntigravityHTTPError(RuntimeError):
 def resolve_model(
     requested: str, catalog: frozenset[str], reasoning_effort: str | None
 ) -> tuple[str, str | None]:
+    effort_level = (
+        reasoning_effort if reasoning_effort in THINKING_LEVELS
+        else "low" if reasoning_effort in NO_THINKING_EFFORTS else None
+    )
     if requested in catalog:
-        return requested, reasoning_effort if reasoning_effort in THINKING_LEVELS else None
+        return requested, effort_level
     match = re.fullmatch(r"(gemini-[0-9.]+-flash)-(low|medium|high)", requested)
     if match and f"{match[1]}-tiered" in catalog:
-        return f"{match[1]}-tiered", match[2]
+        return f"{match[1]}-tiered", effort_level or match[2]
     return requested, None
 
 

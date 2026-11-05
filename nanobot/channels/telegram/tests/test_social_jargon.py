@@ -96,7 +96,8 @@ def expose(runtime):
     runtime.store.note_seen(A.session_key, 'turn', encode_view(view))
 
 
-async def test_public_meme_verified_only_from_read_body_and_not_searched_again(env):
+@pytest.mark.parametrize('fenced', [False, True])
+async def test_public_meme_verified_only_from_read_body_and_not_searched_again(env, fenced):
     runtime, provider, search, fetch, clock = env
     add(runtime)
     url = 'https://example.org/meme'
@@ -106,6 +107,11 @@ async def test_public_meme_verified_only_from_read_body_and_not_searched_again(e
     fetch.return_value = json.dumps({'url':url,'status':200,'extractor':'readability','text':body})
     provider.chat.side_effect = [response(discover()), LLMResponse(content=json.dumps({'findings':[dict(term='栓Q', public_meaning='thank you 的谐音，用于无奈或无语', usage='轻松吐槽时可用',
         citations=[{'url':url,'quote':quote}], uncertain=False,safe_to_use=True,conflict=False)]},ensure_ascii=False))]
+    if fenced:
+        provider.chat.side_effect = [
+            LLMResponse(content=f'```json\n{item.content}\n```')
+            for item in provider.chat.side_effect
+        ]
     batch = await run(runtime)
     assert batch['status']=='succeeded' and batch['search_calls']==batch['fetch_calls']==1 and batch['model_calls']==2
     entry = runtime.jargon.jargon.entries(A.session_key)[0]
