@@ -327,7 +327,7 @@ def native_paths(prefix: list[dict[str, Any]], assets: dict[str, Any], source_db
 
 async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, Any], frozen: dict[str, Any],
                      args: argparse.Namespace, segment: dict[str, Any], target: int, arm: str, delegate: LLMProvider,
-                     selector_delegate: LLMProvider, *, variant: str = '', training_dir: Path | None = None,
+                     *, variant: str = '', training_dir: Path | None = None,
                      library_empty: bool = False) -> dict[str, Any]:
     alias=segment['scope']
     scope=SCOPES[alias]
@@ -351,8 +351,6 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
     clock=[prefix[-1]['at']+1]
     runtime=TelegramSocialRuntime(settings(config),root,MessageBus(),now=lambda:clock[0])
     measured=MeasuredProvider(delegate)
-    selected=MeasuredProvider(selector_delegate)
-    runtime.selector.provider,runtime.selector.model=selected,selector_delegate.get_default_model()
     trace=[]
     published=[]
     ordinary_texts=[]
@@ -447,7 +445,7 @@ async def replay_one(config: Config, corpus: dict[str, Any], assets: dict[str, A
             'input':prefix[-1]['text'],'source_prefix':[[m['message_id'],m['revision']] for m in prefix],
             'native_media_message_ids':[m['message_id'] for m in prefix if raw_media(assets,m['message_id'],args.source_db)],
             'actions':actions,'ordinary_receipts':ordinary,'confirmed_text_parts':texts,'confirmed_stickers':[{'id':s,'note':notes.get(s,'')} for s in sticker_ids],
-            'main_calls':measured.calls,'selector_calls':selected.calls,'selection_stats':selections,'selection_details':selection_details,
+            'main_calls':measured.calls,'selector_calls':[],'selection_stats':selections,'selection_details':selection_details,
             'tools':trace,'effective_contexts':hook.exposures,'elapsed_ms':round((time.monotonic()-started)*1000),
             'stop_reason':result.stop_reason,'error':result.error,'unsent_final':result.final_content,
             'automatic':{'has_confirmed_reply':bool(texts or sticker_ids),'unrelated_catchphrase':target not in RELATED and any(w in text.casefold() for w in CATCHPHRASES),
@@ -475,14 +473,13 @@ async def evaluate(args: argparse.Namespace) -> None:
     preset=config.resolve_preset()
     # The main preset/temperature are kept fixed. No eval-specific role examples.
     main=make_provider(config,preset=preset)
-    selector,_=make_expression_provider(config,settings(config).learning.selection)
     semaphore=asyncio.Semaphore(args.concurrency)
     async def one(segment: dict[str,Any],target: int,arm: str) -> dict[str,Any]:
         path=args.output/'results'/f'{arm}-{target}.json'
         if path.exists() and not args.rerun:
             return read_json(path)
         async with semaphore:
-            return await replay_one(config,corpus,assets,frozen,args,segment,target,arm,main,selector)
+            return await replay_one(config,corpus,assets,frozen,args,segment,target,arm,main)
     jobs=[]
     # Rotate arm order by target; do not let time-of-run always favor Full V5.
     for segment in corpus['evaluation']:

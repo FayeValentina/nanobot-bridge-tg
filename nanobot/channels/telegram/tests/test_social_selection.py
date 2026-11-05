@@ -1,22 +1,17 @@
-"""V5-D bounded selection, receipt facts and the actual main-agent hook path."""
-import asyncio
+"""Local optional retrieval, receipt facts and the actual main-agent hook path."""
 import json
-import time
 from copy import deepcopy
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from loguru import logger
 
 from nanobot.bus.events import DeliveryReceipt
 from nanobot.channels.telegram.social.models import MediaReference
 from nanobot.channels.telegram.social.runtime import encode_view
-from nanobot.channels.telegram.social.selection import Choice
 from nanobot.channels.telegram.tests.test_social_memory import apply, expose
 from nanobot.channels.telegram.tests.test_social_runtime import A, B, agent, message, social, wake
-from nanobot.config.schema import Config
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.providers.base import LLMResponse, ToolCallRequest
 
 __all__ = ['social']
 
@@ -34,14 +29,6 @@ def seed(runtime):
         for i in range(125):
             ref = MediaReference(kind='sticker', file_id=f'file-{i}', unique_id=f's-{i}')
             runtime.store.stickers.collect(A.session_key, ref, f'场景{i}：' + ('得意 自信 调侃 嘴硬 领先' if i == 124 else '困倦 睡觉 晚安'), 500)
-    provider = AsyncMock(spec=LLMProvider)
-    async def choose(**kwargs):
-        data = json.loads(kwargs['messages'][1]['content'])
-        selected = {c['kind']: c['id'] for c in reversed(data['candidates'])}
-        return LLMResponse(content=json.dumps({'expressions':[selected['expression']], 'jargon':[selected['jargon']], 'stickers':[selected['sticker']], 'reason':'互相调侃且提到了蓝票'}))
-    provider.chat.side_effect = choose
-    runtime.selector.provider, runtime.selector.model = provider, 'selector-test'
-    return provider
 
 
 def view(runtime, turn='turn', text='蓝票这回领先了哈哈', mid=1):
@@ -49,137 +36,109 @@ def view(runtime, turn='turn', text='蓝票这回领先了哈哈', mid=1):
     return runtime.store.view(A.session_key, count=30, chars=12000, turn_id=turn)
 
 
-async def test_scope_scene_keyword_pool_caps_and_same_turn_cache(social):
-    provider = seed(social)
+def test_scope_scene_keyword_pool_caps_and_same_turn_cache(social, monkeypatch):
+    seed(social)
     view(social)
-    selected = await social.selector.select(A.session_key, 'turn')
+    record = Mock(wraps=social.store.learning.record_selection)
+    monkeypatch.setattr(social.store.learning, 'record_selection', record)
+    selected = social.selector.select(A.session_key, 'turn')
     assert [(x.kind, x.entry_id) for x in selected] == [('expression','e-a'),('jargon','j-a'),('sticker','s-124')]
-    payload = json.loads(provider.chat.call_args.kwargs['messages'][1]['content'])
-    assert len(payload['candidates']) <= 10 + 20 + 40
-    assert not any(c['id'].endswith('-b') for c in payload['candidates'])
-    assert '领先' in [c for c in payload['candidates'] if c['kind']=='sticker'][0]['note']
-    assert await social.selector.select(A.session_key,'turn') == selected
-    assert provider.chat.await_count == 1
+    assert social.selector.select(A.session_key, 'turn') is selected
+    assert record.call_count == 1
+    detail = record.call_args.kwargs
+    assert detail['target_message_id'] == 1
+    assert detail['calls'] == detail['input_tokens'] == detail['output_tokens'] == 0
+    assert detail['latency_ms'] >= 0
+    assert detail['explanation'] == {
+        'input_messages': [[1, 1]],
+        'candidates': [{'kind': c.kind, 'id': c.entry_id, 'selected': True} for c in selected],
+    }
     row = social.store.db.execute('SELECT calls,candidate_count,status FROM expression_turns').fetchone()
-    assert row['calls'] == 1 and row['candidate_count'] <= 70 and row['status']=='selected'
-    assert social.store.learning.status(A.session_key)['recent_selections'][-1]['candidates']
+    assert tuple(row) == (0, 3, 'retrieved')
     assert social.store.scopes.state(A.session_key)['seen_through'] == social.store.scopes.state(A.session_key)['read_through'] == 0
 
 
-async def test_actual_unclaimed_snapshot_selected_before_it_is_marked_seen(social):
-    provider = seed(social)
+def test_actual_unclaimed_snapshot_selected_before_it_is_marked_seen(social):
+    seed(social)
     data = view(social)
     social.store.db.execute("UPDATE views SET turn_id=NULL")
-    assert await social.selector.select(A.session_key,'turn',encode_view(data))
-    assert provider.chat.await_count == 1
+    assert social.selector.select(A.session_key, 'turn', encode_view(data))
     assert social.store.db.execute('SELECT seen FROM views').fetchone()[0] == 0
 
 
-@pytest.mark.parametrize('change', ['message_edit','new_message','entry_revision','disabled','sticker_note','config','scope','provider_config'])
-async def test_changed_values_reuse_first_selection_without_second_call(social, change):
-    provider = seed(social)
+@pytest.mark.parametrize('change', ['message_edit','new_message','entry_revision','disabled','sticker_note','config','scope'])
+def test_changed_values_reuse_first_selection_without_second_record(social, change):
+    seed(social)
     view(social)
-    selected = await social.selector.select(A.session_key,'turn')
+    selected = social.selector.select(A.session_key, 'turn')
     assert selected
-    if change=='message_edit':
-        social.store.observe(replace(message(text='现在认真求助'),update_id=101,is_edit=True),500)
-    elif change=='new_message':
-        view(social,mid=2,text='认真求助')
-    elif change=='entry_revision':
+    if change == 'message_edit':
+        social.store.observe(replace(message(text='现在认真求助'), update_id=101, is_edit=True), 500)
+    elif change == 'new_message':
+        view(social, mid=2, text='认真求助')
+    elif change == 'entry_revision':
         social.store.db.execute("UPDATE expressions SET revision=revision+1")
-    elif change=='disabled':
+    elif change == 'disabled':
         social.store.db.execute("UPDATE expressions SET status='disabled'")
-    elif change=='sticker_note':
-        social.store.stickers.annotate(A.session_key,{'s-124':'严肃的另一张图'})
-    elif change=='scope':
-        social.store.bind(A,'another-version')
-    elif change=='provider_config':
-        social.selector.configure_provider(Config())
+    elif change == 'sticker_note':
+        social.store.stickers.annotate(A.session_key, {'s-124':'严肃的另一张图'})
+    elif change == 'scope':
+        social.store.bind(A, 'another-version')
     else:
         social.store.learning.configure(social.config.learning.model_copy(update={'selection_stickers':0}))
-    assert await social.selector.select(A.session_key,'turn') is selected
-    assert provider.chat.await_count == 1
+    assert social.selector.select(A.session_key, 'turn') is selected
+    assert social.store.db.execute('SELECT COUNT(*) FROM expression_turns').fetchone()[0] == 1
     assert 'reuse_status' not in social.store.learning.recent[A.session_key][-1]
 
 
-@pytest.mark.parametrize('content', ['not json', '', 'x' * 8001])
-async def test_invalid_content_degrades_to_empty_without_retry(social,content):
-    provider=seed(social)
+def test_zero_relevance_candidates_are_not_injected(social):
+    seed(social)
+    view(social, text='unrelated zebra')
+    assert social.expressions.library.candidates(A.session_key, ['zebra'], 10)
+    assert social.jargon.jargon.candidates(A.session_key, ['zebra'], social.now(), 20)
+    assert social.store.stickers.candidates(A.session_key, ['zebra'], 40)
+    assert social.selector.candidates(A.session_key, social.selector.input(A.session_key, 'turn')) == []
+    assert social.selector.select(A.session_key, 'turn') == []
+    assert tuple(social.store.db.execute('SELECT status,calls,candidate_count FROM expression_turns').fetchone()) == ('empty', 0, 0)
+
+
+@pytest.mark.parametrize('seeded', [False, True])
+def test_empty_library_or_irrelevant_help_has_empty_status(social, seeded):
+    if seeded:
+        seed(social)
+    view(social, text='认真求助：这份结果应该怎么理解？')
+    assert social.selector.select(A.session_key, 'turn') == []
+    assert tuple(social.store.db.execute('SELECT status,calls FROM expression_turns').fetchone()) == ('empty', 0)
+
+
+@pytest.mark.parametrize('unavailable', ['disabled', 'no_source'])
+def test_disabled_or_unavailable_status(social, unavailable):
+    seed(social)
+    if unavailable == 'disabled':
+        view(social)
+        social.config.learning.enabled = False
+    assert social.selector.select(A.session_key, 'turn') == []
+    assert tuple(social.store.db.execute('SELECT status,calls FROM expression_turns').fetchone()) == ('disabled_or_unavailable', 0)
+
+
+@pytest.mark.parametrize('kind', ['expression', 'jargon', 'sticker'])
+def test_inactive_or_changed_candidate_is_filtered(social, monkeypatch, kind):
+    seed(social)
     view(social)
-    provider.chat.side_effect=None
-    provider.chat.return_value=LLMResponse(content=content)
-    assert await social.selector.select(A.session_key,'turn') == []
-    assert await social.selector.select(A.session_key,'turn') == []
-    assert provider.chat.await_count == 1
-    assert social.store.db.execute('SELECT status FROM expression_turns').fetchone()[0]=='error'
-
-
-async def test_timeout_is_hard_even_if_adapter_swallows_cancellation(social):
-    provider=seed(social)
-    view(social)
-    social.config.learning.selection_timeout_seconds=.05
-    release=asyncio.Event()
-    async def stuck(**kwargs):
-        try:
-            await release.wait()
-        except asyncio.CancelledError:
-            await release.wait()
-        return LLMResponse(content='{"stickers":["s-124"]}')
-    provider.chat.side_effect=stuck
-    start=time.monotonic()
-    assert await social.selector.select(A.session_key,'turn')==[]
-    assert time.monotonic()-start < .3
-    assert social.store.db.execute('SELECT status FROM expression_turns').fetchone()[0]=='timeout'
-    release.set()
-    await asyncio.sleep(.01)
-    assert not social.store.db.execute('SELECT 1 FROM expression_selections').fetchone()
-    assert provider.chat.await_count==1
-
-
-async def test_no_model_for_empty_library_and_empty_is_valid_for_serious_help(social):
-    provider=AsyncMock(spec=LLMProvider)
-    social.selector.provider=provider
-    view(social,text='认真求助：这份结果应该怎么理解？')
-    assert await social.selector.select(A.session_key,'turn')==[]
-    provider.chat.assert_not_awaited()
-    assert social.store.db.execute('SELECT calls FROM expression_turns').fetchone()[0]==0
-    provider=seed(social)
-    view(social,turn='serious',mid=2,text='认真求助：这份结果应该怎么理解？')
-    provider.chat.side_effect=None
-    provider.chat.return_value=LLMResponse(content='{"reason":"认真求助，无需玩梗"}')
-    assert await social.selector.select(A.session_key,'serious')==[]
-    assert social.store.db.execute("SELECT status FROM expression_turns WHERE turn_id='serious'").fetchone()[0]=='empty'
-
-
-async def test_inflight_inactive_entry_is_dropped(social):
-    provider=seed(social)
-    view(social)
-    async def response(**kwargs):
+    pool = social.selector.candidates(A.session_key, social.selector.input(A.session_key, 'turn'))
+    monkeypatch.setattr(social.selector, 'candidates', lambda *_: pool)
+    if kind == 'expression':
         social.store.db.execute("UPDATE expressions SET status='disabled'")
-        return LLMResponse(content='{"expressions":["e0"]}')
-    provider.chat.side_effect=response
-    assert await social.selector.select(A.session_key,'turn')==[]
-    assert not social.store.db.execute('SELECT 1 FROM expression_selections').fetchone()
+    elif kind == 'jargon':
+        social.store.db.execute('UPDATE jargon SET revision=revision+1')
+    else:
+        social.store.stickers.annotate(A.session_key, {'s-124': '另一张图'})
+    selected = social.selector.select(A.session_key, 'turn')
+    assert selected == [c for c in pool if c.kind != kind]
+    assert not any(c.kind == kind for c in selected)
     detail = social.store.learning.recent[A.session_key][-1]
-    assert detail['status'] == 'empty' and detail['dropped'] == 1
-
-
-@pytest.mark.parametrize('change', ['message', 'scope', 'config'])
-async def test_inflight_input_changes_keep_selection(social, change):
-    provider = seed(social)
-    view(social)
-    async def response(**kwargs):
-        if change == 'message':
-            view(social, mid=2, text='新话题')
-        elif change == 'scope':
-            social.store.bind(A, 'another-version')
-        else:
-            social.store.learning.configure(social.config.learning.model_copy(update={'selection_chars': 2000}))
-        return LLMResponse(content='{"stickers":["s2"]}')
-    provider.chat.side_effect = response
-    chosen = await social.selector.select(A.session_key, 'turn')
-    assert [(c.kind, c.entry_id) for c in chosen] == [('sticker', 's-124')]
-    assert provider.chat.await_count == 1
+    assert detail['status'] == 'retrieved'
+    assert next(c for c in detail['candidates'] if c['kind'] == kind)['selected'] is False
 
 
 def test_recent_usage_is_sent_only_all_paths_grouped_by_turn(social):
@@ -232,7 +191,7 @@ def test_pending_is_separate_and_does_not_rank_from_member_or_active_bonus(socia
 
 
 async def test_end_to_end_sticker_without_search_receipt_and_transient_prompt(tmp_path,social):
-    selector=seed(social)
+    seed(social)
     calls=[]
     social.delivery.sticker_sender=AsyncMock(return_value=500)
     loop=agent(tmp_path,social,[])
@@ -244,7 +203,7 @@ async def test_end_to_end_sticker_without_search_receipt_and_transient_prompt(tm
         return LLMResponse(content='')
     loop.provider.chat_stream_with_retry=AsyncMock(side_effect=model)
     await loop._dispatch(await wake(social,text='蓝票这回领先了哈哈'))
-    assert selector.chat.await_count==1
+    assert social.store.db.execute('SELECT calls FROM expression_turns').fetchone()[0] == 0
     assert social.selector.cache == {}
     first=str(calls[0]['messages'])
     assert 'optional_expression_references' in first and 's-124' in first
@@ -259,42 +218,45 @@ async def test_end_to_end_sticker_without_search_receipt_and_transient_prompt(tm
     assert social.selector.recent_usage(A.session_key)['turns'][0]['stickers']==['s-124']
 
 
-async def test_timeout_and_provider_error_do_not_block_main_text_generation(tmp_path,social):
+async def test_empty_retrieval_does_not_block_main_text_generation(tmp_path, social):
     social.config.learning.catchphrases = ["本大爷", "白饭", "Token", "算力"]
-    selector=seed(social)
-    selector.chat.side_effect=RuntimeError('offline')
+    seed(social)
     social.set_sender(AsyncMock(return_value=601))
-    loop=agent(tmp_path,social,[
-        LLMResponse(content=None,tool_calls=[ToolCallRequest(id='answer',name='social_send',arguments={'text':'Token 用量要看实际账单；我这里看不到。'})]),
+    loop = agent(tmp_path, social, [
+        LLMResponse(content=None, tool_calls=[ToolCallRequest(id='answer', name='social_send', arguments={'text':'Token 用量要看实际账单；我这里看不到。'})]),
         LLMResponse(content=''),
     ])
-    await loop._dispatch(await wake(social,text='Token 用量在哪看？'))
-    assert selector.chat.await_count==1
-    assert social.delivery.sender.await_count==1
+    await loop._dispatch(await wake(social, text='Token 用量在哪看？'))
+    assert social.delivery.sender.await_count == 1
     assert 'Token' in social.delivery.sender.call_args.args[1]
-    assert social.store.db.execute('SELECT status FROM expression_turns').fetchone()[0]=='error'
-    assert social.selector.recent_usage(A.session_key)['catchphrases']=={'Token':1}
+    assert tuple(social.store.db.execute('SELECT status,calls FROM expression_turns').fetchone()) == ('empty', 0)
+    assert social.selector.recent_usage(A.session_key)['catchphrases'] == {'Token':1}
 
 
-async def test_restart_without_cache_cannot_make_a_second_call(social):
-    provider=seed(social)
+def test_restart_without_cache_cannot_record_a_second_selection(social, monkeypatch):
+    seed(social)
     view(social)
-    assert await social.selector.select(A.session_key,'turn')
+    assert social.selector.select(A.session_key, 'turn')
     social.selector.cache.clear()
-    assert await social.selector.select(A.session_key,'turn')==[]
-    assert provider.chat.await_count==1
+    source = Mock(side_effect=AssertionError('persisted selection must short circuit input'))
+    monkeypatch.setattr(social.selector, 'input', source)
+    assert social.selector.select(A.session_key, 'turn') == []
+    source.assert_not_called()
+    assert social.store.db.execute('SELECT COUNT(*) FROM expression_turns').fetchone()[0] == 1
 
 
-async def test_prompt_character_budget_and_final_caps(social):
-    provider=seed(social)
+def test_prompt_character_budget_and_final_caps(social):
+    seed(social)
     view(social)
-    social.config.learning.selection_chars=500
-    chosen=await social.selector.select(A.session_key,'turn')
-    payload=social.selector.context(chosen)
-    assert len(json.dumps(payload,ensure_ascii=False))<=500
-    assert len(payload['expressions'])<=3 and len(payload['jargon'])<=5 and len(payload['stickers'])<=5
-    assert len(chosen)==sum(map(len,payload.values()))
-    assert provider.chat.await_count==1
+    social.config.learning.selection_chars = 500
+    social.store.db.execute("UPDATE jargon SET local_meaning=?", ('临时加场' * 90,))
+    chosen = social.selector.select(A.session_key, 'turn')
+    payload = social.selector.context(chosen)
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 500
+    assert 0 < len(chosen) < 3
+    assert len(chosen) == sum(map(len, payload.values()))
+    assert social.store.db.execute('SELECT COUNT(*) FROM expression_selections').fetchone()[0] == len(chosen)
+    assert social.store.learning.recent[A.session_key][-1]['status'] == 'retrieved'
 
 
 def test_exact_incoming_sticker_notes_are_scope_and_revision_bound(social):
@@ -312,89 +274,37 @@ def test_exact_incoming_sticker_notes_are_scope_and_revision_bound(social):
     assert social.selector.input(A.session_key,'visual')[0].known_sticker_notes==[]
 
 
-@pytest.mark.parametrize('exception,level,status', [
-    (TimeoutError('slow'), 'INFO', 'timeout'), (RuntimeError('boom'), 'WARNING', 'error'),
-])
-async def test_selector_failure_logs_and_keeps_single_call_cache(social, exception, level, status):
-    provider = seed(social)
+def test_retrieval_order_is_truncated_to_each_kind_limit(social):
+    seed(social)
+    db = social.store.db
+    with db:
+        for index in range(4):
+            db.execute("INSERT INTO expressions(id,scope,situation,expression,status,scene_tags,intent_category,created,updated) SELECT ?,scope,situation,expression,status,scene_tags,intent_category,created,updated FROM expressions WHERE id='e-a'", (f'e-extra-{index}',))
+            db.execute("INSERT INTO jargon(id,scope,content,status,basis,revision,created,updated,term,local_meaning) SELECT ?,scope,content,status,basis,revision,created,updated,term,local_meaning FROM jargon WHERE id='j-a'", (f'j-extra-{index}',))
+            ref = MediaReference(kind='sticker', file_id=f'extra-{index}', unique_id=f's-extra-{index}')
+            social.store.stickers.collect(A.session_key, ref, '哈哈 调侃 嘴硬 领先', 500)
     view(social)
-    provider.chat.side_effect = exception
-    records = []
-    sink = logger.add(lambda message: records.append(message.record))
-    try:
-        assert await social.selector.select(A.session_key, 'turn') == []
-        assert await social.selector.select(A.session_key, 'turn') == []
-    finally:
-        logger.remove(sink)
-    record = next(r for r in records if 'Social selector scope=' in r['message'])
-    assert record['level'].name == level
-    assert (record['exception'] is not None) == (level == 'WARNING')
-    assert A.session_key in record['message'] and 'turn=turn' in record['message']
-    assert social.store.db.execute('SELECT status FROM expression_turns').fetchone()[0] == status
-    assert provider.chat.await_count == 1
+    social.config.learning.selection_expressions = 2
+    social.config.learning.selection_jargon = 2
+    social.config.learning.selection_stickers = 2
+    pool = social.selector.candidates(A.session_key, social.selector.input(A.session_key, 'turn'))
+    chosen = social.selector.select(A.session_key, 'turn')
+    for kind in ('expression', 'jargon', 'sticker'):
+        assert len([c for c in pool if c.kind == kind]) > 2
+        assert [c for c in chosen if c.kind == kind] == [c for c in pool if c.kind == kind][:2]
 
 
-@pytest.mark.parametrize('content,dropped,expected', [
-    ('{"jargon":[{"id":"j1","note":"x"}],"stickers":["s2"]}', 0, [('jargon', 'j-a'), ('sticker', 's-124')]),
-    ('{"jargon":["not-provided"],"stickers":["s2"]}', 1, [('sticker', 's-124')]),
-    ('{"jargon":["s2"],"stickers":["s2"]}', 1, [('sticker', 's-124')]),
-    ('{"expressions":["e0","e0","e0","e0"],"extra":true}', 0, [('expression', 'e-a')]),
-    ('{"jargon":[{}, {"id":7}],"stickers":[{"id":"s2"}]}', 0, [('sticker', 's-124')]),
-])
-async def test_tolerant_selection_keeps_valid_candidates(social, content, dropped, expected):
-    provider = seed(social)
+def test_cache_is_bounded_to_100_turns(social):
+    for index in range(101):
+        social.selector.select(A.session_key, f'turn-{index}')
+    assert len(social.selector.cache) == 100
+    assert (A.session_key, 'turn-0') not in social.selector.cache
+    assert (A.session_key, 'turn-100') in social.selector.cache
+
+
+def test_record_selection_write_error_propagates(social, monkeypatch):
+    seed(social)
     view(social)
-    provider.chat.side_effect = None
-    provider.chat.return_value = LLMResponse(content=content)
-    chosen = await social.selector.select(A.session_key, 'turn')
-    assert [(c.kind, c.entry_id) for c in chosen] == expected
-    detail = social.store.learning.recent[A.session_key][-1]
-    assert detail['status'] == 'selected' and detail['dropped'] == dropped
-    assert provider.chat.await_count == 1
-
-
-@pytest.mark.parametrize('log_line,content', [
-    (208, '{"expressions":[],"jargon":[{"id":"j1","note":"codex"}],"stickers":["s2"],"reason":"算力/用量吐槽"}'),
-    (425, '{"expressions":[],"jargon":[{"id":"j1","note":"codex"}],"stickers":["s2"],"reason":"算力/用量吐槽"}'),
-])
-async def test_recorded_validation_errors_keep_sticker_selection(social, log_line, content):
-    # Exact response.content from /tmp/p7/container-72h.log; both pools were sticker-only.
-    provider = seed(social)
-    social.config.learning.selection_expressions = 0
-    social.config.learning.selection_jargon = 0
-    view(social, turn=f'log-{log_line}')
-    pool = social.selector.candidates(A.session_key, social.selector.input(A.session_key, f'log-{log_line}'))
-    assert Choice.model_validate_json(content).ids('stickers') == ['s2']
-    provider.chat.side_effect = None
-    provider.chat.return_value = LLMResponse(content=content)
-    chosen = await social.selector.select(A.session_key, f'log-{log_line}')
-    payload = json.loads(provider.chat.call_args.kwargs['messages'][1]['content'])
-    assert {c['kind'] for c in payload['candidates']} == {'sticker'}
-    assert chosen == [pool[2]]
-    detail = social.store.learning.recent[A.session_key][-1]
-    assert detail['status'] == 'selected' and detail['dropped'] == 1
-
-
-@pytest.mark.parametrize('finish_reason,tool_calls', [
-    ('length', []), ('stop', [ToolCallRequest(id='x', name='message', arguments={})]),
-])
-async def test_invalid_envelope_stays_error(social, finish_reason, tool_calls):
-    provider = seed(social)
-    view(social)
-    provider.chat.side_effect = None
-    provider.chat.return_value = LLMResponse(content='{"stickers":["s2"]}', finish_reason=finish_reason, tool_calls=tool_calls)
-    assert await social.selector.select(A.session_key, 'turn') == []
-    assert social.store.learning.recent[A.session_key][-1]['status'] == 'error'
-
-
-async def test_valid_choices_are_truncated_to_selection_limit(social):
-    provider = seed(social)
-    view(social)
-    source = social.selector.input(A.session_key, 'turn')
-    pool = social.selector.candidates(A.session_key, source)
-    refs = [f's{i}' for i, c in enumerate(pool) if c.kind == 'sticker'][:6]
-    provider.chat.side_effect = None
-    provider.chat.return_value = LLMResponse(content=json.dumps({'stickers': refs}))
-    chosen = await social.selector.select(A.session_key, 'turn')
-    assert chosen == [pool[int(ref[1:])] for ref in refs[:social.config.learning.selection_stickers]]
-    assert social.store.learning.recent[A.session_key][-1]['dropped'] == 0
+    monkeypatch.setattr(social.store.learning, 'record_selection', Mock(side_effect=RuntimeError('write failed')))
+    with pytest.raises(RuntimeError, match='write failed'):
+        social.selector.select(A.session_key, 'turn')

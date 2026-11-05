@@ -108,7 +108,6 @@ class TelegramSocialRuntime:
             self.scheduler.cancel()
             self.judging.cancel()
             self.learning.cancel()
-            self.selector.cancel()
             self.store.close()
             self._closed = True
 

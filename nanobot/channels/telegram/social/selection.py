@@ -1,7 +1,6 @@
-"""One bounded, optional expression/jargon/sticker selection before generation."""
+"""Local optional expression/jargon/sticker references, without model calls."""
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -10,21 +9,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.channels.telegram.social.db.views import complete_view_ids
-from nanobot.channels.telegram.social.expressions import (
-    ExpressionLibrary,
-    make_expression_provider,
-    redacted_error_detail,
-)
+from nanobot.channels.telegram.social.expressions import ExpressionLibrary
 from nanobot.channels.telegram.social.jargon import JargonLibrary
-from nanobot.channels.telegram.social.models import MediaReference, strip_json_fence
+from nanobot.channels.telegram.social.models import MediaReference
 from nanobot.channels.telegram.social.store import SocialStore
-from nanobot.config.schema import Config, TelegramSocialConfig
-from nanobot.providers.base import LLMProvider
-from nanobot.utils.prompt_templates import render_template
+from nanobot.config.schema import TelegramSocialConfig
 
 
 class TurnMessage(BaseModel):
@@ -43,19 +35,6 @@ class TurnMessage(BaseModel):
 class SelectionInput(BaseModel):
     model_config = ConfigDict(extra="ignore")
     messages: list[TurnMessage] = Field(default_factory=list)
-
-
-class Choice(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    expressions: list[str | dict[str, object]] = Field(default_factory=list)
-    jargon: list[str | dict[str, object]] = Field(default_factory=list)
-    stickers: list[str | dict[str, object]] = Field(default_factory=list)
-    reason: str = ""
-
-    def ids(self, field: str) -> list[str]:
-        items: list[str | dict[str, object]] = getattr(self, field)
-        return [value for item in items
-                if isinstance(value := item if isinstance(item, str) else item.get("id"), str)]
 
 
 @dataclass(frozen=True)
@@ -111,23 +90,7 @@ class ContextSelector:
         self.expressions, self.jargon = expressions, jargon
         self.config = config
         self.now = now
-        self.provider: LLMProvider | None = None
-        self.model = ""
-        self.prompt = render_template("telegram/social_expression_selection.md")
         self.cache: OrderedDict[tuple[str, str], TurnSelection] = OrderedDict()
-        self.locks: dict[str, asyncio.Lock] = {}
-        self.tasks: set[asyncio.Task[object]] = set()
-
-    def configure_provider(self, config: Config) -> None:
-        try:
-            self.provider, self.model = make_expression_provider(config, self.config().learning.selection)
-        except Exception as exc:
-            logger.warning("Social selector provider configuration failed: {}", redacted_error_detail(exc))
-            self.provider, self.model = None, ""
-
-    def cancel(self) -> None:
-        for task in self.tasks:
-            task.cancel()
 
     def input(self, scope: str, turn: str, model_text: str = "") -> list[TurnMessage]:
         rows = self.store.views.turn_bodies(scope, turn)
@@ -170,7 +133,7 @@ class ContextSelector:
             else:
                 rows = self.store.stickers.candidates(scope, needles, limit)
             result.extend(Candidate(kind, str(row["id"]), int(row["revision"]),
-                {name: str(row[name])[:400] for name in row.keys() if name not in {"id", "revision", "relevance", "variety"}}) for row in rows)
+                {name: str(row[name])[:400] for name in row.keys() if name not in {"id", "revision", "relevance", "variety"}}) for row in rows if row["relevance"] != 0)
         return result
 
     def current(self, scope: str, candidate: Candidate) -> bool:
@@ -186,98 +149,41 @@ class ContextSelector:
     def forget(self, scope: str, turn: str) -> None:
         self.cache.pop((scope, turn), None)
 
-    async def select(self, scope: str, turn: str, model_text: str = "") -> list[Candidate]:
-        async with self.locks.setdefault(scope, asyncio.Lock()):
-            key = (scope, turn)
-            if (previous := self.cache.get(key)) is not None:
-                return previous.selected
-            source = self.input(scope, turn, model_text)
-            store = self.store
-            cached = TurnSelection()
-            self.cache[key] = cached
-            while len(self.cache) > 100:
-                self.cache.popitem(last=False)
-            if store.learning.has_selection(*key):
-                return []  # Restart/eviction never buys a second call in this turn.
-            started = time.monotonic()
-            pool: list[Candidate] = []
-            calls = input_tokens = output_tokens = dropped = 0
-            reason = ""
-            task = None
-            try:
-                if not self.config().learning.enabled or self.provider is None or not source:
-                    cached.status = "disabled_or_unavailable"
-                else:
-                    pool = self.candidates(scope, source)
-                    if pool:
-                        calls = 1
-                        references = {f"{c.kind[0]}{i}": c for i, c in enumerate(pool)}
-                        payload = json.dumps({"conversation": [m.model_dump() for m in source],
-                            "candidates": [{"kind": c.kind, "id": ref, **c.data} for ref, c in references.items()]}, ensure_ascii=False)
-                        # asyncio.wait returns at the deadline even if an adapter
-                        # swallows cancellation. Late results have no store/cache writes.
-                        task = asyncio.create_task(self.provider.chat(
-                            messages=[{"role": "system", "content": self.prompt}, {"role": "user", "content": payload}],
-                            tools=None, tool_choice="none", model=self.model, temperature=0,
-                            reasoning_effort="none",
-                            max_tokens=min(768, self.config().learning.selection.max_tokens)))
-                        self.tasks.add(task)
-                        def finished(done: asyncio.Task[object]) -> None:
-                            self.tasks.discard(done)
-                            if not done.cancelled():
-                                done.exception()
-                        task.add_done_callback(finished)
-                        remaining = self.config().learning.selection_timeout_seconds - (time.monotonic() - started)
-                        done, _ = await asyncio.wait({task}, timeout=max(0, remaining))
-                        if not done:
-                            task.cancel()
-                            raise TimeoutError
-                        response = task.result()
-                        input_tokens = response.usage.input_tokens if response.usage else 0
-                        output_tokens = response.usage.output_tokens if response.usage else 0
-                        if response.finish_reason != "stop" or response.tool_calls or not response.content or len(response.content) > 8000:
-                            raise ValueError("invalid selection")
-                        choice = Choice.model_validate_json(strip_json_fence(response.content))
-                        reason = choice.reason
-                        selected: list[Candidate] = []
-                        for kind, ids, limit in [("expression", choice.ids("expressions"), self.config().learning.selection_expressions),
-                                                 ("jargon", choice.ids("jargon"), self.config().learning.selection_jargon),
-                                                 ("sticker", choice.ids("stickers"), self.config().learning.selection_stickers)]:
-                            choices: list[Candidate] = []
-                            for identity in dict.fromkeys(ids):
-                                item = references.get(identity)
-                                if item is None or item.kind != kind or not self.current(scope, item):
-                                    dropped += 1
-                                    continue
-                                choices.append(item)
-                            selected.extend(choices[:limit])
-                        bounded = self.context(selected)
-                        included = {str(item["id"]) for entries in bounded.values() for item in entries}
-                        cached.selected = [item for item in selected if item.entry_id in included]
-                        cached.status = "selected" if selected else "empty"
-            except asyncio.CancelledError:
-                if task is not None:
-                    task.cancel()
-                raise
-            except TimeoutError:
-                logger.info("Social selector scope={} turn={} error=timeout", scope, turn)
-                cached.status = "timeout"
-            except Exception as exc:
-                logger.opt(exception=True).warning("Social selector scope={} turn={} error=selection_exception: {}", scope, turn, redacted_error_detail(exc))
-                cached.status = "error"
-            try:
-                store.learning.record_selection(scope, turn, target_message_id=next((m.message_id for m in reversed(source) if not m.is_self), None),
-                    candidates=len(pool), selected=[(c.kind, c.entry_id, c.revision) for c in cached.selected],
-                    status=cached.status, calls=calls, input_tokens=input_tokens, output_tokens=output_tokens,
-                    latency_ms=int((time.monotonic() - started) * 1000),
-                    explanation={"dropped": dropped, "reason": reason, "model": self.model, "input_tokens": input_tokens,
-                                 "output_tokens": output_tokens, "input_messages": [[m.message_id, m.revision] for m in source],
-                                 "candidates": [{"kind": c.kind, "id": c.entry_id, "selected": c in cached.selected} for c in pool]})
-            except Exception as exc:
-                logger.opt(exception=True).warning("Social selector scope={} turn={} error=record_selection_exception: {}", scope, turn, redacted_error_detail(exc))
-                cached.selected = []
-                cached.status = "error"
-            return cached.selected
+    def select(self, scope: str, turn: str, model_text: str = "") -> list[Candidate]:
+        key = (scope, turn)
+        if (previous := self.cache.get(key)) is not None:
+            return previous.selected
+        if self.store.learning.has_selection(*key):
+            return []
+        started = time.monotonic()
+        source = self.input(scope, turn, model_text)
+        cached = TurnSelection()
+        self.cache[key] = cached
+        while len(self.cache) > 100:
+            self.cache.popitem(last=False)
+        pool: list[Candidate] = []
+        config = self.config().learning
+        if not config.enabled or not source:
+            cached.status = "disabled_or_unavailable"
+        else:
+            pool = self.candidates(scope, source)
+            selected: list[Candidate] = []
+            for kind, limit in [("expression", config.selection_expressions),
+                                ("jargon", config.selection_jargon),
+                                ("sticker", config.selection_stickers)]:
+                choices = [c for c in pool if c.kind == kind and self.current(scope, c)]
+                selected.extend(choices[:limit])
+            bounded = self.context(selected)
+            included = {str(item["id"]) for entries in bounded.values() for item in entries}
+            cached.selected = [item for item in selected if item.entry_id in included]
+            cached.status = "retrieved" if cached.selected else "empty"
+        self.store.learning.record_selection(scope, turn, target_message_id=next((m.message_id for m in reversed(source) if not m.is_self), None),
+            candidates=len(pool), selected=[(c.kind, c.entry_id, c.revision) for c in cached.selected],
+            status=cached.status, calls=0, input_tokens=0, output_tokens=0,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            explanation={"input_messages": [[m.message_id, m.revision] for m in source],
+                         "candidates": [{"kind": c.kind, "id": c.entry_id, "selected": c in cached.selected} for c in pool]})
+        return cached.selected
 
     def context(self, selected: list[Candidate]) -> dict[str, list[dict[str, str | int]]]:
         budget = self.config().learning.selection_chars

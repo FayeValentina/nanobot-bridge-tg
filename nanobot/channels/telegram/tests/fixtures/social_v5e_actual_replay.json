@@ -22424,20 +22424,11 @@
         "timeout_seconds": 30,
         "max_retries": 1
       },
-      "selection": {
-        "provider": null,
-        "model": null,
-        "max_tokens": 2048,
-        "timeout_seconds": 30,
-        "max_retries": 1
-      },
       "selection_expressions": 3,
       "selection_jargon": 5,
       "selection_stickers": 5,
       "selection_chars": 4000,
-      "selection_calls_per_turn": 1,
       "selection_history_turns": 25,
-      "selection_timeout_seconds": 2,
       "selection_sticker_candidates": 40,
       "recent_usage_turns": 6,
       "research_max_searches": 3,

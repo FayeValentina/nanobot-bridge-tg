@@ -51,7 +51,7 @@ class SocialContextBuilder:
 
     async def build(self, key: str, turn: str, transcript: str) -> list[RuntimeContextBlock]:
         """Live group memory index and, during an autonomous activity, its work note."""
-        selected = await self.selector.select(key, turn, transcript)
+        selected = self.selector.select(key, turn, transcript)
         source = self.selector.input(key, turn, transcript)
         body_data = json.loads(self.memory.context(
             key, include_jargon=False, turn_id=turn,

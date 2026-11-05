@@ -55,7 +55,6 @@ async def evaluate(args):
     source=source_assets(args.source_db,corpus)
     originals={m['message_id']:m for s in corpus['evaluation'] for m in s['messages']}
     main=make_provider(config,preset=config.resolve_preset())
-    selector,_=make_expression_provider(config,settings(config).learning.selection)
     reports=[]
     chosen=args.arm or list(ARMS)
 
@@ -68,7 +67,7 @@ async def evaluate(args):
                 item=copy.deepcopy(originals[mid])
                 history.append(item)
                 segment={'id':name,'scope':alias,'messages':history}
-                result=await replay_one(config,corpus,assets,frozen,args,segment,mid,arm,main,selector,
+                result=await replay_one(config,corpus,assets,frozen,args,segment,mid,arm,main,
                                         variant=name,library_empty=empty)
                 turns.append(result)
                 append_reply(history,result,assets,alias,stage,arm_index)
@@ -77,7 +76,7 @@ async def evaluate(args):
                 text='先不斗图了，我歇会儿，这条不用回。' if stop else '实验记录已归档，我先关电脑了。'
                 history.append(message(mid,text,max(m['at'] for m in history)+60 if history else 1793500000.))
                 result=await replay_one(config,corpus,assets,frozen,args,{'id':name,'scope':alias,'messages':history},mid,
-                                        arm,main,selector,variant=name,library_empty=empty)
+                                        arm,main,variant=name,library_empty=empty)
                 turns.append(result)
             return {'sequence':name,'arm':arm,'origin':'real_holdout_own_reply_continuation' if targets else 'explicit_synthetic_control',
                     'synthetic_stop':stop,'turns':turns}
@@ -119,7 +118,7 @@ async def evaluate(args):
             async def run_arm(index,arm):
                 histories[arm].append(copy.deepcopy(item))
                 result=await replay_one(config,corpus,assets_by_arm[arm],frozen,args,
-                    {'id':'jargon_correction','scope':'main','messages':histories[arm]},mid,arm,main,selector,
+                    {'id':'jargon_correction','scope':'main','messages':histories[arm]},mid,arm,main,
                     variant='jargon_correction',training_dir=base)
                 append_reply(histories[arm],result,assets_by_arm[arm],'main',stage,index)
                 return result

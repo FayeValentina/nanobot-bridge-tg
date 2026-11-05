@@ -16,7 +16,6 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.telegram_social import SOCIAL_TOOL_CLASSES
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.social.db.wakes import WakeReason
-from nanobot.channels.telegram.social.expressions import make_expression_provider
 from nanobot.channels.telegram.social.models import ConversationScope, ObservedMessage
 from nanobot.channels.telegram.social.runtime import SOCIAL_TOOLS, TelegramSocialRuntime
 from nanobot.config.loader import load_config
@@ -45,7 +44,6 @@ async def evaluate(config_path: Path, source_db: Path, output: Path) -> None:
     stickers=[dict(r) for r in connection.execute('SELECT * FROM stickers WHERE scope=?',(source_scope,))]
     connection.close()
     reports=[]
-    selection_provider, selection_model=make_expression_provider(config,TelegramSocialConfig().learning.selection)
     cases=[('banter','我啥也没干，怎么又赢了哈哈'),
            ('serious_help','认真求助：这段 Python 为什么报 IndexError？代码是 xs=[]; print(xs[0])。'),
            ('token_topic','这个月 Token 到底花了多少，你能看到实际账单吗？')]
@@ -59,7 +57,6 @@ async def evaluate(config_path: Path, source_db: Path, output: Path) -> None:
                 'scopes':[{'chatId':scope.chat_id,'threadId':scope.thread_id,'roleId':'guest'}]})
             bus=MessageBus()
             runtime=TelegramSocialRuntime(settings,root/'social',bus)
-            runtime.selector.provider, runtime.selector.model=selection_provider,selection_model
             delivered=[]
             async def sender(target, content, reply_to):
                 delivered.append({'content':content,'reply_to':reply_to})
@@ -106,11 +103,11 @@ async def evaluate(config_path: Path, source_db: Path, output: Path) -> None:
                     await runtime.delivery.retry_due()
                 stats=[dict(row) for row in runtime.store.db.execute('SELECT * FROM expression_turns')]
                 actions=[dict(row) for row in runtime.store.db.execute('SELECT kind,content,status FROM actions')]
-                reports.append({'case':label,'synthetic_input':text,'model':preset.model,'selector_model':runtime.selector.model,
+                reports.append({'case':label,'synthetic_input':text,'model':preset.model,
                     'library_stickers':len(stickers),'elapsed_seconds':round(time.monotonic()-started,3),'selection_stats':stats,
                     'selection_details':runtime.store.learning.status(scope.session_key)['recent_selections'],
                     'actions':actions,'delivered_to_stub_only':delivered,'main_iterations':capture.iterations,
-                    'checks':{'at_most_one_selector_call':sum(r['calls'] for r in stats)<=1,
+                    'checks':{'no_selector_calls':sum(r['calls'] for r in stats)==0,
                               'deadline_under_2100ms':all(r['latency_ms']<2100 for r in stats),
                               'no_old_plan_in_reply':all('海边' not in d['content'] and '行程' not in d['content'] for d in delivered),
                               'no_public_sender':True}})

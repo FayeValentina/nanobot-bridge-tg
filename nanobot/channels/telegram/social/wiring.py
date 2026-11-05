@@ -41,7 +41,6 @@ class SocialWiring:
         self.runtime.judging.set_provider(provider, version)
         self.runtime.expressions.configure_provider(config)
         self.runtime.jargon.configure_provider(config)
-        self.runtime.selector.configure_provider(config)
 
     def close(self) -> None:
         self.runtime.close()
@@ -62,7 +61,6 @@ def build_social_runtime(
     )
     runtime.expressions.configure_provider(config)
     runtime.jargon.configure_provider(config)
-    runtime.selector.configure_provider(config)
     for name in sorted(SOCIAL_TOOLS):
         tools.register(SOCIAL_TOOL_CLASSES[name](runtime))
     return SocialWiring(runtime, tools, config_path)

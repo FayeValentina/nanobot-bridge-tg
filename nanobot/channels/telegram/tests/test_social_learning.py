@@ -210,7 +210,7 @@ def test_selection_details_ring_and_sqlite_only_selected_ids(store):
 
 
 def test_config_contract_limits_aliases_and_independent_model_slots():
-    config = TelegramSocialLearningConfig.model_validate({"expression": {"model": "learner"}, "selection": {"provider": "local"}})
+    config = TelegramSocialLearningConfig.model_validate({"expression": {"model": "learner"}})
     wire = config.model_dump(by_alias=True)
     assert wire["intervalSeconds"] == 300 and wire["selectionHistoryTurns"] == 25
     assert config.jargon.model is None
