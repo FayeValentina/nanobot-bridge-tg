@@ -409,17 +409,6 @@ def test_candidate_can_be_explained_with_explicit_human_evidence(env):
     assert runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='get',entry_id=first['id']))['jargon']['evidence'][0]['message_id']==1
 
 
-def test_understanding_only_cannot_be_attributed_as_natural_use(env):
-    runtime, _, _, _, _ = env
-    add(runtime,text='蓝票就是临时加场')
-    expose(runtime)
-    entry = runtime.jargon.jargon.apply(A.session_key,'turn',JargonRequest(action='explain',term='蓝票',message_ids=[1],local_meaning='临时加场',explanation_quote='蓝票就是临时加场'))['jargon']
-    # D may select an explanation, but never attribute understand_only as active vocabulary.
-    runtime.store.learning.record_selection(A.session_key,'selection',target_message_id=1,candidates=1,selected=[('jargon',entry['id'],entry['revision'])],explanation={})
-    with pytest.raises(ValueError,match='only current usable'):
-        runtime.store.learning.confirm_use(A.session_key,'selection','jargon',entry['id'],entry['revision'],'receipt')
-
-
 def test_frozen_actual_model_and_network_report_has_traceable_sources():
     from pathlib import Path
 

@@ -1,4 +1,4 @@
-"""Local optional expression/jargon/sticker references, without model calls."""
+"""Local optional expression/jargon references, without model calls."""
 from __future__ import annotations
 
 import json
@@ -39,7 +39,7 @@ class SelectionInput(BaseModel):
 
 @dataclass(frozen=True)
 class Candidate:
-    kind: Literal["expression", "jargon", "sticker"]
+    kind: Literal["expression", "jargon"]
     entry_id: str
     revision: int
     data: dict[str, str | int]
@@ -117,30 +117,27 @@ class ContextSelector:
         terms = retrieval_terms(text)
         scenes = [scene for scene, hints in SCENE_HINTS.items() if any(w in text for w in hints.split())]
         result: list[Candidate] = []
-        specs: list[tuple[Literal["expression", "jargon", "sticker"], int]] = [
+        specs: list[tuple[Literal["expression", "jargon"], int]] = [
             ("expression", config.expression_candidates if config.selection_expressions else 0),
             ("jargon", config.jargon_candidates if config.selection_jargon else 0),
-            ("sticker", config.selection_sticker_candidates if config.selection_stickers else 0),
         ]
         for kind, limit in specs:
             if not limit:
                 continue
-            needles = terms + (scenes if kind != "sticker" else [w for s in scenes for w in SCENE_HINTS[s].split()])
+            needles = terms + scenes
             if kind == "expression":
                 rows = self.expressions.candidates(scope, needles, limit)
-            elif kind == "jargon":
-                rows = self.jargon.candidates(scope, needles, self.now(), limit)
             else:
-                rows = self.store.stickers.candidates(scope, needles, limit)
+                rows = self.jargon.candidates(scope, needles, self.now(), limit)
             result.extend(Candidate(kind, str(row["id"]), int(row["revision"]),
                 {name: str(row[name])[:400] for name in row.keys() if name not in {"id", "revision", "relevance", "variety"}}) for row in rows if row["relevance"] != 0)
         return result
 
     def current(self, scope: str, candidate: Candidate) -> bool:
-        row = {"expression": self.expressions, "jargon": self.jargon, "sticker": self.store.stickers}[candidate.kind].row(scope, candidate.entry_id)
+        row = {"expression": self.expressions, "jargon": self.jargon}[candidate.kind].row(scope, candidate.entry_id)
         if row is None:
             return False
-        if candidate.kind != "sticker" and (row["revision"] != candidate.revision or row["status"] not in {"usable", "available", "understand_only"}):
+        if row["revision"] != candidate.revision or row["status"] not in {"usable", "available", "understand_only"}:
             return False
         if candidate.kind == "jargon" and row["expires"] is not None and row["expires"] <= self.now():
             return False
@@ -169,8 +166,7 @@ class ContextSelector:
             pool = self.candidates(scope, source)
             selected: list[Candidate] = []
             for kind, limit in [("expression", config.selection_expressions),
-                                ("jargon", config.selection_jargon),
-                                ("sticker", config.selection_stickers)]:
+                                ("jargon", config.selection_jargon)]:
                 choices = [c for c in pool if c.kind == kind and self.current(scope, c)]
                 selected.extend(choices[:limit])
             bounded = self.context(selected)
@@ -187,12 +183,11 @@ class ContextSelector:
 
     def context(self, selected: list[Candidate]) -> dict[str, list[dict[str, str | int]]]:
         budget = self.config().learning.selection_chars
-        groups: dict[str, list[dict[str, str | int]]] = {"expressions": [], "jargon": [], "stickers": []}
+        groups: dict[str, list[dict[str, str | int]]] = {"expressions": [], "jargon": []}
         for item in selected:
-            group = {"expression": "expressions", "jargon": "jargon", "sticker": "stickers"}[item.kind]
+            group = {"expression": "expressions", "jargon": "jargon"}[item.kind]
             fields = {"expression": ["expression", "situation", "unsuitable"],
-                      "jargon": ["term", "local_meaning", "public_meaning", "usage", "status"],
-                      "sticker": ["note"]}[item.kind]
+                      "jargon": ["term", "local_meaning", "public_meaning", "usage", "status"]}[item.kind]
             detail = {"id": item.entry_id, "revision": item.revision, **{k: item.data[k] for k in fields}}
             trial = {**groups, group: [*groups[group], detail]}
             if len(json.dumps(trial, ensure_ascii=False)) <= budget:
@@ -233,10 +228,3 @@ class ContextSelector:
         return {"turns": [{"turn_id": key, "texts": item.texts, "stickers": item.stickers} for key, item in turns.items()], "catchphrases": {k: v for k, v in catchphrases.items() if v},
                 "repeated_sentence_frames": {k: v for k, v in frames.items() if v > 1},
                 "sticker_counts": dict(stickers)}
-
-    def confirm_sticker(self, scope: str, turn: str | None, delivery: str, sticker_id: str) -> None:
-        if turn is None:
-            return
-        row = self.store.learning.selected_sticker(scope, turn, sticker_id)
-        if row:
-            self.store.learning.confirm_use(scope, turn, "sticker", sticker_id, int(row[0]), delivery)

@@ -35,6 +35,21 @@ def pack(count=3):
                   emoji="🙂", sticker_set="LLM_Moe") for i in range(count)))
 
 
+def test_sticker_index_only_includes_annotated_entries_in_scope_sorted_by_id(social):
+    refs = pack(5).stickers
+    social.store.stickers.import_set(A.session_key, tuple(reversed(refs)), 500)
+    social.store.stickers.annotate(A.session_key, {
+        'sticker-4': '完整注释' * 100,
+        'sticker-2': '   ',
+        'sticker-0': '  保留原注释  ',
+    })
+    social.store.stickers.collect(B.session_key, refs[0], '其他 scope', 500)
+    assert list(social.store.stickers.index(A.session_key).items()) == [
+        ('sticker-0', '  保留原注释  '), ('sticker-4', '完整注释' * 100),
+    ]
+    assert social.store.stickers.index(B.session_key) == {'sticker-0': '其他 scope'}
+
+
 @pytest.mark.parametrize("value", ["LLM_Moe", "https://t.me/addstickers/LLM_Moe",
     "https://telegram.me/addstickers/LLM_Moe/", "tg://addstickers?set=LLM_Moe"])
 def test_resolves_only_telegram_pack_names(value):

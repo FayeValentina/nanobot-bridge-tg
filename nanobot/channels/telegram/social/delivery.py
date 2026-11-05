@@ -24,7 +24,6 @@ from nanobot.channels.telegram.social.models import (
     SocialRateLimitError,
 )
 from nanobot.channels.telegram.social.proactive import SocialProactive
-from nanobot.channels.telegram.social.selection import ContextSelector
 from nanobot.channels.telegram.social.store import SocialStore
 from nanobot.channels.telegram.social.waiting import SocialWaiting
 from nanobot.config.schema import TelegramSocialConfig
@@ -39,13 +38,12 @@ class SocialDelivery:
     """Every public send: permission check, journal, Telegram delivery, retries and confirmed-send effects."""
 
     def __init__(self, store: SocialStore, bindings: ScopeBindings, proactive: SocialProactive,
-                 waiting: SocialWaiting, selector: ContextSelector, notify: Callable[[], None],
+                 waiting: SocialWaiting, notify: Callable[[], None],
                  config: Callable[[], TelegramSocialConfig], now: Callable[[], float]) -> None:
         self.store = store
         self.bindings = bindings
         self.proactive = proactive
         self.waiting = waiting
-        self.selector = selector
         self.notify = notify
         self.config = config
         self.now = now
@@ -256,10 +254,6 @@ class SocialDelivery:
             return
         # Recent confirmed messages are dialogue facts. They do not arm a second wake route.
         self.store.wakes.note_sent(scope.session_key)
-        sticker = self.store.deliveries.sent_sticker(action, scope.session_key)
-        if sticker and sticker[0]:
-            self.selector.confirm_sticker(scope.session_key, turn, action,
-                                          MediaReference.model_validate_json(sticker[0]).unique_id)
         self.notify()
         if turn is not None and self.store.scopes.state(scope.session_key)["mode"] == "observing":
             self.waiting.keep_reply_intent(scope, turn)

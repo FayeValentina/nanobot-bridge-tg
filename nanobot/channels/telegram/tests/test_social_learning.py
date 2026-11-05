@@ -280,23 +280,6 @@ def test_interrupted_attempt_is_charged_before_restart(store, tmp_path):
         restored.close()
 
 
-@pytest.mark.parametrize("ordinary", [False, True])
-@pytest.mark.parametrize("status,ids,confirmed", [("queued", [], False), ("unknown", [], False), ("failed", [], False), ("sent", [123], True)])
-def test_usage_requires_real_receipt_and_keeps_human_occurrences_unchanged(store, ordinary, status, ids, confirmed):
-    with store.db:
-        store.db.execute("INSERT INTO expressions(id,scope,situation,expression,revision,created,updated) VALUES('chosen',?,'s','e',2,1000,1000)", (A.session_key,))
-        store.db.execute("INSERT INTO actions(id,scope,version,content,status,created,turn_id,message_ids,kind) VALUES('delivery',?,'1','text',?,1000,'turn',?,?)", (A.session_key, "sending" if ordinary and status == "queued" else status, json.dumps(ids), "message" if ordinary else "text"))
-    store.learning.record_selection(A.session_key, "turn", target_message_id=1, candidates=1,
-                                    selected=[("expression", "chosen", 2)], explanation={})
-    if not confirmed:
-        with pytest.raises(ValueError, match="confirmed delivery"):
-            store.learning.confirm_use(A.session_key, "turn", "expression", "chosen", 2, "delivery")
-    else:
-        store.learning.confirm_use(A.session_key, "turn", "expression", "chosen", 2, "delivery")
-    assert store.db.execute("SELECT occurrences FROM expressions").fetchone()[0] == 0
-    assert store.db.execute("SELECT delivery_id FROM expression_selections").fetchone()[0] == ("delivery" if confirmed else None)
-
-
 def test_coarse_filter_uses_scene_index(store):
     for table in ("expressions", "jargon"):
         plan = store.db.execute(f"EXPLAIN QUERY PLAN SELECT id FROM {table} WHERE scope=? AND status=? AND intent_category=? ORDER BY updated", (A.session_key, "candidate", "反讽")).fetchall()

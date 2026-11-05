@@ -99,7 +99,7 @@ class TelegramSocialRuntime:
         self.store.learning.attach_libraries(self.expressions.library, self.jargon.jargon)
         self.selector = ContextSelector(self.store, self.expressions.library, self.jargon.jargon, lambda: self.config, self.now)
         self.delivery = SocialDelivery(self.store, self.bindings, self.proactive, self.waiting,
-                                       self.selector, self.scheduler.notify, lambda: self.config, self.now)
+                                       self.scheduler.notify, lambda: self.config, self.now)
         self.context_builder = SocialContextBuilder(self.store, self.memory, self.selector)
         self.configure(config)
 

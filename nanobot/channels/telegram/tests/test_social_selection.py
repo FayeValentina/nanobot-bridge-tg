@@ -42,7 +42,7 @@ def test_scope_scene_keyword_pool_caps_and_same_turn_cache(social, monkeypatch):
     record = Mock(wraps=social.store.learning.record_selection)
     monkeypatch.setattr(social.store.learning, 'record_selection', record)
     selected = social.selector.select(A.session_key, 'turn')
-    assert [(x.kind, x.entry_id) for x in selected] == [('expression','e-a'),('jargon','j-a'),('sticker','s-124')]
+    assert [(x.kind, x.entry_id) for x in selected] == [('expression','e-a'),('jargon','j-a')]
     assert social.selector.select(A.session_key, 'turn') is selected
     assert record.call_count == 1
     detail = record.call_args.kwargs
@@ -54,8 +54,26 @@ def test_scope_scene_keyword_pool_caps_and_same_turn_cache(social, monkeypatch):
         'candidates': [{'kind': c.kind, 'id': c.entry_id, 'selected': True} for c in selected],
     }
     row = social.store.db.execute('SELECT calls,candidate_count,status FROM expression_turns').fetchone()
-    assert tuple(row) == (0, 3, 'retrieved')
+    assert tuple(row) == (0, 2, 'retrieved')
     assert social.store.scopes.state(A.session_key)['seen_through'] == social.store.scopes.state(A.session_key)['read_through'] == 0
+
+
+@pytest.mark.parametrize('learning_enabled', [False, True])
+async def test_live_context_has_full_sticker_index_outside_expression_budget(social, learning_enabled):
+    seed(social)
+    view(social)
+    social.config.learning.enabled = learning_enabled
+    social.config.learning.selection_chars = 500
+    blocks = await social.context_builder.build(A.session_key, 'turn', '')
+    data = json.loads(blocks[0].content.split('\n', 1)[1])
+    expected = {f's-{i}': f'场景{i}：' + ('得意 自信 调侃 嘴硬 领先' if i == 124 else '困倦 睡觉 晚安')
+                for i in range(125)}
+    assert data['sticker_library'] == expected
+    assert list(data['sticker_library']) == sorted(expected)
+    assert set(data['optional_expression_references']) == {'expressions', 'jargon'}
+    social.store.stickers.annotate(A.session_key, {'s-124': '新版注释'})
+    updated = await social.context_builder.build(A.session_key, 'turn', '')
+    assert json.loads(updated[0].content.split('\n', 1)[1])['sticker_library']['s-124'] == '新版注释'
 
 
 def test_actual_unclaimed_snapshot_selected_before_it_is_marked_seen(social):
@@ -66,7 +84,7 @@ def test_actual_unclaimed_snapshot_selected_before_it_is_marked_seen(social):
     assert social.store.db.execute('SELECT seen FROM views').fetchone()[0] == 0
 
 
-@pytest.mark.parametrize('change', ['message_edit','new_message','entry_revision','disabled','sticker_note','config','scope'])
+@pytest.mark.parametrize('change', ['message_edit','new_message','entry_revision','disabled','config','scope'])
 def test_changed_values_reuse_first_selection_without_second_record(social, change):
     seed(social)
     view(social)
@@ -80,12 +98,10 @@ def test_changed_values_reuse_first_selection_without_second_record(social, chan
         social.store.db.execute("UPDATE expressions SET revision=revision+1")
     elif change == 'disabled':
         social.store.db.execute("UPDATE expressions SET status='disabled'")
-    elif change == 'sticker_note':
-        social.store.stickers.annotate(A.session_key, {'s-124':'严肃的另一张图'})
     elif change == 'scope':
         social.store.bind(A, 'another-version')
     else:
-        social.store.learning.configure(social.config.learning.model_copy(update={'selection_stickers':0}))
+        social.store.learning.configure(social.config.learning.model_copy(update={'selection_expressions':0}))
     assert social.selector.select(A.session_key, 'turn') is selected
     assert social.store.db.execute('SELECT COUNT(*) FROM expression_turns').fetchone()[0] == 1
     assert 'reuse_status' not in social.store.learning.recent[A.session_key][-1]
@@ -96,7 +112,6 @@ def test_zero_relevance_candidates_are_not_injected(social):
     view(social, text='unrelated zebra')
     assert social.expressions.library.candidates(A.session_key, ['zebra'], 10)
     assert social.jargon.jargon.candidates(A.session_key, ['zebra'], social.now(), 20)
-    assert social.store.stickers.candidates(A.session_key, ['zebra'], 40)
     assert social.selector.candidates(A.session_key, social.selector.input(A.session_key, 'turn')) == []
     assert social.selector.select(A.session_key, 'turn') == []
     assert tuple(social.store.db.execute('SELECT status,calls,candidate_count FROM expression_turns').fetchone()) == ('empty', 0, 0)
@@ -121,7 +136,7 @@ def test_disabled_or_unavailable_status(social, unavailable):
     assert tuple(social.store.db.execute('SELECT status,calls FROM expression_turns').fetchone()) == ('disabled_or_unavailable', 0)
 
 
-@pytest.mark.parametrize('kind', ['expression', 'jargon', 'sticker'])
+@pytest.mark.parametrize('kind', ['expression', 'jargon'])
 def test_inactive_or_changed_candidate_is_filtered(social, monkeypatch, kind):
     seed(social)
     view(social)
@@ -129,10 +144,8 @@ def test_inactive_or_changed_candidate_is_filtered(social, monkeypatch, kind):
     monkeypatch.setattr(social.selector, 'candidates', lambda *_: pool)
     if kind == 'expression':
         social.store.db.execute("UPDATE expressions SET status='disabled'")
-    elif kind == 'jargon':
-        social.store.db.execute('UPDATE jargon SET revision=revision+1')
     else:
-        social.store.stickers.annotate(A.session_key, {'s-124': '另一张图'})
+        social.store.db.execute('UPDATE jargon SET revision=revision+1')
     selected = social.selector.select(A.session_key, 'turn')
     assert selected == [c for c in pool if c.kind != kind]
     assert not any(c.kind == kind for c in selected)
@@ -199,23 +212,24 @@ async def test_end_to_end_sticker_without_search_receipt_and_transient_prompt(tm
         calls.append(deepcopy(kwargs))
         assert len(social.selector.cache) == 1
         if len(calls)==1:
-            return LLMResponse(content=None,tool_calls=[ToolCallRequest(id='sticker',name='social_send',arguments={'sticker_id':'s-124'})])
+            return LLMResponse(content=None,tool_calls=[ToolCallRequest(id='sticker',name='social_send',arguments={'sticker_id':'s-0'})])
         return LLMResponse(content='')
     loop.provider.chat_stream_with_retry=AsyncMock(side_effect=model)
     await loop._dispatch(await wake(social,text='蓝票这回领先了哈哈'))
     assert social.store.db.execute('SELECT calls FROM expression_turns').fetchone()[0] == 0
     assert social.selector.cache == {}
     first=str(calls[0]['messages'])
-    assert 'optional_expression_references' in first and 's-124' in first
+    assert 'optional_expression_references' in first and 's-0' in first
     assert 'pending_matters' in first and 'recent_confirmed_usage' in first
     assert social.delivery.sticker_sender.await_count==1
-    row=social.store.db.execute("SELECT delivery_id FROM expression_selections WHERE kind='sticker'").fetchone()
-    assert row and row[0]
-    assert social.store.db.execute('SELECT status FROM actions WHERE id=?',(row[0],)).fetchone()[0]=='sent'
-    assert social.store.db.execute("SELECT COUNT(*) FROM expression_selections WHERE kind!='sticker' AND delivery_id IS NOT NULL").fetchone()[0]==0
+    assert 'sticker_library' in first and 's-124' in first
+    assert social.store.db.execute("SELECT COUNT(*) FROM expression_selections WHERE kind='sticker'").fetchone()[0] == 0
+    assert social.store.db.execute("SELECT status FROM actions WHERE kind='sticker'").fetchone()[0] == 'sent'
+    assert social.store.db.execute("SELECT COUNT(*) FROM expression_selections WHERE delivery_id IS NOT NULL").fetchone()[0] == 0
     saved=json.dumps(loop.sessions.get_or_create(A.session_key).messages)
     assert 'optional_expression_references' not in saved
-    assert social.selector.recent_usage(A.session_key)['turns'][0]['stickers']==['s-124']
+    assert 'sticker_library' not in saved
+    assert social.selector.recent_usage(A.session_key)['turns'][0]['stickers']==['s-0']
 
 
 async def test_empty_retrieval_does_not_block_main_text_generation(tmp_path, social):
@@ -253,7 +267,7 @@ def test_prompt_character_budget_and_final_caps(social):
     chosen = social.selector.select(A.session_key, 'turn')
     payload = social.selector.context(chosen)
     assert len(json.dumps(payload, ensure_ascii=False)) <= 500
-    assert 0 < len(chosen) < 3
+    assert 0 < len(chosen) < 2
     assert len(chosen) == sum(map(len, payload.values()))
     assert social.store.db.execute('SELECT COUNT(*) FROM expression_selections').fetchone()[0] == len(chosen)
     assert social.store.learning.recent[A.session_key][-1]['status'] == 'retrieved'
@@ -286,10 +300,10 @@ def test_retrieval_order_is_truncated_to_each_kind_limit(social):
     view(social)
     social.config.learning.selection_expressions = 2
     social.config.learning.selection_jargon = 2
-    social.config.learning.selection_stickers = 2
     pool = social.selector.candidates(A.session_key, social.selector.input(A.session_key, 'turn'))
+    assert {c.kind for c in pool} == {'expression', 'jargon'}
     chosen = social.selector.select(A.session_key, 'turn')
-    for kind in ('expression', 'jargon', 'sticker'):
+    for kind in ('expression', 'jargon'):
         assert len([c for c in pool if c.kind == kind]) > 2
         assert [c for c in chosen if c.kind == kind] == [c for c in pool if c.kind == kind][:2]
 

@@ -110,9 +110,6 @@ class Deliveries:
     def part_position(self, action: str) -> sqlite3.Row:
         return self.db.execute("SELECT group_id,ordinal FROM actions WHERE id=?", (action,)).fetchone()
 
-    def sent_sticker(self, action: str, key: str) -> sqlite3.Row | None:
-        return self.db.execute("SELECT media_ref FROM actions WHERE id=? AND scope=? AND status='sent' AND kind='sticker'", (action, key)).fetchone()
-
     def confirmed_turn(self, key: str, turn: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT 1 FROM actions WHERE scope=? AND turn_id=? AND (status='sent' OR json_array_length(message_ids)>0) LIMIT 1", (key, turn)).fetchone()
 

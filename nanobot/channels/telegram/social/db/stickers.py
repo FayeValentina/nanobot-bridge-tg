@@ -10,11 +10,9 @@ class StickerLibrary:
     def __init__(self, db: sqlite3.Connection, now: Callable[[], float]) -> None:
         self.db, self.now = db, now
 
-    def candidates(self, scope: str, needles: list[str], limit: int) -> list[sqlite3.Row]:
-        score = "+".join("(instr(lower(note),?)>0)" for _ in needles) or "0"
-        return self.db.execute(f"SELECT * FROM (SELECT id,0 AS revision,note,({score}) AS relevance,"
-            "ROW_NUMBER() OVER (PARTITION BY substr(note,1,6) ORDER BY updated DESC,id) AS variety "
-            "FROM stickers WHERE scope=? AND trim(note)<>'') ORDER BY relevance DESC,variety,id LIMIT ?", [*needles, scope, limit]).fetchall()
+    def index(self, scope: str) -> dict[str, str]:
+        rows = self.db.execute("SELECT id, note FROM stickers WHERE scope=? AND trim(note)<>'' ORDER BY id", (scope,))
+        return {row["id"]: row["note"] for row in rows}
 
     def row(self, scope: str, entry_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM stickers WHERE scope=? AND id=?", (scope, entry_id)).fetchone()

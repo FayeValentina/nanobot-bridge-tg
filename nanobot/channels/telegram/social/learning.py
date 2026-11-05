@@ -245,25 +245,6 @@ class SocialLearning:
         self.recent.setdefault(scope, deque(maxlen=self.config.selection_history_turns)).append(detail)
         logger.bind(v5_selection={"scope": scope, **detail}).info("V5 turn selection {}", json.dumps({"scope": scope, **detail}, ensure_ascii=False))
 
-    def confirm_use(self, scope: str, turn_id: str, kind: str, entry_id: str, revision: int, delivery_id: str) -> None:
-        """Explicit usage attribution, separate from selection; only real receipts qualify.
-
-        D will call this with actually used IDs. A does not attribute every selected
-        item just because some text was sent, and never increases human occurrences.
-        """
-        with transaction(self.db):
-            if kind == "jargon" and not self.jargon.usable_entry(scope, entry_id, revision):
-                raise ValueError("only current usable jargon can be attributed as natural use")
-            receipt = self.store.deliveries.confirmed_receipt(scope, turn_id, delivery_id)
-            if receipt is None:
-                raise ValueError("usage requires a confirmed delivery in this turn and scope")
-            changed = self.db.execute("UPDATE expression_selections SET delivery_id=? WHERE scope=? AND turn_id=? AND kind=? AND entry_id=? AND revision=?",
-                                      (delivery_id, scope, turn_id, kind, entry_id, revision)).rowcount
-            if not changed:
-                raise ValueError("usage requires the selected entry revision")
-            if kind in {"expression", "jargon"}:
-                (self.expressions if kind == "expression" else self.jargon).mark_usage(scope, entry_id, revision, "last_confirmed")
-
     def status(self, scope: str) -> dict[str, object]:
         return {"enabled": self.config.enabled, "stage": "expression_and_jargon_learning", "extractor_enabled": self.config.enabled,
                 "config": self.config.model_dump(by_alias=True), "config_revision": self.config_revision,
@@ -364,6 +345,3 @@ class SocialLearning:
 
     def has_selection(self, scope: str, turn: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT 1 FROM expression_turns WHERE scope=? AND turn_id=?", (scope, turn)).fetchone()
-
-    def selected_sticker(self, scope: str, turn: str, sticker_id: str) -> sqlite3.Row | None:
-        return self.db.execute("SELECT revision FROM expression_selections WHERE scope=? AND turn_id=? AND kind='sticker' AND entry_id=?", (scope, turn, sticker_id)).fetchone()

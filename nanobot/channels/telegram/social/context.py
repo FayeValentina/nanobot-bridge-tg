@@ -58,6 +58,7 @@ class SocialContextBuilder:
             topic_text=" ".join(m.text for m in source[-4:] if not m.is_self) if source else None,
         ))
         body_data["optional_expression_references"] = self.selector.context(selected)
+        body_data["sticker_library"] = self.store.stickers.index(key)
         body_data["recent_confirmed_usage"] = self.selector.recent_usage(key)
         body_data["autonomous_activities"] = self.store.activities.index(key)
         activity = self.store.wakes.running_activity(key, turn)
