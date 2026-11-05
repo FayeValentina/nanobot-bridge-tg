@@ -5,7 +5,7 @@
 
 ## 交接：当前状态与下一步（新对话从这里开始读）
 
-**最后更新：2026-11-05，线上版本 `507b818e`（AGY provider + AGY-c + SEL-a；此前 `95dab48b`（P9-c；之后 P9-d `2ed13143` 只改评估脚本，无需部署），social schema 22。**Phase 0–9 全部完成。** owner 已体验 Phase 5、B1、P7-a、B2-a；P8/P9 的行为变更待 owner 继续体验反馈。
+**最后更新：2026-11-05，线上版本 `89cd351a`（AGY provider + AGY-c + SEL-a + STK-a；此前 `95dab48b`（P9-c；之后 P9-d `2ed13143` 只改评估脚本，无需部署），social schema 22。**Phase 0–9 全部完成。** owner 已体验 Phase 5、B1、P7-a、B2-a；P8/P9 的行为变更待 owner 继续体验反馈。
 
 - **已完成**：Phase 0、0.5、1、2、3，以及追加项 A1。测试 982 个（社交目录 + 契约 + gateway），场景测试 21 个，全部通过，零 xfail。
 - **Phase 3 结果**（P3-0 只读清单 + P3-a～P3-d，明细见下表）：`social/db/` 有 connection、schema 和 8 个仓储
@@ -70,6 +70,7 @@
 - **AGY（Google Antigravity）provider 已上线（2026-11-05，线上 `2be093e4`；owner 指定 Gemini 3.8 Flash / medium）**：方案见 [AGY_PROVIDER_ANALYSIS.md](AGY_PROVIDER_ANALYSIS.md)。AGY-a `cf4cb6fb`（`antigravity_auth.py`、`gemini_wire.py`）、AGY-b `a6ca3fbe`（`antigravity_provider.py`、registry/factory/schema/WebUI 状态/凭据保护、compose 挂载宿主 `~/.gemini/antigravity-cli` → `/agy`）。宿主机 agy 1.5.0 已登录；运维文件 `~/.gemini/antigravity-cli/nanobot-oauth-client.json`（从 agy 二进制提取的 installed-app client，0600，不入库；agy 换 client 时需重新提取）。线上 config 已切换：主模型 `antigravity/gemini-3.8-flash-medium`（provider antigravity，temperature 1.0），fallback 为 inline `deepseek-flash`（temperature 0.1）；备份 `config.json.before-agy-20261105`。协议要点：账号目录只有 `gemini-3.8-flash-tiered`，用 thinkingLevel 选档；工具 schema 走 `parametersJsonSchema` 原样传；历史 functionCall 缺签名填 `skip_thought_signature_validator`；Google 未轮换 refresh token，与宿主 agy 共用不冲突。验收：容器内 CLI turn 走 AGY 完成工具调用且签名持久化。待观察：群内真实 turn 的 llm_usage 记录（provider=antigravity）、配额（`quotaInfo.remainingFraction`）与 fallback 触发情况。既有问题：`tests/deploy` 10 个 BadZipFile 失败（与 AGY 无关，未安排）。
   - **AGY-c（`77a16c8d`，已部署）**：上线首批群聊暴露 3 个问题并修复——V5 选择器每 turn 2 秒超时（显式 reasoning_effort 被模型名档位覆盖；且 Gemini 最低 low 档也要约 2.7 秒）、Dream 两次 90 秒 ReadTimeout（思考期间无 SSE 事件，现发送 includeThoughts 让思考摘要流式返回）、jargon 学习 JSON 解析失败（Gemini 用 ```json 包裹，新增 `strip_json_fence` 用于 5 处解析）。线上 config 另把 `social.learning.selection` 设为 deepseek/deepseek-flash（选择器有 2 秒预算，Gemini 达不到；备份 `config.json.before-selector-deepseek-20261105`），learning 配置版本变化取消了 2 个已失败批次。
   - **SEL-a（`507b818e`，已部署；owner 2026-11-05 决定）**：去掉 V5 选择器的模型调用。`ContextSelector.select` 改为同步本地检索：跳过 relevance=0 的候选，每类取前 3/5/5，沿用 selectionChars 预算，record 的 calls=0、status retrieved/empty。删除 Choice、provider、超时、模板 `social_expression_selection.md` 与配置 `learning.selection`/`selectionCallsPerTurn`/`selectionTimeoutSeconds`（线上 config 先删 `learning.selection`，备份 `config.json.before-sel-a-20261105`）。DeepSeek 现在只剩主模型的 inline fallback；owner 计划逐步舍弃 DeepSeek（实测 Luna 做选择器类小任务中位 2.0 秒，DeepSeek 1.28 秒）。
+  - **STK-a（`89cd351a`，已部署；owner 2026-11-05 决定）**：每轮 live 块注入完整贴纸库 `sticker_library`（{id: note}，按 id 排序，120 张约 8k 字符），贴纸退出本地检索选择；删除 confirm_sticker/confirm_use/sent_sticker 与 `selectionStickers`/`selectionStickerCandidates`。protocol 改为先看 sticker_library。表达/黑话仍走 SEL-a 检索。
 - **下一项：bot 主动性修复（owner 2026-11-05 确认 A–E 五项都做，尚未开始）**：大纲见 [PROACTIVE_FIX_OUTLINE.md](PROACTIVE_FIX_OUTLINE.md)。基线：63 次主动 turn 仅 1 次发出。下一步 PF-0 只读清单。
 - **重构收尾（Phase 0–9 完成后的状态，供后续对话参考）**：
   - 量化目标：social 模块最大 407 行（无 >500 的模块）✓；主 protocol 15,237→9,112 字符（-40.2%）✓；代码中无中文提示词字面量与角色字面量 ✓（中文召回/过滤词表作为数据保留）；runtime.py 336 行（目标 <300，未达，剩余为装配与 get_state）；`db/` 之外仍有拥有者模块执行 SQL（jargon/learning/followups/memory/expressions/activity，Claude 设计决定：每表单一拥有者）。
