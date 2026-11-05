@@ -58,7 +58,9 @@ hermes 的下游改动一共约 2,200 行，其中核心是 3 个文件；其余
 
 - 使用的是 agy 的 installed-app OAuth client 和私有 `v1internal` 协议，并伪装 User-Agent。这不是 Google 公开支持的 API，
   协议变化或账号风控都可能导致失效，代码里也注明了 “compatibility depends on the private Cloud Code Assist protocol”。
-- 本机目前**没有安装 agy**，也没有 `~/.gemini/antigravity-cli/`，要用就得先安装并登录 agy，或者从其他机器复制凭据文件。
+- 2026-11-05 已在宿主机安装 agy 1.5.0（`~/.local/bin/agy`）并以 consumer OAuth 登录；凭据文件 `~/.gemini/antigravity-cli/antigravity-oauth-token`（字段：auth_method、id_token_email、token{access_token, refresh_token, token_type, expiry, expires_in}，与 hermes 的读取方式一致）。
+- `agy models` 返回 13 个模型：gemini-4-argon-{low,medium,high}、gemini-3.8-flash-{low,medium,high}、claude-opus-5-5-*、claude-sonnet-5-5-*、gpt-oss-120b-medium。
+  hermes 的 tiered 正则只覆盖 gemini-3.x flash；Claude/GPT-OSS 模型是否同样接受 Gemini 格式的请求，需要在 AGY-0 中实际验证。
 
 ## 二、nanobot 现状
 
